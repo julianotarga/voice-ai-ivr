@@ -20,10 +20,10 @@
 - [ ] 0.1.7 Documentar processo de compilação
 
 ### 0.2 Estrutura do Projeto
-- [ ] 0.2.1 Criar diretório `voice-ai-service/realtime/`
-- [ ] 0.2.2 Criar estrutura de subdiretórios (providers, handlers, utils)
-- [ ] 0.2.3 Configurar dependências em `requirements.txt`
-- [ ] 0.2.4 Criar `realtime_settings.py` com configurações
+- [x] 0.2.1 Criar diretório `voice-ai-service/realtime/`
+- [x] 0.2.2 Criar estrutura de subdiretórios (providers, handlers, utils)
+- [x] 0.2.3 Configurar dependências em `requirements.txt`
+- [x] 0.2.4 Criar `realtime_settings.py` com configurações
 
 ### 0.3 Docker Updates
 - [ ] 0.3.1 Criar `Dockerfile.realtime` para o bridge realtime
@@ -36,8 +36,8 @@
 - [ ] 0.3.8 Documentar variáveis de ambiente
 
 ### 0.4 Coexistência v1/v2
-- [ ] 0.4.1 Adicionar campo `processing_mode` na tabela v_voice_secretaries
-- [ ] 0.4.2 Criar migration para novo campo
+- [x] 0.4.1 Adicionar campo `processing_mode` na tabela v_voice_secretaries
+- [x] 0.4.2 Criar migration para novo campo (008_add_realtime_fields.sql)
 - [ ] 0.4.3 Criar script Lua `get_secretary_mode.lua`
 - [ ] 0.4.4 Atualizar dialplan para roteamento dinâmico
 - [ ] 0.4.5 Implementar fallback automático (realtime → turn_based)
@@ -49,24 +49,24 @@
 ## 1. Servidor WebSocket Principal
 
 ### 1.1 Core Server
-- [ ] 1.1.1 Criar `realtime/server.py` com servidor WebSocket (asyncio + websockets)
-- [ ] 1.1.2 Implementar rota `/stream/{domain_uuid}/{call_uuid}`
-- [ ] 1.1.3 Implementar handshake e validação de domain_uuid
-- [ ] 1.1.4 Criar handler para conexões FreeSWITCH
-- [ ] 1.1.5 Implementar graceful shutdown
+- [x] 1.1.1 Criar `realtime/server.py` com servidor WebSocket (asyncio + websockets)
+- [x] 1.1.2 Implementar rota `/stream/{domain_uuid}/{call_uuid}`
+- [x] 1.1.3 Implementar handshake e validação de domain_uuid
+- [x] 1.1.4 Criar handler para conexões FreeSWITCH
+- [x] 1.1.5 Implementar graceful shutdown
 
 ### 1.2 Session Manager
-- [ ] 1.2.1 Criar `realtime/session_manager.py`
-- [ ] 1.2.2 Implementar `RealtimeSession` class
-- [ ] 1.2.3 Gerenciar lifecycle de sessões (start, stop, timeout)
-- [ ] 1.2.4 Implementar cleanup de sessões órfãs
-- [ ] 1.2.5 Adicionar métricas de sessões ativas
+- [x] 1.2.1 Criar `realtime/session_manager.py`
+- [x] 1.2.2 Implementar `RealtimeSession` class
+- [x] 1.2.3 Gerenciar lifecycle de sessões (start, stop, timeout)
+- [x] 1.2.4 Implementar cleanup de sessões órfãs
+- [x] 1.2.5 Adicionar métricas de sessões ativas
 
 ### 1.3 Audio Processor
-- [ ] 1.3.1 Criar `realtime/audio_processor.py`
-- [ ] 1.3.2 Implementar `Resampler` class (16k↔24k)
-- [ ] 1.3.3 Implementar buffer circular para chunks
-- [ ] 1.3.4 Adicionar conversão base64↔bytes
+- [x] 1.3.1 Criar `realtime/audio_processor.py`
+- [x] 1.3.2 Implementar `Resampler` class (16k↔24k)
+- [x] 1.3.3 Implementar buffer circular para chunks
+- [x] 1.3.4 Adicionar conversão base64↔bytes
 - [ ] 1.3.5 Testes unitários de resampling
 
 ---
@@ -74,21 +74,21 @@
 ## 2. Providers Realtime
 
 ### 2.1 Base Provider
-- [ ] 2.1.1 Criar `realtime/providers/base.py`
-- [ ] 2.1.2 Definir `BaseRealtimeProvider` interface
-- [ ] 2.1.3 Definir `ProviderEvent` dataclass
-- [ ] 2.1.4 Criar `RealtimeProviderFactory`
+- [x] 2.1.1 Criar `realtime/providers/base.py`
+- [x] 2.1.2 Definir `BaseRealtimeProvider` interface
+- [x] 2.1.3 Definir `ProviderEvent` dataclass
+- [x] 2.1.4 Criar `RealtimeProviderFactory`
 
 ### 2.2 OpenAI Realtime API
-- [ ] 2.2.1 Criar `realtime/providers/openai_realtime.py`
-- [ ] 2.2.2 Implementar conexão WebSocket para `wss://api.openai.com/v1/realtime`
-- [ ] 2.2.3 Implementar `session.update` com configuração
-- [ ] 2.2.4 Implementar `input_audio_buffer.append` para envio de áudio
-- [ ] 2.2.5 Implementar handler para `response.audio.delta`
-- [ ] 2.2.6 Implementar handler para `response.audio_transcript.delta`
-- [ ] 2.2.7 Implementar handler para VAD events (`speech_started`, `speech_stopped`)
-- [ ] 2.2.8 Implementar `response.cancel` para barge-in
-- [ ] 2.2.9 Implementar function calling com `tools`
+- [x] 2.2.1 Criar `realtime/providers/openai_realtime.py`
+- [x] 2.2.2 Implementar conexão WebSocket para `wss://api.openai.com/v1/realtime`
+- [x] 2.2.3 Implementar `session.update` com configuração
+- [x] 2.2.4 Implementar `input_audio_buffer.append` para envio de áudio
+- [x] 2.2.5 Implementar handler para `response.audio.delta`
+- [x] 2.2.6 Implementar handler para `response.audio_transcript.delta`
+- [x] 2.2.7 Implementar handler para VAD events (`speech_started`, `speech_stopped`)
+- [x] 2.2.8 Implementar `response.cancel` para barge-in
+- [x] 2.2.9 Implementar function calling com `tools`
 - [ ] 2.2.10 Testes de integração com OpenAI
 
 ### 2.3 ElevenLabs Conversational AI
@@ -124,18 +124,18 @@
 ## 3. Handlers e Funcionalidades
 
 ### 3.1 FreeSWITCH Handler
-- [ ] 3.1.1 Criar `realtime/handlers/freeswitch.py`
-- [ ] 3.1.2 Implementar parsing de metadata inicial
-- [ ] 3.1.3 Implementar handler para DTMF
-- [ ] 3.1.4 Implementar handler para hangup
-- [ ] 3.1.5 Implementar playback de áudio para FS
+- [x] 3.1.1 Criar `realtime/handlers/freeswitch.py`
+- [x] 3.1.2 Implementar parsing de metadata inicial
+- [x] 3.1.3 Implementar handler para DTMF
+- [x] 3.1.4 Implementar handler para hangup
+- [x] 3.1.5 Implementar playback de áudio para FS
 
 ### 3.2 Function Call Handler
-- [ ] 3.2.1 Criar `realtime/handlers/function_call.py`
-- [ ] 3.2.2 Implementar `transfer_call` via ESL
-- [ ] 3.2.3 Implementar `create_ticket` webhook OmniPlay
-- [ ] 3.2.4 Implementar `lookup_customer` integração CRM
-- [ ] 3.2.5 Implementar `check_appointment` agenda
+- [x] 3.2.1 Criar `realtime/handlers/function_call.py`
+- [x] 3.2.2 Implementar `transfer_call` via ESL
+- [x] 3.2.3 Implementar `create_ticket` webhook OmniPlay
+- [x] 3.2.4 Implementar `lookup_customer` integração CRM
+- [x] 3.2.5 Implementar `check_appointment` agenda
 - [ ] 3.2.6 Criar registro de function calls para auditoria
 
 ### 3.3 Transfer Handler
@@ -214,11 +214,11 @@
 ## 6. Métricas e Observabilidade
 
 ### 6.1 Prometheus Metrics
-- [ ] 6.1.1 Criar `realtime/utils/metrics.py`
-- [ ] 6.1.2 Implementar `voice_ai_realtime_calls_total`
-- [ ] 6.1.3 Implementar `voice_ai_realtime_response_latency_seconds`
-- [ ] 6.1.4 Implementar `voice_ai_realtime_active_sessions`
-- [ ] 6.1.5 Implementar `voice_ai_realtime_audio_chunks_total`
+- [x] 6.1.1 Criar `realtime/utils/metrics.py`
+- [x] 6.1.2 Implementar `voice_ai_realtime_calls_total`
+- [x] 6.1.3 Implementar `voice_ai_realtime_response_latency_seconds`
+- [x] 6.1.4 Implementar `voice_ai_realtime_active_sessions`
+- [x] 6.1.5 Implementar `voice_ai_realtime_audio_chunks_total`
 - [ ] 6.1.6 Expor endpoint `/metrics`
 
 ### 6.2 Logging
