@@ -1,0 +1,119 @@
+<!--
+  Voice AI IVR - Dialplan
+  
+  Referências:
+  - .context/docs/data-flow.md: Fluxo Turn-based e Realtime
+  - .context/docs/architecture.md: mod_audio_stream, Lua scripts
+  - openspec/changes/voice-ai-realtime/design.md: Decision 8 (Dialplan)
+  
+  Extensões:
+  - 8000-8099: Secretárias virtuais (routing dinâmico)
+  - 8100-8199: Reservado para futuras funcionalidades
+  
+  O modo (turn_based/realtime) é determinado por:
+  1. Consulta ao banco de dados via Lua
+  2. Fallback para turn_based se realtime não disponível
+-->
+
+<include>
+  
+  <!-- =================================================================== -->
+  <!-- Secretária Virtual - Router (decide mode) -->
+  <!-- =================================================================== -->
+  <extension name="voice_ai_secretary">
+    <condition field="destination_number" expression="^(80\d{2})$">
+      
+      <!-- Variáveis do FusionPBX -->
+      <action application="set" data="call_extension=$1"/>
+      <action application="set" data="voice_ai_extension=$1"/>
+      
+      <!-- Obter domain_uuid -->
+      <action application="set" data="voice_ai_domain_uuid=${domain_uuid}"/>
+      
+      <!-- Log de entrada -->
+      <action application="log" data="INFO [VoiceAI] Call to extension $1 from ${caller_id_number}"/>
+      
+      <!-- Determinar modo de processamento -->
+      <action application="lua" data="voice_ai/get_secretary_mode.lua"/>
+      
+      <!-- Roteamento baseado no modo -->
+      <action application="execute_extension" data="voice_ai_${voice_ai_mode}"/>
+      
+    </condition>
+  </extension>
+
+  <!-- =================================================================== -->
+  <!-- Modo Turn-based (v1) - Lua Script -->
+  <!-- =================================================================== -->
+  <extension name="voice_ai_turn_based">
+    <condition field="destination_number" expression="^voice_ai_turn_based$">
+      
+      <action application="log" data="INFO [VoiceAI] Using TURN-BASED mode"/>
+      
+      <!-- Atender a chamada -->
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      
+      <!-- Executar script Lua da secretária -->
+      <action application="lua" data="voice_ai/secretary_ai.lua"/>
+      
+      <!-- Hangup se não transferido -->
+      <action application="hangup"/>
+      
+    </condition>
+  </extension>
+
+  <!-- =================================================================== -->
+  <!-- Modo Realtime (v2) - mod_audio_stream -->
+  <!-- =================================================================== -->
+  <extension name="voice_ai_realtime">
+    <condition field="destination_number" expression="^voice_ai_realtime$">
+      
+      <action application="log" data="INFO [VoiceAI] Using REALTIME mode"/>
+      
+      <!-- Configurar streaming -->
+      <action application="set" data="STREAM_PLAYBACK=true"/>
+      <action application="set" data="STREAM_SAMPLE_RATE=16000"/>
+      <action application="set" data="STREAM_BUFFER_SIZE=20"/>
+      
+      <!-- Metadata para o bridge -->
+      <action application="set" data="STREAM_EXTRA_HEADERS=caller_id:${caller_id_number},extension:${voice_ai_extension},domain:${domain_uuid}"/>
+      
+      <!-- Callback para iniciar streaming após atender -->
+      <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8080/stream/${domain_uuid}/${uuid} mono 16k"/>
+      
+      <!-- Atender e manter chamada ativa -->
+      <action application="answer"/>
+      <action application="playback" data="silence_stream://-1"/>
+      
+    </condition>
+  </extension>
+
+  <!-- =================================================================== -->
+  <!-- Fallback para Turn-based -->
+  <!-- =================================================================== -->
+  <extension name="voice_ai_fallback">
+    <condition field="destination_number" expression="^voice_ai_fallback$">
+      
+      <action application="log" data="WARNING [VoiceAI] Fallback to TURN-BASED mode"/>
+      
+      <!-- Usar modo turn-based como fallback -->
+      <action application="execute_extension" data="voice_ai_turn_based"/>
+      
+    </condition>
+  </extension>
+
+  <!-- =================================================================== -->
+  <!-- Teste direto Realtime (para debug) -->
+  <!-- =================================================================== -->
+  <extension name="voice_ai_test_realtime">
+    <condition field="destination_number" expression="^8999$">
+      
+      <action application="log" data="INFO [VoiceAI] Direct REALTIME test"/>
+      <action application="set" data="voice_ai_mode=realtime"/>
+      <action application="execute_extension" data="voice_ai_realtime"/>
+      
+    </condition>
+  </extension>
+
+</include>

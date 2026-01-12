@@ -26,21 +26,21 @@
 - [x] 0.2.4 Criar `realtime_settings.py` com configurações
 
 ### 0.3 Docker Updates
-- [ ] 0.3.1 Criar `Dockerfile.realtime` para o bridge realtime
-- [ ] 0.3.2 Adicionar serviço `voice-ai-realtime` ao docker-compose
-- [ ] 0.3.3 Configurar porta 8080 para WebSocket realtime
-- [ ] 0.3.4 Manter serviço `voice-ai-service` (v1) na porta 8100
-- [ ] 0.3.5 Configurar network compartilhada entre serviços
-- [ ] 0.3.6 Adicionar healthcheck específico para realtime
-- [ ] 0.3.7 Criar script de inicialização unificado
-- [ ] 0.3.8 Documentar variáveis de ambiente
+- [x] 0.3.1 Criar `Dockerfile.realtime` para o bridge realtime
+- [x] 0.3.2 Adicionar serviço `voice-ai-realtime` ao docker-compose
+- [x] 0.3.3 Configurar porta 8080 para WebSocket realtime
+- [x] 0.3.4 Manter serviço `voice-ai-service` (v1) na porta 8100
+- [x] 0.3.5 Configurar network compartilhada entre serviços
+- [x] 0.3.6 Adicionar healthcheck específico para realtime
+- [x] 0.3.7 Criar script de inicialização unificado
+- [x] 0.3.8 Documentar variáveis de ambiente
 
 ### 0.4 Coexistência v1/v2
 - [x] 0.4.1 Adicionar campo `processing_mode` na tabela v_voice_secretaries
 - [x] 0.4.2 Criar migration para novo campo (008_add_realtime_fields.sql)
-- [ ] 0.4.3 Criar script Lua `get_secretary_mode.lua`
-- [ ] 0.4.4 Atualizar dialplan para roteamento dinâmico
-- [ ] 0.4.5 Implementar fallback automático (realtime → turn_based)
+- [x] 0.4.3 Criar script Lua `get_secretary_mode.lua`
+- [x] 0.4.4 Atualizar dialplan para roteamento dinâmico (900_voice_ai.xml)
+- [x] 0.4.5 Implementar fallback automático (realtime → turn_based)
 - [ ] 0.4.6 Testar transição entre modos
 - [ ] 0.4.7 Documentar comportamento de cada modo
 

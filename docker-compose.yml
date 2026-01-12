@@ -220,6 +220,78 @@ services:
         max-file: "3"
 
   # ===========================================================================
+  # Voice AI Realtime Bridge - WebSocket Server (v2)
+  # ===========================================================================
+  # Conforme .context/docs/architecture.md: voice-ai-realtime:8080
+  voice-ai-realtime:
+    build:
+      context: ./voice-ai-service
+      dockerfile: Dockerfile.realtime
+      target: production
+    container_name: voice-ai-realtime
+    restart: unless-stopped
+    
+    ports:
+      - "${VOICE_AI_REALTIME_PORT:-8080}:8080"
+    
+    environment:
+      # Application
+      - REALTIME_HOST=0.0.0.0
+      - REALTIME_PORT=8080
+      - DEBUG=${DEBUG:-false}
+      
+      # Database - FusionPBX PostgreSQL (no host)
+      - DB_HOST=${DB_HOST:-host.docker.internal}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-fusionpbx}
+      - DB_USER=${DB_USER:-fusionpbx}
+      - DB_PASS=${DB_PASS}
+      
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      
+      # AI Providers (Realtime)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      
+      # Limits
+      - MAX_SESSIONS_PER_DOMAIN=${MAX_SESSIONS_PER_DOMAIN:-10}
+      - SESSION_IDLE_TIMEOUT_SECONDS=${SESSION_IDLE_TIMEOUT_SECONDS:-30}
+      - SESSION_MAX_DURATION_SECONDS=${SESSION_MAX_DURATION_SECONDS:-600}
+      
+      # OmniPlay Integration (optional)
+      - OMNIPLAY_WEBHOOK_URL=${OMNIPLAY_WEBHOOK_URL:-}
+    
+    volumes:
+      - voice-ai-logs:/app/logs
+    
+    extra_hosts:
+      # Acesso ao host (para PostgreSQL e FreeSWITCH)
+      - "host.docker.internal:host-gateway"
+    
+    depends_on:
+      redis:
+        condition: service_healthy
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8080)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - voice-ai-network
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ===========================================================================
   # Voice AI Service - Development Mode
   # ===========================================================================
   voice-ai-dev:
