@@ -178,12 +178,12 @@
 - [ ] 5.1.4 Documentar configuração
 
 ### 5.2 PHP Pages - Secretárias (Unificado v1/v2)
-- [ ] 5.2.1 Atualizar `secretary_edit.php` - Adicionar seletor de modo
-- [ ] 5.2.2 Implementar radio buttons: Turn-based / Realtime / Auto
-- [ ] 5.2.3 Implementar campos condicionais por modo
+- [x] 5.2.1 Atualizar `secretary_edit.php` - Adicionar seletor de modo
+- [x] 5.2.2 Implementar radio buttons: Turn-based / Realtime / Auto
+- [x] 5.2.3 Implementar campos condicionais por modo
 - [ ] 5.2.4 Mostrar estimativa de custo por modo
-- [ ] 5.2.5 Mostrar recursos disponíveis por modo (barge-in, etc)
-- [ ] 5.2.6 Implementar seletor de provider realtime (OpenAI, ElevenLabs, Gemini, Custom)
+- [x] 5.2.5 Mostrar recursos disponíveis por modo (barge-in, etc)
+- [x] 5.2.6 Implementar seletor de provider realtime (OpenAI, ElevenLabs, Gemini, Custom)
 - [ ] 5.2.7 Implementar seletor de voz por provider
 - [ ] 5.2.8 Implementar configuração de VAD (threshold, silence)
 - [ ] 5.2.9 Implementar preview de voz (testar TTS)
@@ -198,8 +198,8 @@
 
 ### 5.4 PHP Pages - Providers Realtime
 - [ ] 5.4.1 Criar `providers_realtime.php` - Listagem
-- [ ] 5.4.2 Criar `providers_realtime_edit.php` - Configurar
-- [ ] 5.4.3 Implementar formulário por tipo de provider
+- [x] 5.4.2 Criar `providers_realtime_edit.php` - Configurar
+- [x] 5.4.3 Implementar formulário por tipo de provider
 - [ ] 5.4.4 Implementar teste de conexão
 - [ ] 5.4.5 Implementar configuração de budgets
 

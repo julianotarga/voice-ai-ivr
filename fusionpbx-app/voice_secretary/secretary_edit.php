@@ -55,6 +55,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit'])) {
         'system_prompt' => $_POST['system_prompt'] ?? '',
         'greeting_message' => $_POST['greeting_message'] ?? '',
         'farewell_message' => $_POST['farewell_message'] ?? '',
+        // Processing mode (v1/v2)
+        'processing_mode' => $_POST['processing_mode'] ?? 'turn_based',
+        'realtime_provider_uuid' => $_POST['realtime_provider_uuid'] ?? null,
+        'extension' => $_POST['extension'] ?? '',
+        // Turn-based providers
         'stt_provider_uuid' => $_POST['stt_provider_uuid'] ?? null,
         'tts_provider_uuid' => $_POST['tts_provider_uuid'] ?? null,
         'llm_provider_uuid' => $_POST['llm_provider_uuid'] ?? null,
@@ -92,6 +97,7 @@ $stt_providers = $secretary_obj->get_providers('stt');
 $tts_providers = $secretary_obj->get_providers('tts');
 $llm_providers = $secretary_obj->get_providers('llm');
 $embeddings_providers = $secretary_obj->get_providers('embeddings');
+$realtime_providers = $secretary_obj->get_providers('realtime');
 
 // Include header
 $document['title'] = ($action === 'add') ? $text['title-add_secretary'] : $text['title-edit_secretary'];
@@ -150,10 +156,78 @@ require_once "resources/header.php";
             </td>
         </tr>
         <tr>
+            <td class="vncell"><?php echo $text['label-extension'] ?? 'Extension'; ?></td>
+            <td class="vtable">
+                <input type="text" name="extension" class="formfld" 
+                    value="<?php echo escape($data['extension'] ?? ''); ?>" placeholder="8000">
+                <br><span class="description"><?php echo $text['description-extension'] ?? 'Extension number for this secretary (e.g., 8000)'; ?></span>
+            </td>
+        </tr>
+        <tr>
             <td class="vncell"><?php echo $text['label-status']; ?></td>
             <td class="vtable">
                 <input type="checkbox" name="is_active" <?php echo (!isset($data['is_active']) || $data['is_active']) ? 'checked' : ''; ?>>
                 <?php echo $text['label-active']; ?>
+            </td>
+        </tr>
+
+        <!-- Processing Mode (v1/v2) -->
+        <tr>
+            <th colspan="2"><b><?php echo $text['header-processing_mode'] ?? 'Processing Mode'; ?></b></th>
+        </tr>
+        <tr>
+            <td class="vncellreq"><?php echo $text['label-processing_mode'] ?? 'Mode'; ?></td>
+            <td class="vtable">
+                <label style="margin-right: 20px;">
+                    <input type="radio" name="processing_mode" value="turn_based" 
+                        <?php echo (($data['processing_mode'] ?? 'turn_based') === 'turn_based') ? 'checked' : ''; ?>
+                        onchange="toggleModeFields()">
+                    <?php echo $text['option-turn_based'] ?? 'Turn-based (v1)'; ?>
+                </label>
+                <label style="margin-right: 20px;">
+                    <input type="radio" name="processing_mode" value="realtime" 
+                        <?php echo (($data['processing_mode'] ?? '') === 'realtime') ? 'checked' : ''; ?>
+                        onchange="toggleModeFields()">
+                    <?php echo $text['option-realtime'] ?? 'Realtime (v2)'; ?>
+                </label>
+                <label>
+                    <input type="radio" name="processing_mode" value="auto" 
+                        <?php echo (($data['processing_mode'] ?? '') === 'auto') ? 'checked' : ''; ?>
+                        onchange="toggleModeFields()">
+                    <?php echo $text['option-auto'] ?? 'Auto (realtime with fallback)'; ?>
+                </label>
+                <br>
+                <span class="description">
+                    <strong><?php echo $text['label-turn_based'] ?? 'Turn-based'; ?>:</strong> <?php echo $text['description-turn_based'] ?? 'User speaks, AI responds (traditional IVR)'; ?><br>
+                    <strong><?php echo $text['label-realtime'] ?? 'Realtime'; ?>:</strong> <?php echo $text['description-realtime'] ?? 'Natural conversation with interruption support'; ?><br>
+                    <strong><?php echo $text['label-auto'] ?? 'Auto'; ?>:</strong> <?php echo $text['description-auto'] ?? 'Tries realtime first, falls back to turn-based'; ?>
+                </span>
+            </td>
+        </tr>
+        <tr id="realtime_provider_row" style="display: none;">
+            <td class="vncell"><?php echo $text['label-realtime_provider'] ?? 'Realtime Provider'; ?></td>
+            <td class="vtable">
+                <select name="realtime_provider_uuid" class="formfld">
+                    <option value=""><?php echo $text['option-select'] ?? 'Select...'; ?></option>
+                    <?php foreach ($realtime_providers as $p) { ?>
+                        <option value="<?php echo $p['provider_uuid']; ?>" 
+                            <?php echo (($data['realtime_provider_uuid'] ?? '') === $p['provider_uuid']) ? 'selected' : ''; ?>>
+                            <?php echo escape($p['provider_name']); ?>
+                        </option>
+                    <?php } ?>
+                </select>
+                <br><span class="description"><?php echo $text['description-realtime_provider'] ?? 'OpenAI Realtime, ElevenLabs, Gemini, or Custom Pipeline'; ?></span>
+            </td>
+        </tr>
+        <tr id="realtime_info_row" style="display: none;">
+            <td class="vncell"><?php echo $text['label-realtime_features'] ?? 'Features'; ?></td>
+            <td class="vtable">
+                <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: #666;">
+                    <li>✓ <?php echo $text['feature-barge_in'] ?? 'Barge-in (interrupt AI response)'; ?></li>
+                    <li>✓ <?php echo $text['feature-natural'] ?? 'Natural conversation flow'; ?></li>
+                    <li>✓ <?php echo $text['feature-latency'] ?? 'Low latency (~300ms)'; ?></li>
+                    <li>⚠️ <?php echo $text['feature-cost'] ?? 'Higher cost per minute'; ?></li>
+                </ul>
             </td>
         </tr>
 
@@ -314,6 +388,24 @@ function testVoice() {
         alert('<?php echo $text['message-voice_test_failed']; ?>');
     });
 }
+
+// Toggle fields based on processing mode
+function toggleModeFields() {
+    var mode = document.querySelector('input[name="processing_mode"]:checked').value;
+    var realtimeRows = document.querySelectorAll('#realtime_provider_row, #realtime_info_row');
+    var turnBasedRows = document.querySelectorAll('[id^="turnbased_"]');
+    
+    if (mode === 'realtime' || mode === 'auto') {
+        realtimeRows.forEach(function(row) { row.style.display = ''; });
+    } else {
+        realtimeRows.forEach(function(row) { row.style.display = 'none'; });
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    toggleModeFields();
+});
 </script>
 
 <?php
