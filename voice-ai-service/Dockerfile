@@ -71,6 +71,7 @@ USER voiceai
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
     HOST=0.0.0.0 \
     PORT=8100 \
     DATA_DIR=/app/data \

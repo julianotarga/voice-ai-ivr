@@ -7,8 +7,6 @@
 # cp docker-compose.override.example.yml docker-compose.override.yml
 # =============================================================================
 
-version: "3.9"
-
 services:
   # ===========================================================================
   # Voice AI Service - Custom Configuration
@@ -22,7 +20,7 @@ services:
       - DEBUG=true
     
     # Additional volumes for development
-    volumes:
+    # volumes:
       # Mount local code for development
       # - ./voice-ai-service:/app
       
@@ -31,7 +29,6 @@ services:
       
       # Google Cloud credentials
       # - ./credentials:/app/credentials:ro
-      pass
     
     # Resource limits
     deploy:
