@@ -1,12 +1,12 @@
 <?php
-/**
- * Voice Secretary - Transfer Rule Edit Page
- * 
- * Create or edit transfer rules.
- * ⚠️ MULTI-TENANT: Uses domain_uuid from session.
- *
- * @package voice_secretary
- */
+/*
+	FusionPBX
+	Version: MPL 1.1
+
+	Voice Secretary - Transfer Rule Edit Page
+	Create or edit transfer rules.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
+*/
 
 //includes files
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
@@ -28,163 +28,187 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
+//initialize
 	$database = new database;
+	$action = 'add';
+	$data = [];
 
-$action = 'add';
-$data = [];
+//check if editing existing
+	if (isset($_GET['id']) && is_uuid($_GET['id'])) {
+		$action = 'edit';
+		$rule_uuid = $_GET['id'];
+		
+		$sql = "SELECT * FROM v_voice_transfer_rules WHERE transfer_rule_uuid = :uuid AND domain_uuid = :domain_uuid";
+		$parameters['uuid'] = $rule_uuid;
+		$parameters['domain_uuid'] = $domain_uuid;
+		$rows = $database->select($sql, $parameters, 'all');
+		unset($parameters);
+		
+		if (!$rows) {
+			message::add($text['message-invalid_id'] ?? 'Invalid ID', 'negative');
+			header('Location: transfer_rules.php');
+			exit;
+		}
+		$data = $rows[0];
+	}
 
-// Check if editing existing
-if (isset($_GET['id']) && !empty($_GET['id'])) {
-    $action = 'edit';
-    $rule_uuid = $_GET['id'];
-    
-    $sql = "SELECT * FROM v_voice_transfer_rules WHERE transfer_rule_uuid = :uuid AND domain_uuid = :domain_uuid";
-    $params = ['uuid' => $rule_uuid, 'domain_uuid' => $domain_uuid];
-    $rows = $database->select($sql, $params);
-    
-    if (!$rows) {
-        $_SESSION['message'] = $text['message-rule_not_found'];
-        header('Location: transfer_rules.php');
-        exit;
-    }
-    $data = $rows[0];
-}
+//process form submission
+	if ($_SERVER['REQUEST_METHOD'] === 'POST' && count($_POST) > 0) {
+		//validate token
+		$token = new token;
+		if (!$token->validate($_SERVER['PHP_SELF'])) {
+			message::add($text['message-invalid_token'],'negative');
+			header('Location: transfer_rules.php');
+			exit;
+		}
 
-// Process form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit'])) {
-    $keywords = array_filter(array_map('trim', explode(',', $_POST['keywords'] ?? '')));
-    
-    $form_data = [
-        'department_name' => $_POST['department_name'] ?? '',
-        'keywords' => json_encode($keywords),
-        'transfer_extension' => $_POST['transfer_extension'] ?? '',
-        'voice_secretary_uuid' => $_POST['voice_secretary_uuid'] ?: null,
-        'priority' => intval($_POST['priority'] ?? 10),
-        'is_active' => isset($_POST['is_active']),
-    ];
-    
-    if (empty($form_data['department_name']) || empty($form_data['transfer_extension'])) {
-        $_SESSION['message'] = $text['message-required_fields'];
-    } else {
-        if ($action === 'add') {
-            $sql = "INSERT INTO v_voice_transfer_rules (
-                transfer_rule_uuid, domain_uuid, department_name, keywords,
-                transfer_extension, voice_secretary_uuid, priority, is_active, created_at
-            ) VALUES (
-                :uuid, :domain_uuid, :department_name, :keywords,
-                :transfer_extension, :voice_secretary_uuid, :priority, :is_active, NOW()
-            )";
-            $form_data['uuid'] = uuid();
-            $form_data['domain_uuid'] = $domain_uuid;
-        } else {
-            $sql = "UPDATE v_voice_transfer_rules SET 
-                department_name = :department_name, keywords = :keywords,
-                transfer_extension = :transfer_extension, voice_secretary_uuid = :voice_secretary_uuid,
-                priority = :priority, is_active = :is_active, updated_at = NOW()
-                WHERE transfer_rule_uuid = :uuid AND domain_uuid = :domain_uuid";
-            $form_data['uuid'] = $rule_uuid;
-            $form_data['domain_uuid'] = $domain_uuid;
-        }
-        
-        $database->execute($sql, $form_data);
-        $_SESSION['message'] = ($action === 'add') ? $text['message-rule_created'] : $text['message-rule_updated'];
-        header('Location: transfer_rules.php');
-        exit;
-    }
-}
+		$keywords = array_filter(array_map('trim', explode(',', $_POST['keywords'] ?? '')));
+		
+		$form_data = [
+			'department_name' => $_POST['department_name'] ?? '',
+			'keywords' => json_encode($keywords),
+			'transfer_extension' => $_POST['transfer_extension'] ?? '',
+			'voice_secretary_uuid' => !empty($_POST['voice_secretary_uuid']) ? $_POST['voice_secretary_uuid'] : null,
+			'priority' => intval($_POST['priority'] ?? 10),
+			'is_active' => isset($_POST['is_active']) ? 'true' : 'false',
+		];
+		
+		if (empty($form_data['department_name']) || empty($form_data['transfer_extension'])) {
+			message::add($text['message-required'] ?? 'Required fields missing', 'negative');
+		} else {
+			if ($action === 'add') {
+				$form_data['uuid'] = uuid();
+				$form_data['domain_uuid'] = $domain_uuid;
+				$sql = "INSERT INTO v_voice_transfer_rules (
+					transfer_rule_uuid, domain_uuid, department_name, keywords,
+					transfer_extension, voice_secretary_uuid, priority, is_active, insert_date
+				) VALUES (
+					:uuid, :domain_uuid, :department_name, :keywords,
+					:transfer_extension, :voice_secretary_uuid, :priority, :is_active, NOW()
+				)";
+			} else {
+				$form_data['uuid'] = $rule_uuid;
+				$form_data['domain_uuid'] = $domain_uuid;
+				$sql = "UPDATE v_voice_transfer_rules SET 
+					department_name = :department_name, keywords = :keywords,
+					transfer_extension = :transfer_extension, voice_secretary_uuid = :voice_secretary_uuid,
+					priority = :priority, is_active = :is_active, update_date = NOW()
+					WHERE transfer_rule_uuid = :uuid AND domain_uuid = :domain_uuid";
+			}
+			
+			$database->execute($sql, $form_data);
+			
+			if ($action === 'add') {
+				message::add($text['message-add']);
+			} else {
+				message::add($text['message-update']);
+			}
+			header('Location: transfer_rules.php');
+			exit;
+		}
+	}
 
-// Get secretaries for dropdown
-$sql = "SELECT voice_secretary_uuid, secretary_name FROM v_voice_secretaries WHERE domain_uuid = :domain_uuid ORDER BY secretary_name";
-$params = ['domain_uuid' => $domain_uuid];
-$secretaries = $database->select($sql, $params);
+//get secretaries for dropdown
+	$sql = "SELECT voice_secretary_uuid, secretary_name FROM v_voice_secretaries WHERE domain_uuid = :domain_uuid ORDER BY secretary_name";
+	$parameters['domain_uuid'] = $domain_uuid;
+	$secretaries = $database->select($sql, $parameters, 'all') ?: [];
+	unset($parameters);
 
-// Include header
-$document['title'] = ($action === 'add') ? $text['title-add_rule'] : $text['title-edit_rule'];
-require_once "resources/header.php";
-?>
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
 
-<form method="post">
-    <div class="action_bar" id="action_bar">
-        <div class="heading">
-            <b><?php echo ($action === 'add') ? $text['title-add_rule'] : $text['title-edit_rule']; ?></b>
-        </div>
-        <div class="actions">
-            <button type="submit" name="submit" class="btn btn-primary btn-sm">
-                <span class="fas fa-save fa-fw"></span>
-                <?php echo $text['button-save']; ?>
-            </button>
-            <button type="button" onclick="window.location='transfer_rules.php'" class="btn btn-default btn-sm">
-                <span class="fas fa-times fa-fw"></span>
-                <?php echo $text['button-back']; ?>
-            </button>
-        </div>
-        <div style="clear: both;"></div>
-    </div>
+//include the header
+	$document['title'] = ($action === 'add') 
+		? ($text['title-add_rule'] ?? 'Add Transfer Rule') 
+		: ($text['title-edit_rule'] ?? 'Edit Transfer Rule');
+	require_once "resources/header.php";
 
-    <table class="form_table">
-        <tr>
-            <td class="vncellreq"><?php echo $text['label-department']; ?></td>
-            <td class="vtable">
-                <input type="text" name="department_name" class="formfld" 
-                    value="<?php echo escape($data['department_name'] ?? ''); ?>" required>
-                <br><span class="description"><?php echo $text['description-department']; ?></span>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncellreq"><?php echo $text['label-keywords']; ?></td>
-            <td class="vtable">
-                <?php 
-                $keywords = isset($data['keywords']) ? json_decode($data['keywords'], true) : [];
-                ?>
-                <textarea name="keywords" class="formfld" rows="3" required><?php echo escape(implode(', ', $keywords)); ?></textarea>
-                <br><span class="description"><?php echo $text['description-keywords']; ?></span>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncellreq"><?php echo $text['label-extension']; ?></td>
-            <td class="vtable">
-                <input type="text" name="transfer_extension" class="formfld" 
-                    value="<?php echo escape($data['transfer_extension'] ?? ''); ?>" required>
-                <br><span class="description"><?php echo $text['description-extension']; ?></span>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncell"><?php echo $text['label-secretary']; ?></td>
-            <td class="vtable">
-                <select name="voice_secretary_uuid" class="formfld">
-                    <option value=""><?php echo $text['option-all']; ?></option>
-                    <?php foreach ($secretaries as $s) { ?>
-                        <option value="<?php echo $s['voice_secretary_uuid']; ?>" 
-                            <?php echo (($data['voice_secretary_uuid'] ?? '') === $s['voice_secretary_uuid']) ? 'selected' : ''; ?>>
-                            <?php echo escape($s['secretary_name']); ?>
-                        </option>
-                    <?php } ?>
-                </select>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncell"><?php echo $text['label-priority']; ?></td>
-            <td class="vtable">
-                <input type="number" name="priority" class="formfld" min="1" max="100"
-                    value="<?php echo intval($data['priority'] ?? 10); ?>">
-                <br><span class="description"><?php echo $text['description-priority']; ?></span>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncell"><?php echo $text['label-status']; ?></td>
-            <td class="vtable">
-                <input type="checkbox" name="is_active" <?php echo (!isset($data['is_active']) || $data['is_active']) ? 'checked' : ''; ?>>
-                <?php echo $text['label-active']; ?>
-            </td>
-        </tr>
-    </table>
-</form>
+//show the content
+	echo "<form method='post' name='frm' id='frm'>\n";
 
-<?php
-// Include footer
-require_once "resources/footer.php";
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".$document['title']."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$_SESSION['theme']['button_icon_back'],'id'=>'btn_back','link'=>'transfer_rules.php']);
+	echo button::create(['type'=>'submit','label'=>$text['button-save'],'icon'=>$_SESSION['theme']['button_icon_save'],'id'=>'btn_save','style'=>'margin-left: 15px;']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
+
+	echo ($text['description-transfer_rule'] ?? 'Configure a transfer rule based on keywords.')."\n";
+	echo "<br /><br />\n";
+
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+
+	echo "<tr>\n";
+	echo "	<td width='30%' class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-department'] ?? 'Department')."</td>\n";
+	echo "	<td width='70%' class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='department_name' maxlength='255' value='".escape($data['department_name'] ?? '')."' required>\n";
+	echo "		<br />".($text['description-department'] ?? 'Name of the department or sector.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-keywords'] ?? 'Keywords')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$keywords = isset($data['keywords']) ? json_decode($data['keywords'], true) : [];
+	echo "		<textarea class='formfld' name='keywords' rows='3' style='width: 100%;' required>".escape(implode(', ', $keywords ?: []))."</textarea>\n";
+	echo "		<br />".($text['description-keywords'] ?? 'Comma-separated keywords that trigger this transfer.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-extension'] ?? 'Extension')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '')."' required>\n";
+	echo "		<br />".($text['description-extension'] ?? 'Extension to transfer the call to.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-secretary'] ?? 'Secretary')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='voice_secretary_uuid'>\n";
+	echo "			<option value=''>".($text['option-all'] ?? 'All')."</option>\n";
+	foreach ($secretaries as $s) {
+		$selected = (($data['voice_secretary_uuid'] ?? '') === $s['voice_secretary_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($s['voice_secretary_uuid'])."' ".$selected.">".escape($s['secretary_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "		<br />".($text['description-secretary'] ?? 'Apply rule only to this secretary, or leave blank for all.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-priority'] ?? 'Priority')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='priority' min='1' max='100' value='".intval($data['priority'] ?? 10)."'>\n";
+	echo "		<br />".($text['description-priority'] ?? 'Lower number = higher priority.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-status'] ?? 'Status')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$is_active = (!isset($data['is_active']) || $data['is_active'] == 'true' || $data['is_active'] === true);
+	echo "		<input type='checkbox' name='is_active' id='is_active' ".($is_active ? 'checked' : '').">\n";
+	echo "		<label for='is_active'>".($text['label-active'] ?? 'Active')."</label>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>\n";
+	echo "<br />\n";
+
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>\n";
+
+//include the footer
+	require_once "resources/footer.php";
+
 ?>

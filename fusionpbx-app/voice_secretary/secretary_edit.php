@@ -3,9 +3,9 @@
 	FusionPBX
 	Version: MPL 1.1
 
-	Voice Secretary - Secretária Virtual com IA
-	Criar ou editar uma secretária virtual.
-	⚠️ MULTI-TENANT: Usa domain_uuid da sessão.
+	Voice Secretary - Virtual Secretary with AI
+	Create or edit a virtual secretary.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
 */
 
 //includes files
@@ -31,7 +31,7 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
@@ -40,10 +40,6 @@
 	$action = 'add';
 	$data = [];
 
-//create token (FusionPBX padrão)
-	$object = new token;
-	$token = $object->create($_SERVER['PHP_SELF']);
-
 //check if editing existing
 	if (isset($_GET['id']) && is_uuid($_GET['id'])) {
 		$action = 'edit';
@@ -51,7 +47,7 @@
 		$data = $secretary_obj->get($secretary_uuid, $domain_uuid);
 		
 		if (!$data) {
-			message::add($text['message-secretary_not_found'] ?? 'Secretary not found', 'negative');
+			message::add($text['message-invalid_id'] ?? 'Invalid ID', 'negative');
 			header('Location: secretary.php');
 			exit;
 		}
@@ -59,10 +55,10 @@
 
 //process form submission
 	if ($_SERVER['REQUEST_METHOD'] === 'POST' && count($_POST) > 0) {
-		//validate token (FusionPBX padrão)
+		//validate token
 		$token_obj = new token;
 		if (!$token_obj->validate($_SERVER['PHP_SELF'])) {
-			message::add($text['message-invalid_token'] ?? 'Invalid token', 'negative');
+			message::add($text['message-invalid_token'],'negative');
 			header('Location: secretary.php');
 			exit;
 		}
@@ -85,23 +81,20 @@
 			'language' => $_POST['language'] ?? 'pt-BR',
 			'max_turns' => intval($_POST['max_turns'] ?? 20),
 			'transfer_extension' => $_POST['transfer_extension'] ?? '200',
-			'is_active' => ($_POST['is_active'] ?? '1') === '1',
+			'enabled' => $_POST['enabled'] ?? 'true',
 			'webhook_url' => $_POST['webhook_url'] ?? '',
 		];
 		
 		//validate
 		if (empty($form_data['secretary_name'])) {
-			message::add($text['message-name_required'] ?? 'Name is required', 'negative');
+			message::add($text['message-required'].' '.($text['label-secretary_name'] ?? 'Name'), 'negative');
 		} 
 		else {
-			// Build array for FusionPBX database save
+			//build array for FusionPBX database save
 			if ($action === 'add') {
 				$secretary_uuid = uuid();
 			}
 			
-			// IMPORTANT: FusionPBX database->save() usa o nome lógico do array (ex.: ring_groups),
-			// não o nome físico da tabela (v_ring_groups). Então aqui usamos 'voice_secretaries'
-			// para salvar em 'v_voice_secretaries'.
 			$array['voice_secretaries'][0]['voice_secretary_uuid'] = $secretary_uuid;
 			$array['voice_secretaries'][0]['domain_uuid'] = $domain_uuid;
 			$array['voice_secretaries'][0]['secretary_name'] = $form_data['secretary_name'];
@@ -120,78 +113,33 @@
 			$array['voice_secretaries'][0]['language'] = $form_data['language'];
 			$array['voice_secretaries'][0]['max_turns'] = $form_data['max_turns'];
 			$array['voice_secretaries'][0]['transfer_extension'] = $form_data['transfer_extension'];
-			$array['voice_secretaries'][0]['enabled'] = $form_data['is_active'] ? 'true' : 'false';
+			$array['voice_secretaries'][0]['enabled'] = $form_data['enabled'];
 			$array['voice_secretaries'][0]['omniplay_webhook_url'] = $form_data['webhook_url'] ?: null;
 			
-			// Add permissions
+			//add permissions
 			$p = permissions::new();
 			$p->add('voice_secretary_add', 'temp');
 			$p->add('voice_secretary_edit', 'temp');
 			
-			// Save using FusionPBX database class
+			//save using FusionPBX database class
 			$database = new database;
 			$database->app_name = 'voice_secretary';
 			$database->app_uuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 			$database->save($array);
-			$db_message = $database->message ?? null;
-			$db_message_str = null;
-			if (is_array($db_message)) {
-				$db_message_str = print_r($db_message, true);
-			}
-			else if ($db_message !== null) {
-				$db_message_str = (string)$db_message;
-			}
 			unset($array);
 			
-			// Remove temp permissions
+			//remove temp permissions
 			$p->delete('voice_secretary_add', 'temp');
 			$p->delete('voice_secretary_edit', 'temp');
 			
-			// 🔎 Verificação pós-save: garantir que persistiu no banco
-			$verify_sql = "SELECT processing_mode, realtime_provider_uuid, enabled
-				FROM v_voice_secretaries
-				WHERE voice_secretary_uuid = :secretary_uuid
-				AND domain_uuid = :domain_uuid";
-			$verify_params['secretary_uuid'] = $secretary_uuid;
-			$verify_params['domain_uuid'] = $domain_uuid;
-			$verify_row = $database->select($verify_sql, $verify_params, 'row');
-
-			$expected_mode = $form_data['processing_mode'];
-			$expected_rt = $form_data['realtime_provider_uuid'] ?: null;
-			$expected_enabled = $form_data['is_active'] ? true : false;
-
-			$persisted_ok = is_array($verify_row)
-				&& (($verify_row['processing_mode'] ?? null) === $expected_mode)
-				&& (($verify_row['realtime_provider_uuid'] ?? null) === $expected_rt)
-				&& ((bool)($verify_row['enabled'] ?? false) === (bool)$expected_enabled);
-
-			if (!$persisted_ok) {
-				// Log no error_log do PHP para facilitar debug no servidor
-				if (!empty($db_message_str)) {
-					error_log("[voice_secretary] database->message: ".$db_message_str);
-				}
-				error_log("[voice_secretary] save_failed_or_not_persisted. expected_mode=".$expected_mode.
-					" expected_rt=".($expected_rt ?: 'null').
-					" expected_enabled=".($expected_enabled ? 'true' : 'false').
-					" got_mode=".($verify_row['processing_mode'] ?? 'null').
-					" got_rt=".($verify_row['realtime_provider_uuid'] ?? 'null').
-					" got_enabled=".((isset($verify_row['enabled']) && $verify_row['enabled']) ? 'true' : 'false')
-				);
-
-				message::add("Falha ao persistir no banco. Verifique logs do PHP-FPM/Nginx. ".
-					(!empty($db_message_str) ? "Mensagem do banco: ".substr($db_message_str, 0, 300) : ""), "negative");
-				// Não redirecionar: manter na página para ver o erro
+			//set message and redirect
+			if ($action === 'add') {
+				message::add($text['message-add']);
+			} else {
+				message::add($text['message-update']);
 			}
-			else {
-			// Set message and redirect
-				if ($action === 'add') {
-					message::add($text['message-add'] ?? 'Secretary created successfully');
-				} else {
-					message::add($text['message-update'] ?? 'Secretary updated successfully');
-				}
-				header('Location: secretary.php');
-				exit;
-			}
+			header('Location: secretary.php');
+			exit;
 		}
 	}
 
@@ -202,288 +150,265 @@
 	$embeddings_providers = $secretary_obj->get_providers('embeddings', $domain_uuid) ?: [];
 	$realtime_providers = $secretary_obj->get_providers('realtime', $domain_uuid) ?: [];
 
-//set the title
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
+
+//include the header
 	$document['title'] = ($action === 'add') 
 		? ($text['title-voice_secretary_add'] ?? 'Add Secretary') 
 		: ($text['title-voice_secretary_edit'] ?? 'Edit Secretary');
-
-//include the header
 	require_once "resources/header.php";
 
+//show the content
+	echo "<form method='post' name='frm' id='frm'>\n";
+
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".$document['title']."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$_SESSION['theme']['button_icon_back'],'id'=>'btn_back','link'=>'secretary.php']);
+	echo button::create(['type'=>'submit','label'=>$text['button-save'],'icon'=>$_SESSION['theme']['button_icon_save'],'id'=>'btn_save','style'=>'margin-left: 15px;']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
+
+	echo ($text['description-voice_secretary'] ?? 'Configure a virtual secretary with AI.')."\n";
+	echo "<br /><br />\n";
+
+	echo "<div class='card'>\n";
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+
+	//Basic Info Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-basic_info'] ?? 'Basic Information')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td width='30%' class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-secretary_name'] ?? 'Name')."</td>\n";
+	echo "	<td width='70%' class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='secretary_name' maxlength='255' value='".escape($data['secretary_name'] ?? '')."' required>\n";
+	echo "		<br />".($text['description-secretary_name'] ?? 'Enter a name for this secretary.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-company_name'] ?? 'Company')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='company_name' maxlength='255' value='".escape($data['company_name'] ?? '')."'>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-extension'] ?? 'Extension')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='extension' maxlength='20' value='".escape($data['extension'] ?? '')."' placeholder='8000'>\n";
+	echo "		<br />".($text['description-extension'] ?? 'Extension number for this secretary.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-language'] ?? 'Language')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='language'>\n";
+	$lang = $data['language'] ?? 'pt-BR';
+	echo "			<option value='pt-BR' ".($lang === 'pt-BR' ? 'selected' : '').">Português (Brasil)</option>\n";
+	echo "			<option value='en-US' ".($lang === 'en-US' ? 'selected' : '').">English (US)</option>\n";
+	echo "			<option value='es-ES' ".($lang === 'es-ES' ? 'selected' : '').">Español</option>\n";
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-enabled'] ?? 'Enabled')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$enabled = $data['enabled'] ?? 'true';
+	echo "		<select class='formfld' name='enabled'>\n";
+	echo "			<option value='true' ".($enabled == 'true' || $enabled === true ? 'selected' : '').">".$text['label-true']."</option>\n";
+	echo "			<option value='false' ".($enabled == 'false' || $enabled === false ? 'selected' : '').">".$text['label-false']."</option>\n";
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//Processing Mode Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-processing_mode'] ?? 'Processing Mode')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-mode'] ?? 'Mode')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$mode = $data['processing_mode'] ?? 'turn_based';
+	echo "		<select class='formfld' name='processing_mode' id='processing_mode' onchange='toggleRealtimeProvider()'>\n";
+	echo "			<option value='turn_based' ".($mode === 'turn_based' ? 'selected' : '').">Turn-based (v1)</option>\n";
+	echo "			<option value='realtime' ".($mode === 'realtime' ? 'selected' : '').">Realtime (v2)</option>\n";
+	echo "			<option value='auto' ".($mode === 'auto' ? 'selected' : '').">Auto</option>\n";
+	echo "		</select>\n";
+	echo "		<br />".($text['description-processing_mode'] ?? 'Turn-based: traditional IVR. Realtime: natural conversation.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr id='realtime_provider_row' style='display: none;'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-realtime_provider'] ?? 'Realtime Provider')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='realtime_provider_uuid'>\n";
+	echo "			<option value=''>".($text['option-select'] ?? '-- Select --')."</option>\n";
+	foreach ($realtime_providers as $p) {
+		$selected = (($data['realtime_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($p['voice_ai_provider_uuid'])."' ".$selected.">".escape($p['provider_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//Prompts Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-prompts'] ?? 'AI Prompts')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-personality_prompt'] ?? 'Personality Prompt')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='system_prompt' rows='8' style='width: 100%; min-height: 200px;'>".escape($data['personality_prompt'] ?? '')."</textarea>\n";
+	echo "		<br />".($text['description-personality_prompt'] ?? 'Instructions for the AI personality.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-greeting'] ?? 'Greeting')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='greeting_message' rows='3' style='width: 100%;'>".escape($data['greeting_message'] ?? 'Olá! Como posso ajudar?')."</textarea>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-farewell'] ?? 'Farewell')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='farewell_message' rows='3' style='width: 100%;'>".escape($data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!')."</textarea>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//AI Providers Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-providers'] ?? 'AI Providers')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-stt_provider'] ?? 'STT Provider')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='stt_provider_uuid'>\n";
+	echo "			<option value=''>".($text['option-default'] ?? 'Default')."</option>\n";
+	foreach ($stt_providers as $p) {
+		$selected = (($data['stt_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($p['voice_ai_provider_uuid'])."' ".$selected.">".escape($p['provider_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-tts_provider'] ?? 'TTS Provider')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='tts_provider_uuid' id='tts_provider_uuid' onchange='loadTtsVoices(true)'>\n";
+	echo "			<option value=''>".($text['option-default'] ?? 'Default')."</option>\n";
+	foreach ($tts_providers as $p) {
+		$selected = (($data['tts_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($p['voice_ai_provider_uuid'])."' ".$selected.">".escape($p['provider_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-tts_voice'] ?? 'TTS Voice')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='tts_voice' id='tts_voice' maxlength='200' value='".escape($data['tts_voice_id'] ?? '')."' placeholder='ex: nova, alloy'>\n";
+	echo "		<select class='formfld' id='tts_voice_select' style='display: none; margin-left: 10px;' onchange=\"document.getElementById('tts_voice').value = this.value;\">\n";
+	echo "			<option value=''>".($text['option-select'] ?? '-- Select --')."</option>\n";
+	echo "		</select>\n";
+	echo button::create(['type'=>'button','label'=>($text['button-load_voices'] ?? 'Load Voices'),'icon'=>'sync','style'=>'margin-left: 10px;','onclick'=>'loadTtsVoices(false)']);
+	echo "		<div id='tts_voice_status' style='margin-top: 5px; font-size: 11px; color: #666;'></div>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-llm_provider'] ?? 'LLM Provider')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='llm_provider_uuid'>\n";
+	echo "			<option value=''>".($text['option-default'] ?? 'Default')."</option>\n";
+	foreach ($llm_providers as $p) {
+		$selected = (($data['llm_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($p['voice_ai_provider_uuid'])."' ".$selected.">".escape($p['provider_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-embeddings_provider'] ?? 'Embeddings')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='embeddings_provider_uuid'>\n";
+	echo "			<option value=''>".($text['option-default'] ?? 'Default')."</option>\n";
+	foreach ($embeddings_providers as $p) {
+		$selected = (($data['embeddings_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($p['voice_ai_provider_uuid'])."' ".$selected.">".escape($p['provider_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//Transfer Settings Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-transfer'] ?? 'Transfer Settings')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-transfer_extension'] ?? 'Transfer Extension')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '200')."'>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-max_turns'] ?? 'Max Turns')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='max_turns' min='1' max='100' value='".escape($data['max_turns'] ?? 20)."'>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//Integration Section
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-integration'] ?? 'Integration')."</b>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-webhook_url'] ?? 'Webhook URL')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='url' name='webhook_url' maxlength='500' value='".escape($data['omniplay_webhook_url'] ?? '')."' placeholder='https://...'>\n";
+	echo "		<br />".($text['description-webhook_url'] ?? 'OmniPlay webhook URL for creating tickets.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>\n";
+	echo "</div>\n";
+	echo "<br />\n";
+
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>\n";
+
 ?>
-
-<form method="post" name="frm" id="frm">
-<input type="hidden" name="<?php echo $token['name']; ?>" value="<?php echo $token['hash']; ?>">
-
-<div class="action_bar" id="action_bar">
-	<div class="heading">
-		<b><?php echo ($action === 'add') ? ($text['title-voice_secretary_add'] ?? 'Add Secretary') : ($text['title-voice_secretary_edit'] ?? 'Edit Secretary'); ?></b>
-	</div>
-	<div class="actions">
-		<button type="submit" class="btn btn-primary">
-			<span class="fas fa-save fa-fw"></span>
-			<span class="button-label hide-sm-dn"><?php echo $text['button-save'] ?? 'Save'; ?></span>
-		</button>
-		<button type="button" onclick="window.location='secretary.php'" class="btn btn-default">
-			<span class="fas fa-times fa-fw"></span>
-			<span class="button-label hide-sm-dn"><?php echo $text['button-back'] ?? 'Back'; ?></span>
-		</button>
-	</div>
-	<div style="clear: both;"></div>
-</div>
-
-<?php echo $text['description-voice_secretary'] ?? ''; ?>
-<br><br>
-
-<table width="100%" border="0" cellpadding="0" cellspacing="0">
-
-	<tr>
-		<td width="30%" class="vncellreq" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-secretary_name'] ?? 'Name'; ?>
-		</td>
-		<td width="70%" class="vtable" align="left">
-			<input class="formfld" type="text" name="secretary_name" maxlength="255" value="<?php echo escape($data['secretary_name'] ?? ''); ?>" required>
-			<br><?php echo $text['description-secretary_name'] ?? 'Enter a name for this secretary.'; ?>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-company_name'] ?? 'Company'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="text" name="company_name" maxlength="255" value="<?php echo escape($data['company_name'] ?? ''); ?>">
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-extension'] ?? 'Extension'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="text" name="extension" maxlength="20" value="<?php echo escape($data['extension'] ?? ''); ?>" placeholder="8000">
-			<br><?php echo $text['description-extension'] ?? 'Extension number for this secretary.'; ?>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-language'] ?? 'Language'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="language">
-				<option value="pt-BR" <?php echo (($data['language'] ?? 'pt-BR') === 'pt-BR') ? 'selected' : ''; ?>>Português (Brasil)</option>
-				<option value="en-US" <?php echo (($data['language'] ?? '') === 'en-US') ? 'selected' : ''; ?>>English (US)</option>
-				<option value="es-ES" <?php echo (($data['language'] ?? '') === 'es-ES') ? 'selected' : ''; ?>>Español</option>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-enabled'] ?? 'Enabled'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="is_active">
-				<?php $enabled_value = ($data['enabled'] ?? ($data['is_enabled'] ?? true)); ?>
-				<option value="1" <?php echo ($enabled_value == true) ? 'selected' : ''; ?>><?php echo $text['label-true'] ?? 'True'; ?></option>
-				<option value="0" <?php echo ($enabled_value == false) ? 'selected' : ''; ?>><?php echo $text['label-false'] ?? 'False'; ?></option>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td colspan="2"><br><b><?php echo $text['header-processing_mode'] ?? 'Processing Mode'; ?></b><br><br></td>
-	</tr>
-
-	<tr>
-		<td class="vncellreq" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-mode'] ?? 'Mode'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="processing_mode" id="processing_mode" onchange="toggleRealtimeProvider()">
-				<option value="turn_based" <?php echo (($data['processing_mode'] ?? 'turn_based') === 'turn_based') ? 'selected' : ''; ?>>Turn-based (v1)</option>
-				<option value="realtime" <?php echo (($data['processing_mode'] ?? '') === 'realtime') ? 'selected' : ''; ?>>Realtime (v2)</option>
-				<option value="auto" <?php echo (($data['processing_mode'] ?? '') === 'auto') ? 'selected' : ''; ?>>Auto</option>
-			</select>
-			<br><?php echo $text['description-processing_mode'] ?? 'Turn-based: traditional IVR. Realtime: natural conversation. Auto: tries realtime first.'; ?>
-		</td>
-	</tr>
-
-	<tr id="realtime_provider_row" style="display: none;">
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-realtime_provider'] ?? 'Realtime Provider'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="realtime_provider_uuid">
-				<option value=""><?php echo $text['option-select'] ?? 'Select...'; ?></option>
-				<?php foreach ($realtime_providers as $p) { ?>
-					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['realtime_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
-						<?php echo escape($p['provider_name']); ?>
-					</option>
-				<?php } ?>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td colspan="2"><br><b><?php echo $text['header-prompts'] ?? 'AI Prompts'; ?></b><br><br></td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-personality_prompt'] ?? 'Personality Prompt'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<textarea class="formfld" name="system_prompt" rows="10" style="width: 100%; min-height: 180px; resize: vertical;"><?php echo escape($data['personality_prompt'] ?? ''); ?></textarea>
-			<br><?php echo $text['description-personality_prompt'] ?? 'Instructions for the AI personality.'; ?>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-greeting'] ?? 'Greeting'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<textarea class="formfld" name="greeting_message" rows="4" style="width: 100%; min-height: 110px; resize: vertical;"><?php echo escape($data['greeting_message'] ?? 'Olá! Como posso ajudar?'); ?></textarea>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-farewell'] ?? 'Farewell'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<textarea class="formfld" name="farewell_message" rows="4" style="width: 100%; min-height: 110px; resize: vertical;"><?php echo escape($data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!'); ?></textarea>
-		</td>
-	</tr>
-
-	<tr>
-		<td colspan="2"><br><b><?php echo $text['header-providers'] ?? 'AI Providers'; ?></b><br><br></td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-stt_provider'] ?? 'STT Provider'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="stt_provider_uuid">
-				<option value=""><?php echo $text['option-default'] ?? 'Default'; ?></option>
-				<?php foreach ($stt_providers as $p) { ?>
-					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['stt_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
-						<?php echo escape($p['provider_name']); ?>
-					</option>
-				<?php } ?>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-tts_provider'] ?? 'TTS Provider'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="tts_provider_uuid" id="tts_provider_uuid" onchange="loadTtsVoices(true)">
-				<option value=""><?php echo $text['option-default'] ?? 'Default'; ?></option>
-				<?php foreach ($tts_providers as $p) { ?>
-					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['tts_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
-						<?php echo escape($p['provider_name']); ?>
-					</option>
-				<?php } ?>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-tts_voice'] ?? 'TTS Voice'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="text" name="tts_voice" id="tts_voice" maxlength="200" style="width: 420px;"
-				value="<?php echo escape($data['tts_voice_id'] ?? ''); ?>" placeholder="ex: nova, alloy, 21m00Tcm4TlvDq8ikWAM">
-			<br>
-			<select class="formfld" id="tts_voice_select" style="width: 420px; margin-top: 6px; display: none;"
-				onchange="document.getElementById('tts_voice').value = this.value;">
-				<option value=""><?php echo $text['option-select'] ?? 'Select...'; ?></option>
-			</select>
-			<button type="button" class="btn btn-default btn-xs" style="margin-left: 8px;" onclick="loadTtsVoices(false)">
-				<span class="fas fa-sync fa-fw"></span> Carregar vozes
-			</button>
-			<div id="tts_voice_status" style="margin-top: 6px; font-size: 12px; color: #666;"></div>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-llm_provider'] ?? 'LLM Provider'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="llm_provider_uuid">
-				<option value=""><?php echo $text['option-default'] ?? 'Default'; ?></option>
-				<?php foreach ($llm_providers as $p) { ?>
-					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['llm_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
-						<?php echo escape($p['provider_name']); ?>
-					</option>
-				<?php } ?>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-embeddings_provider'] ?? 'Embeddings Provider'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<select class="formfld" name="embeddings_provider_uuid">
-				<option value=""><?php echo $text['option-default'] ?? 'Default'; ?></option>
-				<?php foreach ($embeddings_providers as $p) { ?>
-					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['embeddings_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
-						<?php echo escape($p['provider_name']); ?>
-					</option>
-				<?php } ?>
-			</select>
-		</td>
-	</tr>
-
-	<tr>
-		<td colspan="2"><br><b><?php echo $text['header-transfer'] ?? 'Transfer Settings'; ?></b><br><br></td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-transfer_extension'] ?? 'Transfer Extension'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="text" name="transfer_extension" maxlength="20" value="<?php echo escape($data['transfer_extension'] ?? '200'); ?>">
-		</td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-max_turns'] ?? 'Max Turns'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="number" name="max_turns" min="1" max="100" value="<?php echo escape($data['max_turns'] ?? 20); ?>">
-		</td>
-	</tr>
-
-	<tr>
-		<td colspan="2"><br><b><?php echo $text['header-integration'] ?? 'Integration'; ?></b><br><br></td>
-	</tr>
-
-	<tr>
-		<td class="vncell" valign="top" align="left" nowrap="nowrap">
-			<?php echo $text['label-webhook_url'] ?? 'Webhook URL'; ?>
-		</td>
-		<td class="vtable" align="left">
-			<input class="formfld" type="url" name="webhook_url" maxlength="500" value="<?php echo escape($data['omniplay_webhook_url'] ?? ''); ?>" placeholder="https://...">
-			<br><?php echo $text['description-webhook_url'] ?? 'OmniPlay webhook URL for creating tickets.'; ?>
-		</td>
-	</tr>
-
-</table>
-
-</form>
 
 <script>
 function toggleRealtimeProvider() {
@@ -503,31 +428,28 @@ async function loadTtsVoices(silent) {
 		var select = document.getElementById('tts_voice_select');
 		var status = document.getElementById('tts_voice_status');
 
-		// Sem provider selecionado: não carregar
 		if (!providerUuid) {
 			if (!silent) {
-				status.textContent = 'Selecione um TTS Provider para listar vozes.';
+				status.textContent = '<?php echo addslashes($text['message-select_tts_provider'] ?? 'Select a TTS Provider to list voices.'); ?>';
 			}
 			select.style.display = 'none';
 			return;
 		}
 
-		status.textContent = silent ? '' : 'Carregando vozes...';
+		status.textContent = silent ? '' : '<?php echo addslashes($text['message-loading'] ?? 'Loading...'); ?>';
 		select.style.display = 'none';
-		select.innerHTML = '<option value=""><?php echo $text["option-select"] ?? "Select..."; ?></option>';
+		select.innerHTML = '<option value=""><?php echo addslashes($text['option-select'] ?? '-- Select --'); ?></option>';
 
 		const resp = await fetch('tts_voices.php?provider_uuid=' + encodeURIComponent(providerUuid) + '&language=' + encodeURIComponent(language));
 		const data = await resp.json();
 		if (!data.success) {
-			status.textContent = 'Falha ao carregar vozes: ' + (data.message || 'erro')
-				+ (data.detail ? (' | ' + data.detail) : '')
-				+ (data.service_url ? (' | url=' + data.service_url) : '');
+			status.textContent = '<?php echo addslashes($text['message-load_failed'] ?? 'Failed to load voices'); ?>: ' + (data.message || 'error');
 			return;
 		}
 
 		const voices = data.voices || [];
 		if (!Array.isArray(voices) || voices.length === 0) {
-			status.textContent = 'Nenhuma voz retornada pelo provider.';
+			status.textContent = '<?php echo addslashes($text['message-no_voices'] ?? 'No voices returned.'); ?>';
 			return;
 		}
 
@@ -540,13 +462,14 @@ async function loadTtsVoices(silent) {
 		});
 
 		select.style.display = '';
-		status.textContent = 'Vozes carregadas: ' + voices.length;
+		status.textContent = '<?php echo addslashes($text['message-voices_loaded'] ?? 'Voices loaded'); ?>: ' + voices.length;
 	} catch (e) {
 		var status = document.getElementById('tts_voice_status');
-		if (status) status.textContent = 'Erro ao carregar vozes.';
+		if (status) status.textContent = '<?php echo addslashes($text['message-error'] ?? 'Error loading voices.'); ?>';
 	}
 }
-// Initialize on page load
+
+//initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
 	toggleRealtimeProvider();
 	loadTtsVoices(true);

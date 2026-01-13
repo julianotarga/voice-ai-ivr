@@ -3,9 +3,9 @@
 	FusionPBX
 	Version: MPL 1.1
 
-	Voice Secretary - Settings Page
-	Configurações globais do Voice AI.
-	⚠️ MULTI-TENANT: Usa domain_uuid da sessão.
+	Voice Secretary - Settings
+	Global settings for voice AI.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
 */
 
 //includes files
@@ -28,174 +28,193 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
 //get current settings
 	$database = new database;
-	$sql = "SELECT default_setting_name, default_setting_value FROM v_default_settings 
-			WHERE domain_uuid = :domain_uuid 
-			AND default_setting_category = 'voice_secretary'
-			AND default_setting_enabled = true";
+	$sql = "SELECT default_setting_subcategory, default_setting_value FROM v_default_settings ";
+	$sql .= "WHERE domain_uuid = :domain_uuid ";
+	$sql .= "AND default_setting_category = 'voice_secretary' ";
+	$sql .= "AND default_setting_enabled = 'true'";
 	$parameters['domain_uuid'] = $domain_uuid;
 	$rows = $database->select($sql, $parameters, 'all') ?: [];
-	unset($parameters);
+	unset($sql, $parameters);
 
 	$settings = [];
-	if (is_array($rows)) {
-		foreach ($rows as $row) {
-			$settings[$row['default_setting_name']] = $row['default_setting_value'];
-		}
+	foreach ($rows as $row) {
+		$settings[$row['default_setting_subcategory']] = $row['default_setting_value'];
 	}
 
 //process form submission
 	if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit'])) {
+
+		//validate the token
+		$token = new token;
+		if (!$token->validate($_SERVER['PHP_SELF'])) {
+			message::add($text['message-invalid_token'],'negative');
+			header('Location: settings.php');
+			exit;
+		}
+
 		$new_settings = [
 			'service_url' => $_POST['service_url'] ?? 'http://127.0.0.1:8100/api/v1',
-			'data_retention_days' => strval(intval($_POST['data_retention_days'] ?? 90)),
+			'data_retention_days' => intval($_POST['data_retention_days'] ?? 90),
 			'omniplay_webhook_url' => $_POST['omniplay_webhook_url'] ?? '',
 			'omniplay_api_key' => $_POST['omniplay_api_key'] ?? '',
-			'max_concurrent_calls' => strval(intval($_POST['max_concurrent_calls'] ?? 10)),
-			'default_max_turns' => strval(intval($_POST['default_max_turns'] ?? 20)),
+			'max_concurrent_calls' => intval($_POST['max_concurrent_calls'] ?? 10),
+			'default_max_turns' => intval($_POST['default_max_turns'] ?? 20),
 			'recording_enabled' => isset($_POST['recording_enabled']) ? 'true' : 'false',
 		];
 		
 		foreach ($new_settings as $name => $value) {
 			//check if exists
-			$sql_check = "SELECT count(*) as cnt FROM v_default_settings 
-						  WHERE domain_uuid = :domain_uuid 
-						  AND default_setting_category = 'voice_secretary' 
-						  AND default_setting_name = :name";
-			$parameters['domain_uuid'] = $domain_uuid;
-			$parameters['name'] = $name;
-			$check = $database->select($sql_check, $parameters, 'all');
-			unset($parameters);
+			$sql_check = "SELECT count(*) as cnt FROM v_default_settings ";
+			$sql_check .= "WHERE domain_uuid = :domain_uuid ";
+			$sql_check .= "AND default_setting_category = 'voice_secretary' ";
+			$sql_check .= "AND default_setting_subcategory = :name";
+			$check = $database->select($sql_check, [
+				'domain_uuid' => $domain_uuid,
+				'name' => $name
+			], 'row');
 			
-			if ($check && $check[0]['cnt'] > 0) {
+			if ($check['cnt'] > 0) {
 				//update
-				$sql_upd = "UPDATE v_default_settings SET default_setting_value = :value, default_setting_enabled = true
-							WHERE domain_uuid = :domain_uuid 
-							AND default_setting_category = 'voice_secretary' 
-							AND default_setting_name = :name";
+				$sql_upd = "UPDATE v_default_settings SET default_setting_value = :value ";
+				$sql_upd .= "WHERE domain_uuid = :domain_uuid ";
+				$sql_upd .= "AND default_setting_category = 'voice_secretary' ";
+				$sql_upd .= "AND default_setting_subcategory = :name";
 			} else {
 				//insert
-				$sql_upd = "INSERT INTO v_default_settings 
-							(default_setting_uuid, domain_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled)
-							VALUES (gen_random_uuid(), :domain_uuid, 'voice_secretary', '', :name, :value, true)";
+				$sql_upd = "INSERT INTO v_default_settings ";
+				$sql_upd .= "(default_setting_uuid, domain_uuid, default_setting_category, default_setting_subcategory, default_setting_value, default_setting_enabled) ";
+				$sql_upd .= "VALUES (uuid_generate_v4(), :domain_uuid, 'voice_secretary', :name, :value, 'true')";
 			}
 			
-			$parameters['domain_uuid'] = $domain_uuid;
-			$parameters['name'] = $name;
-			$parameters['value'] = $value;
-			$database->execute($sql_upd, $parameters);
-			unset($parameters);
+			$database->execute($sql_upd, [
+				'domain_uuid' => $domain_uuid,
+				'name' => $name,
+				'value' => $value
+			]);
+			unset($sql_upd);
 		}
 		
-		$_SESSION['message'] = $text['message-settings_saved'] ?? 'Settings saved.';
+		message::add($text['message-update']);
 		header('Location: settings.php');
 		exit;
 	}
 
-//set the title
-	$document['title'] = $text['title-settings'] ?? 'Settings';
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
 
 //include the header
+	$document['title'] = $text['title-settings'] ?? 'Settings';
 	require_once "resources/header.php";
 
 //include tab navigation
 	$current_page = 'settings';
 	require_once "resources/nav_tabs.php";
 
-?>
+//show the content
+	echo "<form method='post' id='frm'>\n";
 
-<form method="post">
-	<div class="action_bar" id="action_bar">
-		<div class="heading">
-			<b><?php echo $text['title-settings'] ?? 'Settings'; ?></b>
-		</div>
-		<div class="actions">
-			<button type="submit" name="submit" class="btn btn-primary">
-				<span class="fas fa-save fa-fw"></span>
-				<span class="button-label hide-sm-dn"><?php echo $text['button-save'] ?? 'Save'; ?></span>
-			</button>
-		</div>
-		<div style="clear: both;"></div>
-	</div>
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".($text['title-settings'] ?? 'Settings')."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'submit','name'=>'submit','label'=>$text['button-save'],'icon'=>$_SESSION['theme']['button_icon_save'],'id'=>'btn_save']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
 
-	<table class="list">
-		<!-- Service Configuration -->
-		<tr>
-			<th colspan="2"><b><?php echo $text['header-service'] ?? 'Voice AI Service'; ?></b></th>
-		</tr>
-		<tr>
-			<td class="vncell" style="width: 200px;"><?php echo $text['label-service_url'] ?? 'Service URL'; ?></td>
-			<td class="vtable">
-				<input type="url" name="service_url" class="formfld" style="width: 400px;"
-					value="<?php echo escape($settings['service_url'] ?? 'http://127.0.0.1:8100/api/v1'); ?>">
-				<br><span class="description"><?php echo $text['description-service_url'] ?? 'URL of the Voice AI Service API'; ?></span>
-			</td>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-max_concurrent'] ?? 'Max Concurrent Calls'; ?></td>
-			<td class="vtable">
-				<input type="number" name="max_concurrent_calls" class="formfld" min="1" max="100" style="width: 100px;"
-					value="<?php echo intval($settings['max_concurrent_calls'] ?? 10); ?>">
-			</td>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-default_max_turns'] ?? 'Default Max Turns'; ?></td>
-			<td class="vtable">
-				<input type="number" name="default_max_turns" class="formfld" min="1" max="100" style="width: 100px;"
-					value="<?php echo intval($settings['default_max_turns'] ?? 20); ?>">
-			</td>
-		</tr>
-		
-		<!-- Data Management -->
-		<tr>
-			<th colspan="2"><b><?php echo $text['header-data'] ?? 'Data Management'; ?></b></th>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-retention_days'] ?? 'Data Retention (days)'; ?></td>
-			<td class="vtable">
-				<input type="number" name="data_retention_days" class="formfld" min="1" max="365" style="width: 100px;"
-					value="<?php echo intval($settings['data_retention_days'] ?? 90); ?>">
-				<br><span class="description"><?php echo $text['description-retention'] ?? 'How long to keep conversation history'; ?></span>
-			</td>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-recording'] ?? 'Recording'; ?></td>
-			<td class="vtable">
-				<input type="checkbox" name="recording_enabled" 
-					<?php echo (($settings['recording_enabled'] ?? 'false') === 'true') ? 'checked' : ''; ?>>
-				<?php echo $text['description-recording'] ?? 'Enable call recording'; ?>
-			</td>
-		</tr>
-		
-		<!-- OmniPlay Integration -->
-		<tr>
-			<th colspan="2"><b><?php echo $text['header-omniplay'] ?? 'OmniPlay Integration'; ?></b></th>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-webhook_url'] ?? 'Webhook URL'; ?></td>
-			<td class="vtable">
-				<input type="url" name="omniplay_webhook_url" class="formfld" style="width: 400px;"
-					value="<?php echo escape($settings['omniplay_webhook_url'] ?? ''); ?>" 
-					placeholder="https://omniplay.example.com/webhook/voice-ai">
-				<br><span class="description"><?php echo $text['description-omniplay_webhook'] ?? 'OmniPlay webhook URL for creating tickets'; ?></span>
-			</td>
-		</tr>
-		<tr>
-			<td class="vncell"><?php echo $text['label-api_key'] ?? 'API Key'; ?></td>
-			<td class="vtable">
-				<input type="password" name="omniplay_api_key" class="formfld" style="width: 300px;"
-					value="<?php echo escape($settings['omniplay_api_key'] ?? ''); ?>">
-			</td>
-		</tr>
-	</table>
-</form>
+	echo ($text['description-voice_settings'] ?? 'Configure global settings for the Voice AI service.')."\n";
+	echo "<br /><br />\n";
 
-<?php
+	echo "<div class='card'>\n";
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+
+	//Service Configuration Header
+	echo "<tr>\n";
+	echo "	<td colspan='2' class='vtable' style='background: #f5f5f5; font-weight: bold;'>".($text['header-service'] ?? 'Service Configuration')."</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-service_url'] ?? 'Service URL')."</td>\n";
+	echo "	<td width='70%' class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='url' name='service_url' value='".escape($settings['service_url'] ?? 'http://127.0.0.1:8100/api/v1')."'>\n";
+	echo "		<br />".($text['description-service_url'] ?? 'URL of the Voice AI service.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-max_concurrent'] ?? 'Max Concurrent Calls')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='max_concurrent_calls' min='1' max='100' value='".intval($settings['max_concurrent_calls'] ?? 10)."'>\n";
+	echo "		<br />".($text['description-max_concurrent'] ?? 'Maximum number of simultaneous calls.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-default_max_turns'] ?? 'Default Max Turns')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='default_max_turns' min='1' max='100' value='".intval($settings['default_max_turns'] ?? 20)."'>\n";
+	echo "		<br />".($text['description-default_max_turns'] ?? 'Default maximum conversation turns.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//Data Management Header
+	echo "<tr>\n";
+	echo "	<td colspan='2' class='vtable' style='background: #f5f5f5; font-weight: bold;'>".($text['header-data'] ?? 'Data Management')."</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-retention_days'] ?? 'Data Retention (days)')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='data_retention_days' min='1' max='365' value='".intval($settings['data_retention_days'] ?? 90)."'>\n";
+	echo "		<br />".($text['description-retention'] ?? 'Number of days to keep conversation data.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-recording'] ?? 'Recording Enabled')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$recording_checked = (($settings['recording_enabled'] ?? 'false') === 'true') ? 'checked' : '';
+	echo "		<input type='checkbox' name='recording_enabled' ".$recording_checked.">\n";
+	echo "		<span>".($text['description-recording'] ?? 'Enable call recording for conversations.')."\n</span>";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	//OmniPlay Integration Header
+	echo "<tr>\n";
+	echo "	<td colspan='2' class='vtable' style='background: #f5f5f5; font-weight: bold;'>".($text['header-omniplay'] ?? 'OmniPlay Integration')."</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-webhook_url'] ?? 'Webhook URL')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='url' name='omniplay_webhook_url' value='".escape($settings['omniplay_webhook_url'] ?? '')."' placeholder='https://omniplay.example.com/webhook/voice-ai'>\n";
+	echo "		<br />".($text['description-omniplay_webhook'] ?? 'URL to send conversation events.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-api_key'] ?? 'API Key')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='password' name='omniplay_api_key' value='".escape($settings['omniplay_api_key'] ?? '')."' autocomplete='new-password'>\n";
+	echo "		<br />".($text['description-omniplay_key'] ?? 'API key for OmniPlay authentication.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>\n";
+	echo "</div>\n";
+	echo "<br />\n";
+
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>\n";
+
 //include the footer
 	require_once "resources/footer.php";
+
 ?>

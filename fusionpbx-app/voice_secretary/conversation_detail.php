@@ -1,12 +1,12 @@
 <?php
-/**
- * Voice Secretary - Conversation Detail Page
- * 
- * Shows full transcript of a conversation.
- * ⚠️ MULTI-TENANT: Uses domain_uuid from session.
- *
- * @package voice_secretary
- */
+/*
+	FusionPBX
+	Version: MPL 1.1
+
+	Voice Secretary - Conversation Detail Page
+	Shows full transcript of a conversation.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
+*/
 
 //includes files
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
@@ -28,140 +28,149 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
+//get conversation
+	if (!isset($_GET['id']) || !is_uuid($_GET['id'])) {
+		message::add($text['message-invalid_id'] ?? 'Invalid ID', 'negative');
+		header('Location: conversations.php');
+		exit;
+	}
+
+	$conversation_uuid = $_GET['id'];
 	$database = new database;
 
-// Get conversation
-if (!isset($_GET['id']) || empty($_GET['id'])) {
-    header('Location: conversations.php');
-    exit;
-}
+	$sql = "SELECT c.*, s.secretary_name, s.company_name
+			FROM v_voice_conversations c
+			LEFT JOIN v_voice_secretaries s ON s.voice_secretary_uuid = c.voice_secretary_uuid
+			WHERE c.voice_conversation_uuid = :uuid AND c.domain_uuid = :domain_uuid";
+	$parameters['uuid'] = $conversation_uuid;
+	$parameters['domain_uuid'] = $domain_uuid;
+	$rows = $database->select($sql, $parameters, 'all');
+	unset($parameters);
 
-$conversation_uuid = $_GET['id'];
+	if (!$rows) {
+		message::add($text['message-conversation_not_found'] ?? 'Conversation not found', 'negative');
+		header('Location: conversations.php');
+		exit;
+	}
 
-$sql = "SELECT c.*, s.secretary_name, s.company_name
-        FROM v_voice_conversations c
-        LEFT JOIN v_voice_secretaries s ON s.voice_secretary_uuid = c.voice_secretary_uuid
-        WHERE c.conversation_uuid = :uuid AND c.domain_uuid = :domain_uuid";
-$params = ['uuid' => $conversation_uuid, 'domain_uuid' => $domain_uuid];
-$rows = $database->select($sql, $params);
+	$conversation = $rows[0];
 
-if (!$rows) {
-    $_SESSION['message'] = $text['message-conversation_not_found'];
-    header('Location: conversations.php');
-    exit;
-}
+//get messages
+	$sql_msg = "SELECT * FROM v_voice_messages 
+				WHERE voice_conversation_uuid = :uuid AND domain_uuid = :domain_uuid 
+				ORDER BY sequence_number ASC";
+	$parameters['uuid'] = $conversation_uuid;
+	$parameters['domain_uuid'] = $domain_uuid;
+	$messages = $database->select($sql_msg, $parameters, 'all') ?: [];
+	unset($parameters);
 
-$conversation = $rows[0];
+//include the header
+	$document['title'] = $text['title-conversation_detail'] ?? 'Conversation Detail';
+	require_once "resources/header.php";
 
-// Get messages
-$sql_msg = "SELECT * FROM v_voice_messages 
-            WHERE conversation_uuid = :uuid AND domain_uuid = :domain_uuid 
-            ORDER BY sequence_number ASC";
-$messages = $database->select($sql_msg, $params);
+//show the content
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".$document['title']."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$_SESSION['theme']['button_icon_back'],'id'=>'btn_back','link'=>'conversations.php']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
 
-// Include header
-$document['title'] = $text['title-conversation_detail'];
-require_once "resources/header.php";
-?>
+	echo "<br />\n";
 
-<div class="action_bar" id="action_bar">
-    <div class="heading">
-        <b><?php echo $text['title-conversation_detail']; ?></b>
-    </div>
-    <div class="actions">
-        <button type="button" onclick="window.location='conversations.php'" class="btn btn-default btn-sm">
-            <span class="fas fa-arrow-left fa-fw"></span>
-            <?php echo $text['button-back']; ?>
-        </button>
-    </div>
-    <div style="clear: both;"></div>
-</div>
+	//conversation info
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+	
+	echo "<tr>\n";
+	echo "	<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-date'] ?? 'Date')."</td>\n";
+	echo "	<td width='70%' class='vtable' align='left'>".date('d/m/Y H:i:s', strtotime($conversation['insert_date'] ?? $conversation['created_at'] ?? 'now'))."</td>\n";
+	echo "</tr>\n";
 
-<!-- Conversation Info -->
-<div class="card" style="margin-bottom: 20px; padding: 20px; background: #f9f9f9; border-radius: 8px;">
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-        <div>
-            <strong><?php echo $text['label-date']; ?>:</strong><br>
-            <?php echo date('d/m/Y H:i:s', strtotime($conversation['created_at'])); ?>
-        </div>
-        <div>
-            <strong><?php echo $text['label-caller_id']; ?>:</strong><br>
-            <?php echo escape($conversation['caller_id']); ?>
-        </div>
-        <div>
-            <strong><?php echo $text['label-secretary']; ?>:</strong><br>
-            <?php echo escape($conversation['secretary_name'] ?? '—'); ?>
-        </div>
-        <div>
-            <strong><?php echo $text['label-duration']; ?>:</strong><br>
-            <?php 
-            $mins = floor($conversation['duration_seconds'] / 60);
-            $secs = $conversation['duration_seconds'] % 60;
-            echo sprintf('%d min %d seg', $mins, $secs);
-            ?>
-        </div>
-        <div>
-            <strong><?php echo $text['label-action']; ?>:</strong><br>
-            <?php if ($conversation['final_action'] === 'transfer') { ?>
-                <span class="badge badge-info">Transferido para <?php echo escape($conversation['transfer_target']); ?></span>
-            <?php } elseif ($conversation['final_action'] === 'hangup') { ?>
-                <span class="badge badge-success">Resolvido</span>
-            <?php } else { ?>
-                <span class="badge badge-warning"><?php echo escape($conversation['final_action']); ?></span>
-            <?php } ?>
-        </div>
-    </div>
-</div>
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-caller_id'] ?? 'Caller ID')."</td>\n";
+	echo "	<td class='vtable' align='left'>".escape($conversation['caller_id'] ?? '—')."</td>\n";
+	echo "</tr>\n";
 
-<!-- Transcript -->
-<div class="transcript" style="max-width: 800px;">
-    <h4 style="margin-bottom: 15px;">
-        <i class="fas fa-comments"></i> <?php echo $text['label-transcript']; ?>
-    </h4>
-    
-    <?php foreach ($messages as $msg) { ?>
-        <div class="message <?php echo ($msg['role'] === 'user') ? 'message-user' : 'message-assistant'; ?>" 
-             style="padding: 15px; margin-bottom: 10px; border-radius: 10px; 
-                    <?php echo ($msg['role'] === 'user') 
-                        ? 'background: #e3f2fd; margin-left: 50px;' 
-                        : 'background: #f5f5f5; margin-right: 50px;'; ?>">
-            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">
-                <?php if ($msg['role'] === 'user') { ?>
-                    <i class="fas fa-user"></i> <?php echo $text['label-caller']; ?>
-                <?php } else { ?>
-                    <i class="fas fa-robot"></i> <?php echo $text['label-ai']; ?>
-                <?php } ?>
-                — <?php echo date('H:i:s', strtotime($msg['created_at'])); ?>
-            </div>
-            <div><?php echo nl2br(escape($msg['content'])); ?></div>
-            
-            <?php if ($msg['audio_file']) { ?>
-                <div style="margin-top: 10px;">
-                    <audio controls style="height: 30px;">
-                        <source src="<?php echo escape($msg['audio_file']); ?>" type="audio/wav">
-                    </audio>
-                </div>
-            <?php } ?>
-            
-            <?php if ($msg['detected_intent']) { ?>
-                <div style="margin-top: 5px; font-size: 11px; color: #888;">
-                    <i class="fas fa-tag"></i> Intent: <?php echo escape($msg['detected_intent']); ?>
-                    (<?php echo number_format($msg['intent_confidence'] * 100, 1); ?>%)
-                </div>
-            <?php } ?>
-        </div>
-    <?php } ?>
-    
-    <?php if (empty($messages)) { ?>
-        <p class="text-muted"><?php echo $text['message-no_messages']; ?></p>
-    <?php } ?>
-</div>
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-secretary'] ?? 'Secretary')."</td>\n";
+	echo "	<td class='vtable' align='left'>".escape($conversation['secretary_name'] ?? '—')."</td>\n";
+	echo "</tr>\n";
 
-<?php
-// Include footer
-require_once "resources/footer.php";
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-duration'] ?? 'Duration')."</td>\n";
+	$duration = intval($conversation['duration_seconds'] ?? 0);
+	$mins = floor($duration / 60);
+	$secs = $duration % 60;
+	echo "	<td class='vtable' align='left'>".sprintf('%d min %d s', $mins, $secs)."</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-action'] ?? 'Final Action')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$action = $conversation['final_action'] ?? '';
+	if ($action === 'transfer') {
+		echo "		<span style='background:#17a2b8;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;'>".($text['label-transferred'] ?? 'Transferred')." → ".escape($conversation['transfer_target'] ?? '')."</span>\n";
+	} elseif ($action === 'hangup') {
+		echo "		<span style='background:#28a745;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;'>".($text['label-resolved'] ?? 'Resolved')."</span>\n";
+	} else {
+		echo "		<span style='background:#6c757d;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;'>".escape($action ?: '—')."</span>\n";
+	}
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>\n";
+	echo "<br />\n";
+
+	//transcript
+	echo "<div class='heading'><b>".($text['label-transcript'] ?? 'Transcript')."</b></div>\n";
+	echo "<br />\n";
+
+	if (is_array($messages) && count($messages) > 0) {
+		echo "<div style='max-width: 800px;'>\n";
+		foreach ($messages as $msg) {
+			$is_user = ($msg['role'] === 'user');
+			$bg = $is_user ? '#e3f2fd' : '#f5f5f5';
+			$margin = $is_user ? 'margin-left: 50px;' : 'margin-right: 50px;';
+			
+			echo "<div style='padding: 15px; margin-bottom: 10px; border-radius: 10px; background: ".$bg."; ".$margin."'>\n";
+			echo "	<div style='font-size: 12px; color: #666; margin-bottom: 5px;'>\n";
+			if ($is_user) {
+				echo "		<i class='fas fa-user'></i> ".($text['label-caller'] ?? 'Caller');
+			} else {
+				echo "		<i class='fas fa-robot'></i> ".($text['label-ai'] ?? 'AI');
+			}
+			echo " — ".date('H:i:s', strtotime($msg['created_at'] ?? $msg['insert_date'] ?? 'now'))."\n";
+			echo "	</div>\n";
+			echo "	<div>".nl2br(escape($msg['content'] ?? ''))."</div>\n";
+			
+			if (!empty($msg['audio_file'])) {
+				echo "	<div style='margin-top: 10px;'>\n";
+				echo "		<audio controls style='height: 30px;'>\n";
+				echo "			<source src='".escape($msg['audio_file'])."' type='audio/wav'>\n";
+				echo "		</audio>\n";
+				echo "	</div>\n";
+			}
+			
+			if (!empty($msg['detected_intent'])) {
+				$confidence = floatval($msg['intent_confidence'] ?? 0) * 100;
+				echo "	<div style='margin-top: 5px; font-size: 11px; color: #888;'>\n";
+				echo "		<i class='fas fa-tag'></i> Intent: ".escape($msg['detected_intent'])." (".number_format($confidence, 1)."%)\n";
+				echo "	</div>\n";
+			}
+			
+			echo "</div>\n";
+		}
+		echo "</div>\n";
+	} else {
+		echo "<p style='color: #999;'>".($text['message-no_messages'] ?? 'No messages in this conversation.')."</p>\n";
+	}
+
+//include the footer
+	require_once "resources/footer.php";
+
 ?>

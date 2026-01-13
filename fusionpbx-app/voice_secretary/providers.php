@@ -3,9 +3,9 @@
 	FusionPBX
 	Version: MPL 1.1
 
-	Voice Secretary - Secretária Virtual com IA
-	Listagem de provedores de IA configurados.
-	⚠️ MULTI-TENANT: Usa domain_uuid da sessão.
+	Voice Secretary - AI Providers List
+	Lists configured AI providers for the domain.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
 */
 
 //includes files
@@ -28,32 +28,57 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
 //include class
 	require_once "resources/classes/voice_ai_provider.php";
 
+//get posted data
+	if (!empty($_POST['providers']) && is_array($_POST['providers'])) {
+		$action = $_POST['action'] ?? '';
+		$providers_list = $_POST['providers'];
+	}
+
+//process the http post data by action
+	if (!empty($action) && !empty($providers_list) && is_array($providers_list) && @sizeof($providers_list) != 0) {
+
+		//validate the token
+		$token = new token;
+		if (!$token->validate($_SERVER['PHP_SELF'])) {
+			message::add($text['message-invalid_token'],'negative');
+			header('Location: providers.php');
+			exit;
+		}
+
+		switch ($action) {
+			case 'toggle':
+				if (permission_exists('voice_secretary_edit')) {
+					$provider_obj = new voice_ai_provider;
+					$provider_obj->toggle($providers_list, $domain_uuid);
+				}
+				break;
+			case 'delete':
+				if (permission_exists('voice_secretary_delete')) {
+					$provider_obj = new voice_ai_provider;
+					$provider_obj->delete($providers_list, $domain_uuid);
+				}
+				break;
+		}
+
+		header('Location: providers.php');
+		exit;
+	}
+
 //get providers
 	$provider_obj = new voice_ai_provider;
 	$providers = $provider_obj->get_list($domain_uuid) ?: [];
+	$num_rows = count($providers);
 
-//group by type
-	$grouped = [
-		'stt' => [],
-		'tts' => [],
-		'llm' => [],
-		'embeddings' => [],
-		'realtime' => [],
-	];
-
-	foreach ($providers as $p) {
-		$type = $p['provider_type'] ?? 'unknown';
-		if (isset($grouped[$type])) {
-			$grouped[$type][] = $p;
-		}
-	}
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
 
 //set the title
 	$document['title'] = $text['title-voice_ai_providers'] ?? 'AI Providers';
@@ -65,115 +90,115 @@
 	$current_page = 'providers';
 	require_once "resources/nav_tabs.php";
 
-?>
+//show the content
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".($text['title-voice_ai_providers'] ?? 'AI Providers')."</b><div class='count'>".number_format($num_rows)."</div></div>\n";
+	echo "	<div class='actions'>\n";
+	if (permission_exists('voice_secretary_add')) {
+		echo button::create(['type'=>'button','label'=>$text['button-add'],'icon'=>$_SESSION['theme']['button_icon_add'],'id'=>'btn_add','link'=>'providers_edit.php']);
+	}
+	if (permission_exists('voice_secretary_edit') && $providers) {
+		echo button::create(['type'=>'button','label'=>$text['button-toggle'],'icon'=>$_SESSION['theme']['button_icon_toggle'],'id'=>'btn_toggle','name'=>'btn_toggle','style'=>'display: none;','onclick'=>"modal_open('modal-toggle','btn_toggle');"]);
+	}
+	if (permission_exists('voice_secretary_delete') && $providers) {
+		echo button::create(['type'=>'button','label'=>$text['button-delete'],'icon'=>$_SESSION['theme']['button_icon_delete'],'id'=>'btn_delete','name'=>'btn_delete','style'=>'display: none;','onclick'=>"modal_open('modal-delete','btn_delete');"]);
+	}
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
 
-<div class="action_bar" id="action_bar">
-	<div class="heading">
-		<b><?php echo $text['title-voice_ai_providers'] ?? 'AI Providers'; ?></b>
-	</div>
-	<div class="actions">
-		<?php if (permission_exists('voice_secretary_add')) { ?>
-			<button type="button" alt="<?php echo $text['button-add'] ?? 'Add'; ?>" onclick="window.location='providers_edit.php'" class="btn btn-default">
-				<span class="fas fa-plus fa-fw"></span>
-				<span class="button-label hide-sm-dn"><?php echo $text['button-add'] ?? 'Add'; ?></span>
-			</button>
-		<?php } ?>
-	</div>
-	<div style="clear: both;"></div>
-</div>
+	if (permission_exists('voice_secretary_edit') && $providers) {
+		echo modal::create(['id'=>'modal-toggle','type'=>'toggle','actions'=>button::create(['type'=>'button','label'=>$text['button-continue'],'icon'=>'check','id'=>'btn_toggle','style'=>'float: right; margin-left: 15px;','collapse'=>'never','onclick'=>"modal_close(); list_action_set('toggle'); list_form_submit('form_list');"])]);
+	}
+	if (permission_exists('voice_secretary_delete') && $providers) {
+		echo modal::create(['id'=>'modal-delete','type'=>'delete','actions'=>button::create(['type'=>'button','label'=>$text['button-continue'],'icon'=>'check','id'=>'btn_delete','style'=>'float: right; margin-left: 15px;','collapse'=>'never','onclick'=>"modal_close(); list_action_set('delete'); list_form_submit('form_list');"])]);
+	}
 
-<?php
-$type_labels = [
-	'stt' => ['Speech-to-Text (STT)', 'fas fa-microphone'],
-	'tts' => ['Text-to-Speech (TTS)', 'fas fa-volume-up'],
-	'llm' => ['Large Language Models (LLM)', 'fas fa-brain'],
-	'embeddings' => ['Embeddings', 'fas fa-vector-square'],
-	'realtime' => ['Realtime Providers', 'fas fa-bolt'],
-];
+	echo ($text['description-voice_ai_providers'] ?? 'Configure AI providers for speech recognition, text-to-speech, language models, and embeddings.')."\n";
+	echo "<br /><br />\n";
 
-foreach ($grouped as $type => $type_providers) {
-	$label = $type_labels[$type][0] ?? strtoupper($type);
-	$icon = $type_labels[$type][1] ?? 'fas fa-cog';
-?>
+	echo "<form id='form_list' method='post'>\n";
+	echo "<input type='hidden' id='action' name='action' value=''>\n";
 
-<div style="margin-bottom: 30px;">
-	<h4 style="margin-bottom: 15px; border-bottom: 2px solid #ddd; padding-bottom: 10px;">
-		<i class="<?php echo $icon; ?>"></i> <?php echo $label; ?>
-	</h4>
-	
-	<table class="list">
-		<tr class="list-header">
-			<th><?php echo $text['label-provider_name'] ?? 'Provider'; ?></th>
-			<th class="center"><?php echo $text['label-priority'] ?? 'Priority'; ?></th>
-			<th class="center"><?php echo $text['label-default'] ?? 'Default'; ?></th>
-			<th class="center"><?php echo $text['label-status'] ?? 'Status'; ?></th>
-			<th class="right"><?php echo $text['label-actions'] ?? 'Actions'; ?></th>
-		</tr>
-		<?php if (!empty($type_providers)) { ?>
-			<?php foreach ($type_providers as $p) { ?>
-				<tr class="list-row">
-					<td>
-						<?php if (permission_exists('voice_secretary_edit')) { ?>
-							<a href="providers_edit.php?id=<?php echo urlencode($p['voice_ai_provider_uuid']); ?>">
-								<?php echo escape($p['provider_name']); ?>
-							</a>
-						<?php } else { ?>
-							<?php echo escape($p['provider_name']); ?>
-						<?php } ?>
-					</td>
-					<td class="center"><?php echo intval($p['priority'] ?? 0); ?></td>
-					<td class="center">
-						<?php if ($p['is_default'] ?? false) { ?>
-							<span class="badge badge-primary"><?php echo $text['label-yes'] ?? 'Yes'; ?></span>
-						<?php } else { ?>
-							<span class="badge badge-secondary">-</span>
-						<?php } ?>
-					</td>
-					<td class="center">
-						<?php if ($p['is_enabled'] ?? true) { ?>
-							<span class="badge badge-success"><?php echo $text['label-enabled'] ?? 'Enabled'; ?></span>
-						<?php } else { ?>
-							<span class="badge badge-secondary"><?php echo $text['label-disabled'] ?? 'Disabled'; ?></span>
-						<?php } ?>
-					</td>
-					<td class="right">
-						<button type="button" class="btn btn-default btn-xs" onclick="testProvider('<?php echo $p['voice_ai_provider_uuid']; ?>')">
-							<span class="fas fa-plug fa-fw"></span>
-							<?php echo $text['button-test'] ?? 'Test'; ?>
-						</button>
-					</td>
-				</tr>
-			<?php } ?>
-		<?php } else { ?>
-			<tr>
-				<td colspan="5" class="no-results-found">
-					<?php echo $text['message-no_providers'] ?? 'No providers configured for this type.'; ?>
-				</td>
-			</tr>
-		<?php } ?>
-	</table>
-</div>
+	echo "<div class='card'>\n";
+	echo "<table class='list'>\n";
+	echo "<tr class='list-header'>\n";
+	if (permission_exists('voice_secretary_edit') || permission_exists('voice_secretary_delete')) {
+		echo "	<th class='checkbox'>\n";
+		echo "		<input type='checkbox' id='checkbox_all' name='checkbox_all' onclick='list_all_toggle(); checkbox_on_change(this);' ".(empty($providers) ? "style='visibility: hidden;'" : null).">\n";
+		echo "	</th>\n";
+	}
+	echo "<th>".($text['label-provider_type'] ?? 'Type')."</th>\n";
+	echo "<th>".($text['label-provider_name'] ?? 'Provider')."</th>\n";
+	echo "<th class='center'>".($text['label-priority'] ?? 'Priority')."</th>\n";
+	echo "<th class='center'>".($text['label-default'] ?? 'Default')."</th>\n";
+	echo "<th class='center'>".($text['label-enabled'] ?? 'Enabled')."</th>\n";
+	if (permission_exists('voice_secretary_edit') && $_SESSION['theme']['list_row_edit_button']['boolean'] ?? false) {
+		echo "	<td class='action-button'>&nbsp;</td>\n";
+	}
+	echo "</tr>\n";
 
-<?php } ?>
+	$type_labels = [
+		'stt' => 'Speech-to-Text',
+		'tts' => 'Text-to-Speech',
+		'llm' => 'LLM',
+		'embeddings' => 'Embeddings',
+		'realtime' => 'Realtime',
+	];
 
-<script>
-function testProvider(uuid) {
-	fetch('providers_test.php?id=' + uuid)
-		.then(response => response.json())
-		.then(data => {
-			if (data.success) {
-				alert('<?php echo $text['message-provider_ok'] ?? 'Provider is working!'; ?>');
-			} else {
-				alert('<?php echo $text['message-provider_failed'] ?? 'Provider test failed'; ?>: ' + (data.message || 'Unknown error'));
+	if (is_array($providers) && @sizeof($providers) != 0) {
+		$x = 0;
+		foreach($providers as $row) {
+			$list_row_url = permission_exists('voice_secretary_edit') ? "providers_edit.php?id=".urlencode($row['voice_ai_provider_uuid']) : '';
+			echo "<tr class='list-row' href='".$list_row_url."'>\n";
+			if (permission_exists('voice_secretary_edit') || permission_exists('voice_secretary_delete')) {
+				echo "	<td class='checkbox'>\n";
+				echo "		<input type='checkbox' name='providers[$x][checked]' id='checkbox_".$x."' value='true' onclick=\"checkbox_on_change(this); if (!this.checked) { document.getElementById('checkbox_all').checked = false; }\">\n";
+				echo "		<input type='hidden' name='providers[$x][uuid]' value='".escape($row['voice_ai_provider_uuid'])."' />\n";
+				echo "	</td>\n";
 			}
-		})
-		.catch(error => {
-			alert('<?php echo $text['message-test_error'] ?? 'Test error'; ?>');
-		});
-}
-</script>
+			echo "	<td>".($type_labels[$row['provider_type'] ?? ''] ?? escape($row['provider_type']))."</td>\n";
+			echo "	<td>";
+			if (permission_exists('voice_secretary_edit')) {
+				echo "<a href='".$list_row_url."' title=\"".$text['button-edit']."\">".escape($row['provider_name'])."</a>";
+			}
+			else {
+				echo escape($row['provider_name']);
+			}
+			echo "	</td>\n";
+			echo "	<td class='center'>".intval($row['priority'] ?? 0)."</td>\n";
+			echo "	<td class='center'>".($row['is_default'] ? $text['label-true'] : $text['label-false'])."</td>\n";
+			
+			if (permission_exists('voice_secretary_edit')) {
+				echo "	<td class='no-link center'>";
+				$enabled = ($row['is_enabled'] ?? true) ? 'true' : 'false';
+				echo button::create(['type'=>'submit','class'=>'link','label'=>$text['label-'.$enabled],'title'=>$text['button-toggle'],'onclick'=>"list_self_check('checkbox_".$x."'); list_action_set('toggle'); list_form_submit('form_list')"]);
+			}
+			else {
+				echo "	<td class='center'>";
+				echo $text['label-'.(($row['is_enabled'] ?? true) ? 'true' : 'false')];
+			}
+			echo "	</td>\n";
+			if (permission_exists('voice_secretary_edit') && $_SESSION['theme']['list_row_edit_button']['boolean'] ?? false) {
+				echo "	<td class='action-button'>";
+				echo button::create(['type'=>'button','title'=>$text['button-edit'],'icon'=>$_SESSION['theme']['button_icon_edit'],'link'=>$list_row_url]);
+				echo "	</td>\n";
+			}
+			echo "</tr>\n";
+			$x++;
+		}
+	}
+	else {
+		echo "<tr><td colspan='7' class='no-results-found'>".($text['message-no_records'] ?? 'No records found.')."</td></tr>\n";
+	}
 
-<?php
+	echo "</table>\n";
+	echo "</div>\n";
+	echo "<br />\n";
+
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>\n";
 
 //include the footer
 	require_once "resources/footer.php";

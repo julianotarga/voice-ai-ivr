@@ -1,12 +1,12 @@
 <?php
-/**
- * Voice Secretary - Document Upload Page
- * 
- * Upload documents to the knowledge base.
- * ⚠️ MULTI-TENANT: Uses domain_uuid from session.
- *
- * @package voice_secretary
- */
+/*
+	FusionPBX
+	Version: MPL 1.1
+
+	Voice Secretary - Document Upload Page
+	Upload documents to the knowledge base.
+	⚠️ MULTI-TENANT: Uses domain_uuid from session.
+*/
 
 //includes files
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
@@ -28,138 +28,152 @@
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
 	if (!$domain_uuid) {
-		echo "Error: domain_uuid not found in session.";
+		echo "access denied";
 		exit;
 	}
 
-// Process form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
-    $file = $_FILES['document'];
-    
-    // Validate file
-    $allowed_types = ['pdf', 'docx', 'txt', 'doc', 'md'];
-    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    
-    if (!in_array($extension, $allowed_types)) {
-        $_SESSION['message'] = $text['message-invalid_file_type'];
-    } elseif ($file['error'] !== UPLOAD_ERR_OK) {
-        $_SESSION['message'] = $text['message-upload_error'];
-    } else {
-        // Save file
-        $document_uuid = uuid();
-        $upload_dir = $_SERVER['DOCUMENT_ROOT'] . '/app/voice_secretary/uploads/' . $domain_uuid;
-        
-        if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0755, true);
-        }
-        
-        $filename = $document_uuid . '.' . $extension;
-        $filepath = $upload_dir . '/' . $filename;
-        
-        if (move_uploaded_file($file['tmp_name'], $filepath)) {
-            // Insert into database
-            $database = new database;
-            
-            $sql = "INSERT INTO v_voice_documents (
-                document_uuid,
-                domain_uuid,
-                document_name,
-                file_path,
-                file_type,
-                file_size,
-                processing_status,
-                created_at
-            ) VALUES (
-                :document_uuid,
-                :domain_uuid,
-                :document_name,
-                :file_path,
-                :file_type,
-                :file_size,
-                'pending',
-                NOW()
-            )";
-            
-            $parameters = [
-                'document_uuid' => $document_uuid,
-                'domain_uuid' => $domain_uuid,
-                'document_name' => $_POST['document_name'] ?: $file['name'],
-                'file_path' => $filepath,
-                'file_type' => $extension,
-                'file_size' => $file['size'],
-            ];
-            
-            $database->execute($sql, $parameters);
-            
-            // Trigger async processing
-            // Default alinhado ao docker-compose: voice-ai-service expõe 8100
-            $service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8100/api/v1';
-            $payload = json_encode([
-                'domain_uuid' => $domain_uuid,
-                'document_uuid' => $document_uuid,
-                'file_path' => $filepath,
-            ]);
-            
-            $ch = curl_init($service_url . '/documents/process');
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 5); // Quick timeout, processing is async
-            curl_exec($ch);
-            curl_close($ch);
-            
-            $_SESSION['message'] = $text['message-document_uploaded'];
-            header('Location: documents.php');
-            exit;
-        } else {
-            $_SESSION['message'] = $text['message-upload_error'];
-        }
-    }
-}
+//process form submission
+	if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
+		//validate token
+		$token = new token;
+		if (!$token->validate($_SERVER['PHP_SELF'])) {
+			message::add($text['message-invalid_token'],'negative');
+			header('Location: documents.php');
+			exit;
+		}
 
-// Include header
-$document['title'] = $text['title-upload_document'];
-require_once "resources/header.php";
-?>
+		$file = $_FILES['document'];
+		
+		//validate file
+		$allowed_types = ['pdf', 'docx', 'txt', 'doc', 'md'];
+		$extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+		
+		if (!in_array($extension, $allowed_types)) {
+			message::add($text['message-invalid_file_type'] ?? 'Invalid file type', 'negative');
+		} elseif ($file['error'] !== UPLOAD_ERR_OK) {
+			message::add($text['message-upload_error'] ?? 'Upload error', 'negative');
+		} else {
+			//save file
+			$document_uuid = uuid();
+			$upload_dir = $_SERVER['DOCUMENT_ROOT'] . '/app/voice_secretary/uploads/' . $domain_uuid;
+			
+			if (!is_dir($upload_dir)) {
+				mkdir($upload_dir, 0755, true);
+			}
+			
+			$filename = $document_uuid . '.' . $extension;
+			$filepath = $upload_dir . '/' . $filename;
+			
+			if (move_uploaded_file($file['tmp_name'], $filepath)) {
+				//insert into database
+				$database = new database;
+				
+				$sql = "INSERT INTO v_voice_documents (
+					voice_document_uuid,
+					domain_uuid,
+					document_name,
+					file_path,
+					file_type,
+					file_size,
+					processing_status,
+					insert_date
+				) VALUES (
+					:document_uuid,
+					:domain_uuid,
+					:document_name,
+					:file_path,
+					:file_type,
+					:file_size,
+					'pending',
+					NOW()
+				)";
+				
+				$parameters = [
+					'document_uuid' => $document_uuid,
+					'domain_uuid' => $domain_uuid,
+					'document_name' => $_POST['document_name'] ?: $file['name'],
+					'file_path' => $filepath,
+					'file_type' => $extension,
+					'file_size' => $file['size'],
+				];
+				
+				$database->execute($sql, $parameters);
+				
+				//trigger async processing
+				$service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8100/api/v1';
+				$payload = json_encode([
+					'domain_uuid' => $domain_uuid,
+					'document_uuid' => $document_uuid,
+					'file_path' => $filepath,
+				]);
+				
+				$ch = curl_init($service_url . '/documents/process');
+				curl_setopt($ch, CURLOPT_POST, true);
+				curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+				curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+				curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+				curl_exec($ch);
+				curl_close($ch);
+				
+				message::add($text['message-add']);
+				header('Location: documents.php');
+				exit;
+			} else {
+				message::add($text['message-upload_error'] ?? 'Upload error', 'negative');
+			}
+		}
+	}
 
-<form method="post" enctype="multipart/form-data">
-    <div class="action_bar" id="action_bar">
-        <div class="heading">
-            <b><?php echo $text['title-upload_document']; ?></b>
-        </div>
-        <div class="actions">
-            <button type="submit" class="btn btn-primary btn-sm">
-                <span class="fas fa-upload fa-fw"></span>
-                <?php echo $text['button-upload']; ?>
-            </button>
-            <button type="button" onclick="window.location='documents.php'" class="btn btn-default btn-sm">
-                <span class="fas fa-times fa-fw"></span>
-                <?php echo $text['button-back']; ?>
-            </button>
-        </div>
-        <div style="clear: both;"></div>
-    </div>
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
 
-    <table class="form_table">
-        <tr>
-            <td class="vncell"><?php echo $text['label-document_name']; ?></td>
-            <td class="vtable">
-                <input type="text" name="document_name" class="formfld" placeholder="<?php echo $text['placeholder-document_name']; ?>">
-                <br><span class="description"><?php echo $text['description-document_name']; ?></span>
-            </td>
-        </tr>
-        <tr>
-            <td class="vncellreq"><?php echo $text['label-file']; ?></td>
-            <td class="vtable">
-                <input type="file" name="document" class="formfld" accept=".pdf,.docx,.txt,.doc,.md" required>
-                <br><span class="description"><?php echo $text['description-file']; ?></span>
-            </td>
-        </tr>
-    </table>
-</form>
+//include the header
+	$document['title'] = $text['title-upload_document'] ?? 'Upload Document';
+	require_once "resources/header.php";
 
-<?php
-// Include footer
-require_once "resources/footer.php";
+//show the content
+	echo "<form method='post' enctype='multipart/form-data' name='frm' id='frm'>\n";
+
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".$document['title']."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$_SESSION['theme']['button_icon_back'],'id'=>'btn_back','link'=>'documents.php']);
+	echo button::create(['type'=>'submit','label'=>$text['button-save'],'icon'=>'upload','id'=>'btn_save','style'=>'margin-left: 15px;']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
+
+	echo ($text['description-upload_document'] ?? 'Upload a document to the knowledge base.')."\n";
+	echo "<br /><br />\n";
+
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+
+	echo "<tr>\n";
+	echo "	<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-document_name'] ?? 'Document Name')."</td>\n";
+	echo "	<td width='70%' class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='text' name='document_name' maxlength='255' placeholder='".($text['placeholder-document_name'] ?? 'Optional name for the document')."'>\n";
+	echo "		<br />".($text['description-document_name'] ?? 'Leave blank to use the filename.')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-file'] ?? 'File')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='file' name='document' accept='.pdf,.docx,.txt,.doc,.md' required>\n";
+	echo "		<br />".($text['description-file'] ?? 'Allowed formats: PDF, DOCX, TXT, DOC, MD')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>\n";
+	echo "<br />\n";
+
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>\n";
+
+//include the footer
+	require_once "resources/footer.php";
+
 ?>
