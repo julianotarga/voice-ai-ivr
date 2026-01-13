@@ -87,8 +87,8 @@ EXPOSE 8085
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8085)); s.close()" || exit 1
 
-# Run the realtime server
-CMD ["python", "-m", "realtime.server"]
+# Run the realtime server (avoid runpy RuntimeWarning from `python -m realtime.server`)
+CMD ["python", "-m", "realtime"]
 
 # -----------------------------------------------------------------------------
 # Stage 3: Development - With dev tools
