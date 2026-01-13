@@ -139,11 +139,11 @@
 - [ ] 3.2.6 Criar registro de function calls para auditoria
 
 ### 3.3 Transfer Handler
-- [ ] 3.3.1 Criar `realtime/handlers/transfer.py`
-- [ ] 3.3.2 Implementar resolução de destino (ramal, departamento)
-- [ ] 3.3.3 Implementar transferência via ESL
-- [ ] 3.3.4 Implementar transferência com anúncio
-- [ ] 3.3.5 Log de transferências
+- [x] 3.3.1 Criar `realtime/handlers/transfer.py`
+- [x] 3.3.2 Implementar resolução de destino (ramal, departamento)
+- [x] 3.3.3 Implementar transferência via ESL
+- [x] 3.3.4 Implementar transferência com anúncio
+- [x] 3.3.5 Log de transferências
 
 ---
 
@@ -162,18 +162,18 @@
 - [ ] 4.2.4 Implementar queries de lookup por domain + extension
 
 ### 4.3 Configuration Loader
-- [ ] 4.3.1 Criar `realtime/config_loader.py`
-- [ ] 4.3.2 Implementar cache de configurações
-- [ ] 4.3.3 Implementar reload de config sem restart
-- [ ] 4.3.4 Implementar validação de config
+- [x] 4.3.1 Criar `realtime/config_loader.py`
+- [x] 4.3.2 Implementar cache de configurações
+- [x] 4.3.3 Implementar reload de config sem restart (invalidate_cache)
+- [x] 4.3.4 Implementar validação de config (Pydantic validators)
 
 ---
 
 ## 5. FusionPBX Integration
 
 ### 5.1 Dialplan
-- [ ] 5.1.1 Criar XML dialplan `900_voice_ai_realtime.xml`
-- [ ] 5.1.2 Configurar extensões 8XXX para secretária realtime
+- [x] 5.1.1 Criar XML dialplan `900_voice_ai.xml` (unificado v1/v2)
+- [x] 5.1.2 Configurar extensões 8XXX para secretária (8000-8099)
 - [ ] 5.1.3 Testar roteamento de chamadas
 - [ ] 5.1.4 Documentar configuração
 
@@ -222,11 +222,11 @@
 - [ ] 6.1.6 Expor endpoint `/metrics`
 
 ### 6.2 Logging
-- [ ] 6.2.1 Configurar structlog para logging estruturado
-- [ ] 6.2.2 Implementar log de início/fim de sessão
-- [ ] 6.2.3 Implementar log de latência por turno
-- [ ] 6.2.4 Implementar log de erros com contexto
-- [ ] 6.2.5 Configurar log rotation
+- [x] 6.2.1 Configurar structlog para logging estruturado
+- [x] 6.2.2 Implementar log de início/fim de sessão (SessionLogger)
+- [x] 6.2.3 Implementar log de latência por turno (log_turn, log_latency)
+- [x] 6.2.4 Implementar log de erros com contexto (log_error)
+- [x] 6.2.5 Configurar log rotation (RotatingFileHandler)
 
 ### 6.3 Alertas
 - [ ] 6.3.1 Criar regras Prometheus para latência alta
@@ -239,10 +239,10 @@
 ## 7. Testes
 
 ### 7.1 Testes Unitários
-- [ ] 7.1.1 Testes para Resampler
-- [ ] 7.1.2 Testes para SessionManager
-- [ ] 7.1.3 Testes para ProviderFactory
-- [ ] 7.1.4 Testes para FunctionCallHandler
+- [x] 7.1.1 Testes para Resampler
+- [x] 7.1.2 Testes para SessionManager
+- [x] 7.1.3 Testes para ProviderFactory
+- [x] 7.1.4 Testes para TransferHandler (FunctionCallHandler)
 
 ### 7.2 Testes de Integração
 - [ ] 7.2.1 Teste WebSocket FreeSWITCH → Bridge

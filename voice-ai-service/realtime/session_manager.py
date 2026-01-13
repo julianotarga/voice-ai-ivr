@@ -9,7 +9,7 @@ Referências:
 
 import asyncio
 import logging
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from .session import RealtimeSession, RealtimeSessionConfig
 
@@ -23,8 +23,13 @@ class RealtimeSessionManager:
     Multi-tenant: isolamento por domain_uuid, limite por tenant.
     """
     
-    def __init__(self, max_sessions_per_domain: int = 10):
+    def __init__(
+        self, 
+        max_sessions_per_domain: int = 10,
+        session_timeout_seconds: int = 30
+    ):
         self.max_sessions_per_domain = max_sessions_per_domain
+        self.session_timeout_seconds = session_timeout_seconds
         self._sessions: Dict[str, RealtimeSession] = {}
         self._domain_counts: Dict[str, int] = {}
         self._lock = asyncio.Lock()
@@ -118,6 +123,32 @@ class RealtimeSessionManager:
         
         await session.handle_audio_input(audio_bytes)
         return True
+    
+    def get_all_sessions(self) -> List[RealtimeSession]:
+        """Retorna todas as sessões ativas."""
+        return list(self._sessions.values())
+    
+    def get_sessions_by_domain(self, domain_uuid: str) -> List[RealtimeSession]:
+        """Retorna sessões de um domínio específico."""
+        return [s for s in self._sessions.values() if s.domain_uuid == domain_uuid]
+    
+    async def cleanup_expired_sessions(self) -> int:
+        """Limpa sessões expiradas."""
+        import time
+        
+        expired = []
+        for call_uuid, session in self._sessions.items():
+            if hasattr(session, '_last_activity'):
+                idle_time = time.time() - session._last_activity
+                if idle_time > self.session_timeout_seconds:
+                    expired.append(call_uuid)
+        
+        count = 0
+        for call_uuid in expired:
+            await self.stop_session(call_uuid, "expired")
+            count += 1
+        
+        return count
     
     def get_stats(self) -> Dict:
         return {

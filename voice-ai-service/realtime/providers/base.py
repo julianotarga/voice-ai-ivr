@@ -85,10 +85,15 @@ class RealtimeConfig:
     
     # Multi-tenant (OBRIGATÓRIO)
     domain_uuid: str
-    secretary_uuid: str
+    
+    # Provider
+    provider_name: str = "openai"
+    
+    # Secretary (opcional - pode ser passado via session config)
+    secretary_uuid: Optional[str] = None
     
     # Instruções
-    system_prompt: str
+    system_prompt: str = ""
     first_message: Optional[str] = None
     
     # Voz
@@ -97,6 +102,7 @@ class RealtimeConfig:
     # VAD
     vad_threshold: float = 0.5
     silence_duration_ms: int = 500
+    silence_timeout_ms: int = 1000  # Alias para compatibilidade
     prefix_padding_ms: int = 300
     
     # Tools
