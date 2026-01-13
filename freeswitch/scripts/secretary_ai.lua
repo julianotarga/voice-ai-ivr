@@ -14,7 +14,9 @@ local config = require("config")
 local utils = require("utils")
 
 -- Configurações
-local AI_SERVICE_URL = "http://127.0.0.1:8089/api/v1"
+-- Preferir variável de ambiente para compatibilidade com diferentes deploys (docker/systemd)
+-- Default alinhado ao docker-compose: 8100
+local AI_SERVICE_URL = os.getenv("VOICE_AI_URL") or "http://127.0.0.1:8100/api/v1"
 local MAX_TURNS = 20
 local SILENCE_TIMEOUT = 3  -- segundos
 local MAX_RECORDING = 30   -- segundos

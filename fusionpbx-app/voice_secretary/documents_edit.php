@@ -87,7 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
             $database->execute($sql, $parameters);
             
             // Trigger async processing
-            $service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8089/api/v1';
+            // Default alinhado ao docker-compose: voice-ai-service expõe 8100
+            $service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8100/api/v1';
             $payload = json_encode([
                 'domain_uuid' => $domain_uuid,
                 'document_uuid' => $document_uuid,

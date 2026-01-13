@@ -25,7 +25,7 @@ NC='\033[0m'
 FREESWITCH_SCRIPTS_DIR="${FREESWITCH_SCRIPTS_DIR:-/usr/share/freeswitch/scripts}"
 FREESWITCH_DIALPLAN_DIR="${FREESWITCH_DIALPLAN_DIR:-/etc/freeswitch/dialplan/default}"
 VOICE_AI_URL="${VOICE_AI_URL:-http://localhost:8100}"
-VOICE_AI_REALTIME_URL="${VOICE_AI_REALTIME_URL:-ws://localhost:8080}"
+VOICE_AI_REALTIME_URL="${VOICE_AI_REALTIME_URL:-ws://localhost:8085}"
 PROJECT_DIR="$(dirname "$0")/.."
 
 echo -e "${BLUE}=== Voice AI IVR - FreeSWITCH Integration Setup ===${NC}"
@@ -75,6 +75,8 @@ fi
 # Update URLs in scripts
 find "$FREESWITCH_SCRIPTS_DIR/voice_ai" -name "*.lua" -exec \
     sed -i "s|http://127.0.0.1:8100|$VOICE_AI_URL|g" {} \;
+find "$FREESWITCH_SCRIPTS_DIR/voice_ai" -name "*.lua" -exec \
+    sed -i "s|ws://127.0.0.1:8085|$VOICE_AI_REALTIME_URL|g" {} \;
 find "$FREESWITCH_SCRIPTS_DIR/voice_ai" -name "*.lua" -exec \
     sed -i "s|ws://127.0.0.1:8080|$VOICE_AI_REALTIME_URL|g" {} \;
 
@@ -159,7 +161,7 @@ echo -e "${GREEN}=== Installation Complete ===${NC}"
 echo ""
 echo "Modes available:"
 echo "  - Turn-based (v1): Uses voice-ai-service on :8100"
-echo "  - Realtime (v2):   Uses voice-ai-realtime on :8080"
+echo "  - Realtime (v2):   Uses voice-ai-realtime on :8085 (ou override via VOICE_AI_REALTIME_URL)"
 echo ""
 echo "Files installed:"
 echo "  - $FREESWITCH_SCRIPTS_DIR/voice_ai/*.lua"

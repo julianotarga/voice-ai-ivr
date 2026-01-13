@@ -28,7 +28,7 @@
 ### 0.3 Docker Updates
 - [x] 0.3.1 Criar `Dockerfile.realtime` para o bridge realtime
 - [x] 0.3.2 Adicionar serviço `voice-ai-realtime` ao docker-compose
-- [x] 0.3.3 Configurar porta 8080 para WebSocket realtime
+- [x] 0.3.3 Configurar porta 8085 para WebSocket realtime (override via VOICE_AI_REALTIME_PORT/VOICE_AI_REALTIME_URL)
 - [x] 0.3.4 Manter serviço `voice-ai-service` (v1) na porta 8100
 - [x] 0.3.5 Configurar network compartilhada entre serviços
 - [x] 0.3.6 Adicionar healthcheck específico para realtime

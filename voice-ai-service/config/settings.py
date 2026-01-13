@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     # SERVER
     # ============================================
     HOST: str = "127.0.0.1"  # Localhost only for security
-    PORT: int = 8089
+    # Default alinhado ao docker-compose (porta publicada 8100).
+    # Pode ser sobrescrito por env PORT.
+    PORT: int = 8100
     DEBUG: bool = False
     
     # ============================================

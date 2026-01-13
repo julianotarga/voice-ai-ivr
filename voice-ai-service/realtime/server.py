@@ -26,7 +26,7 @@ class RealtimeServer:
     """
     WebSocket server para bridge FreeSWITCH ↔ AI.
     
-    URL Pattern: ws://bridge:8080/stream/{domain_uuid}/{call_uuid}
+    URL Pattern: ws://bridge:8085/stream/{domain_uuid}/{call_uuid}
     
     Conforme openspec/changes/voice-ai-realtime/design.md (Decision 2).
     """

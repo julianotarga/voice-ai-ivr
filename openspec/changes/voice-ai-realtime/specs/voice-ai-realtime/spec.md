@@ -181,7 +181,7 @@ O sistema DEVE gravar o transcript completo da conversa.
 
 ### FreeSWITCH → Bridge
 
-**URL**: `ws://bridge:8080/stream/{domain_uuid}/{call_uuid}`
+**URL**: `ws://bridge:8085/stream/{domain_uuid}/{call_uuid}`
 
 **Mensagens:**
 

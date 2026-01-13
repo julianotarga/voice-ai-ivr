@@ -9,8 +9,7 @@
  */
 
 // Include required files
-require_once "root.php";
-require_once "resources/require.php";
+require_once dirname(__DIR__, 2) . "/resources/require.php";
 require_once "resources/check_auth.php";
 
 // Check permission
@@ -43,7 +42,8 @@ foreach ($rows as $row) {
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit'])) {
     $new_settings = [
-        'service_url' => $_POST['service_url'] ?? 'http://127.0.0.1:8089/api/v1',
+        // Default alinhado ao docker-compose: voice-ai-service expõe 8100
+        'service_url' => $_POST['service_url'] ?? 'http://127.0.0.1:8100/api/v1',
         'data_retention_days' => intval($_POST['data_retention_days'] ?? 90),
         'omniplay_webhook_url' => $_POST['omniplay_webhook_url'] ?? '',
         'omniplay_api_key' => $_POST['omniplay_api_key'] ?? '',
@@ -116,7 +116,7 @@ require_once "resources/header.php";
             <td class="vncell"><?php echo $text['label-service_url']; ?></td>
             <td class="vtable">
                 <input type="url" name="service_url" class="formfld" 
-                    value="<?php echo escape($settings['service_url'] ?? 'http://127.0.0.1:8089/api/v1'); ?>">
+                    value="<?php echo escape($settings['service_url'] ?? 'http://127.0.0.1:8100/api/v1'); ?>">
                 <br><span class="description"><?php echo $text['description-service_url']; ?></span>
             </td>
         </tr>

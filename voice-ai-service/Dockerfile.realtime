@@ -4,11 +4,11 @@
 # WebSocket Bridge para comunicação bidirecional FreeSWITCH ↔ AI Providers
 #
 # Referências:
-# - .context/docs/architecture.md: voice-ai-realtime:8080 (WS)
+# - .context/docs/architecture.md: voice-ai-realtime:8085 (WS)
 # - .context/agents/devops-specialist.md: Dockerfile.realtime
 #
 # Build:   docker build -f Dockerfile.realtime -t voice-ai-realtime .
-# Run:     docker run -p 8080:8080 --env-file .env voice-ai-realtime
+# Run:     docker run -p 8085:8085 --env-file .env voice-ai-realtime
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -77,15 +77,15 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     REALTIME_HOST=0.0.0.0 \
-    REALTIME_PORT=8080 \
+    REALTIME_PORT=8085 \
     LOG_DIR=/app/logs
 
 # Expose WebSocket port
-EXPOSE 8080
+EXPOSE 8085
 
 # Health check - WebSocket endpoints don't have HTTP health, use TCP
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8080)); s.close()" || exit 1
+    CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8085)); s.close()" || exit 1
 
 # Run the realtime server
 CMD ["python", "-m", "realtime.server"]

@@ -42,7 +42,7 @@ FreeSWITCH → mod_audio_stream → Python Bridge → AI Provider
 ### FreeSWITCH ↔ Bridge
 
 **Protocolo**: WebSocket (RFC 6455)
-**URL Pattern**: `ws://bridge:8080/stream/{domain_uuid}/{call_uuid}`
+**URL Pattern**: `ws://bridge:8085/stream/{domain_uuid}/{call_uuid}`
 **Codec**: PCM16 Linear @ 16kHz mono
 
 ```
@@ -576,7 +576,7 @@ class FunctionCallHandler:
     <action application="set" data="STREAM_EXTRA_HEADERS={"caller_id":"${caller_id_number}","extension":"$1"}"/>
     
     <!-- Iniciar streaming ao atender -->
-    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8080/stream/${domain_uuid}/${uuid} mono 16k ${caller_id_number}"/>
+    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${domain_uuid}/${uuid} mono 16k ${caller_id_number}"/>
     
     <!-- Atender e aguardar -->
     <action application="answer"/>

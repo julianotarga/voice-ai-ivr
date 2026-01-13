@@ -127,7 +127,7 @@ Usuário fala → Grava arquivo → STT → LLM → TTS → Reproduz áudio
 ```
 Telefone → FreeSWITCH → Dialplan → mod_audio_stream start
                                          ↓
-                               ws://bridge:8080/{domain_uuid}/{call_uuid}
+                               ws://bridge:8085/{domain_uuid}/{call_uuid}
 ```
 
 ### 2. Streaming Bidirecional
@@ -370,7 +370,7 @@ CREATE INDEX idx_conv_realtime_date ON v_voice_conversations_realtime(domain_uui
 
 ### Isolamento por domain_uuid
 
-1. **WebSocket Path**: `ws://bridge:8080/{domain_uuid}/{call_uuid}`
+1. **WebSocket Path**: `ws://bridge:8085/{domain_uuid}/{call_uuid}`
 2. **Config lookup**: Busca secretary por domain + extension
 3. **Rate limiting**: Por domain_uuid
 4. **Cost tracking**: Por domain_uuid
@@ -438,7 +438,7 @@ CREATE INDEX idx_conv_realtime_date ON v_voice_conversations_realtime(domain_uui
 │  │  - Dialplan XML                 │                                        │
 │  │  - PostgreSQL (FusionPBX)       │                                        │
 │  └─────────────────┬───────────────┘                                        │
-│                    │ ws://localhost:8080                                     │
+│                    │ ws://localhost:8085                                     │
 │                    │ ws://localhost:8100                                     │
 │                    ▼                                                         │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
@@ -448,7 +448,7 @@ CREATE INDEX idx_conv_realtime_date ON v_voice_conversations_realtime(domain_uui
 │  │  ┌─────────────────────┐  ┌─────────────────────┐                   │    │
 │  │  │ voice-ai-realtime   │  │ voice-ai-service    │                   │    │
 │  │  │ (Bridge WebSocket)  │  │ (API Turn-based v1) │                   │    │
-│  │  │ Port: 8080          │  │ Port: 8100          │                   │    │
+│  │  │ Port: 8085          │  │ Port: 8100          │                   │    │
 │  │  │                     │  │                     │                   │    │
 │  │  │ • OpenAI Realtime   │  │ • STT endpoints     │                   │    │
 │  │  │ • ElevenLabs Conv   │  │ • TTS endpoints     │                   │    │
@@ -489,7 +489,7 @@ services:
       dockerfile: Dockerfile.realtime
     container_name: voice-ai-realtime
     ports:
-      - "8080:8080"
+      - "8085:8085"
     environment:
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
@@ -506,7 +506,8 @@ services:
       - voice-ai-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # WebSocket healthcheck deve ser handshake (ver health_check.py)
+      test: ["CMD", "python", "-m", "realtime.health_check"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -549,7 +550,7 @@ services:
 │  │     │ mode = 'realtime'  │      │ mode = 'turn_based'│           │  │
 │  │     │                    │      │                    │           │  │
 │  │     │ → mod_audio_stream │      │ → Lua script v1    │           │  │
-│  │     │ → ws://bridge:8080 │      │ → HTTP API :8100   │           │  │
+│  │     │ → ws://bridge:8085 │      │ → HTTP API :8100   │           │  │
 │  │     └────────────────────┘      └────────────────────┘           │  │
 │  │                                                                   │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
@@ -592,7 +593,7 @@ CHECK (processing_mode IN ('turn_based', 'realtime', 'auto'));
   <condition>
     <action application="set" data="STREAM_PLAYBACK=true"/>
     <action application="set" data="STREAM_SAMPLE_RATE=16000"/>
-    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8080/stream/${domain_uuid}/${uuid} mono 16k"/>
+    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${domain_uuid}/${uuid} mono 16k"/>
     <action application="answer"/>
     <action application="park"/>
   </condition>

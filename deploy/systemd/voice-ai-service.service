@@ -16,7 +16,7 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/opt/voice-ai-service/.env
 
 # Comando de início
-ExecStart=/opt/voice-ai-service/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8089
+ExecStart=/opt/voice-ai-service/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8100
 
 # Reinício automático
 Restart=always

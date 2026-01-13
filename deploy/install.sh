@@ -139,10 +139,10 @@ else
 fi
 
 # Testar health check
-if curl -s http://127.0.0.1:8089/health | jq -e '.status == "healthy"' > /dev/null 2>&1; then
+if curl -s http://127.0.0.1:8100/health | jq -e '.status == "healthy"' > /dev/null 2>&1; then
     echo -e "${GREEN}✓ API respondendo corretamente${NC}"
 else
-    echo -e "${YELLOW}⚠ API não respondeu. Aguarde alguns segundos e teste: curl http://127.0.0.1:8089/health${NC}"
+    echo -e "${YELLOW}⚠ API não respondeu. Aguarde alguns segundos e teste: curl http://127.0.0.1:8100/health${NC}"
 fi
 
 echo -e "\n${YELLOW}Próximos passos:${NC}"

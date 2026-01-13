@@ -171,7 +171,7 @@ Edite `voice-ai-service/config/settings.py` com suas API keys.
 
 ```bash
 # Desenvolvimento
-uvicorn main:app --host 127.0.0.1 --port 8089 --reload
+uvicorn main:app --host 127.0.0.1 --port 8100 --reload
 
 # Produção
 systemctl start voice-ai-service

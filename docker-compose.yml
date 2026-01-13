@@ -222,7 +222,7 @@ services:
   # ===========================================================================
   # Voice AI Realtime Bridge - WebSocket Server (v2)
   # ===========================================================================
-  # Conforme .context/docs/architecture.md: voice-ai-realtime:8080
+  # Realtime WebSocket: por padrão publicamos 8085 (override via VOICE_AI_REALTIME_PORT)
   voice-ai-realtime:
     build:
       context: ./voice-ai-service
