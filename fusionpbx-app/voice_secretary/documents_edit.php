@@ -65,52 +65,76 @@
 			$filepath = $upload_dir . '/' . $filename;
 			
 			if (move_uploaded_file($file['tmp_name'], $filepath)) {
-				//insert into database using FusionPBX array method
-				$array['voice_documents'][0]['voice_document_uuid'] = $document_uuid;
-				$array['voice_documents'][0]['domain_uuid'] = $domain_uuid;
-				$array['voice_documents'][0]['document_name'] = $_POST['document_name'] ?: $file['name'];
-				$array['voice_documents'][0]['document_type'] = $extension;
-				$array['voice_documents'][0]['file_path'] = $filepath;
-				$array['voice_documents'][0]['file_size'] = $file['size'];
-				$array['voice_documents'][0]['processing_status'] = 'pending';
-				$array['voice_documents'][0]['enabled'] = 'true';
+				//insert into database using direct SQL
+				$sql = "INSERT INTO v_voice_documents (
+					voice_document_uuid,
+					domain_uuid,
+					document_name,
+					document_type,
+					file_path,
+					file_size,
+					processing_status,
+					enabled,
+					insert_date
+				) VALUES (
+					:document_uuid,
+					:domain_uuid,
+					:document_name,
+					:document_type,
+					:file_path,
+					:file_size,
+					:processing_status,
+					:enabled,
+					NOW()
+				)";
 				
-				//add temp permissions
-				$p = permissions::new();
-				$p->add('voice_secretary_add', 'temp');
+				$parameters = [];
+				$parameters['document_uuid'] = $document_uuid;
+				$parameters['domain_uuid'] = $domain_uuid;
+				$parameters['document_name'] = trim($_POST['document_name']) ?: $file['name'];
+				$parameters['document_type'] = $extension;
+				$parameters['file_path'] = $filepath;
+				$parameters['file_size'] = $file['size'];
+				$parameters['processing_status'] = 'pending';
+				$parameters['enabled'] = 'true';
 				
-				//save
 				$database = new database;
-				$database->app_name = 'voice_secretary';
-				$database->app_uuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-				$database->save($array);
-				unset($array);
+				$database->execute($sql, $parameters);
 				
-				//remove temp permissions
-				$p->delete('voice_secretary_add', 'temp');
+				//verify insert worked
+				$sql_check = "SELECT voice_document_uuid FROM v_voice_documents WHERE voice_document_uuid = :uuid";
+				$params_check = ['uuid' => $document_uuid];
+				$result = $database->select($sql_check, $params_check, 'row');
 				
-				//trigger async processing
-				$service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8100/api/v1';
-				$payload = json_encode([
-					'domain_uuid' => $domain_uuid,
-					'document_uuid' => $document_uuid,
-					'file_path' => $filepath,
-				]);
+				if ($result) {
+					//trigger async processing (optional, may fail silently)
+					$service_url = $_ENV['VOICE_AI_SERVICE_URL'] ?? 'http://127.0.0.1:8100/api/v1';
+					$payload = json_encode([
+						'domain_uuid' => $domain_uuid,
+						'document_uuid' => $document_uuid,
+						'file_path' => $filepath,
+					]);
+					
+					$ch = curl_init($service_url . '/documents/process');
+					curl_setopt($ch, CURLOPT_POST, true);
+					curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+					curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+					curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+					curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+					curl_exec($ch);
+					curl_close($ch);
+					
+					message::add($text['message-add']);
+				} else {
+					message::add('Database insert failed', 'negative');
+					//cleanup uploaded file
+					@unlink($filepath);
+				}
 				
-				$ch = curl_init($service_url . '/documents/process');
-				curl_setopt($ch, CURLOPT_POST, true);
-				curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-				curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-				curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-				curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-				curl_exec($ch);
-				curl_close($ch);
-				
-				message::add($text['message-add']);
 				header('Location: documents.php');
 				exit;
 			} else {
-				message::add($text['message-upload_error'] ?? 'Upload error', 'negative');
+				message::add($text['message-upload_error'] ?? 'Upload error: failed to move file', 'negative');
 			}
 		}
 	}
