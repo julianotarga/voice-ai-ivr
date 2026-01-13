@@ -113,7 +113,8 @@ echo -e "${BLUE}🗄️  Criando tabelas no banco de dados...${NC}"
 
 if [ -f "${FUSIONPBX_PATH}/core/upgrade/upgrade_schema.php" ]; then
     cd "$FUSIONPBX_PATH"
-    php core/upgrade/upgrade_schema.php > /dev/null 2>&1 || true
+    # Usar timeout para evitar travamento (30 segundos)
+    timeout 30 php core/upgrade/upgrade_schema.php > /dev/null 2>&1 || true
     echo -e "${GREEN}✓ Schema atualizado${NC}"
 else
     echo -e "${YELLOW}⚠️  upgrade_schema.php não encontrado, pulando...${NC}"
@@ -126,7 +127,8 @@ echo -e "${BLUE}📋 Atualizando menus...${NC}"
 
 if [ -f "${FUSIONPBX_PATH}/core/upgrade/upgrade_menu.php" ]; then
     cd "$FUSIONPBX_PATH"
-    php core/upgrade/upgrade_menu.php > /dev/null 2>&1 || true
+    # Usar timeout para evitar travamento (30 segundos)
+    timeout 30 php core/upgrade/upgrade_menu.php > /dev/null 2>&1 || true
     echo -e "${GREEN}✓ Menus atualizados${NC}"
 else
     echo -e "${YELLOW}⚠️  upgrade_menu.php não encontrado, pulando...${NC}"
@@ -139,7 +141,8 @@ echo -e "${BLUE}👥 Atualizando permissões de grupo...${NC}"
 
 if [ -f "${FUSIONPBX_PATH}/core/upgrade/upgrade_permissions.php" ]; then
     cd "$FUSIONPBX_PATH"
-    php core/upgrade/upgrade_permissions.php > /dev/null 2>&1 || true
+    # Usar timeout para evitar travamento (30 segundos)
+    timeout 30 php core/upgrade/upgrade_permissions.php > /dev/null 2>&1 || true
     echo -e "${GREEN}✓ Permissões de grupo atualizadas${NC}"
 else
     echo -e "${YELLOW}⚠️  upgrade_permissions.php não encontrado, pulando...${NC}"
