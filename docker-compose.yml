@@ -232,12 +232,12 @@ services:
     restart: unless-stopped
     
     ports:
-      - "${VOICE_AI_REALTIME_PORT:-8080}:8080"
+      - "${VOICE_AI_REALTIME_PORT:-8085}:8085"
     
     environment:
       # Application
       - REALTIME_HOST=0.0.0.0
-      - REALTIME_PORT=8080
+      - REALTIME_PORT=8085
       - DEBUG=${DEBUG:-false}
       
       # Database - FusionPBX PostgreSQL (no host)
@@ -276,7 +276,7 @@ services:
         condition: service_healthy
     
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8080)); s.close()"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8085)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3

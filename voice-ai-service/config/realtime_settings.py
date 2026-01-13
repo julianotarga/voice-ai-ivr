@@ -19,7 +19,7 @@ class RealtimeSettings(BaseSettings):
     
     # Server
     REALTIME_HOST: str = "0.0.0.0"
-    REALTIME_PORT: int = 8080
+    REALTIME_PORT: int = 8085
     
     # Limits (Rate limiting conforme security.md)
     MAX_SESSIONS_PER_DOMAIN: int = 10

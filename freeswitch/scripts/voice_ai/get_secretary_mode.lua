@@ -134,7 +134,7 @@ function check_realtime_bridge()
     local client = socket.tcp()
     client:settimeout(2)
     
-    local success, err = client:connect("127.0.0.1", 8080)
+    local success, err = client:connect("127.0.0.1", 8085)
     client:close()
     
     if success then

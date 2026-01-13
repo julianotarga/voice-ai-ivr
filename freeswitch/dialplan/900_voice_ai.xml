@@ -80,7 +80,7 @@
       <action application="set" data="STREAM_EXTRA_HEADERS=caller_id:${caller_id_number},extension:${voice_ai_extension},domain:${domain_uuid}"/>
       
       <!-- Callback para iniciar streaming após atender -->
-      <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8080/stream/${domain_uuid}/${uuid} mono 16k"/>
+      <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${domain_uuid}/${uuid} mono 16k"/>
       
       <!-- Atender e manter chamada ativa -->
       <action application="answer"/>
