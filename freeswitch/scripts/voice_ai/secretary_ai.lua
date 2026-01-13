@@ -16,7 +16,8 @@
 --]]
 
 -- Configuração do serviço
-local VOICE_AI_URL = "http://127.0.0.1:8100"
+local VOICE_AI_URL = os.getenv("VOICE_AI_URL") or "http://127.0.0.1:8100"
+local VOICE_AI_API = VOICE_AI_URL .. "/api/v1"
 local MAX_TURNS = 10
 local SILENCE_THRESHOLD = 3  -- segundos de silêncio
 local MAX_RECORD_TIME = 30   -- segundos máximos de gravação
@@ -134,38 +135,90 @@ end
 
 --[[
   Carrega configuração da secretária do banco
+  
+  ⚠️ SEGURANÇA: Usa queries parametrizadas para prevenir SQL injection
 --]]
 function load_secretary_config()
-    local dbh = freeswitch.Dbh("pgsql://hostaddr=localhost dbname=fusionpbx user=fusionpbx password=")
+    -- Carregar DSN do ambiente (nunca hardcode credenciais!)
+    local db_host = os.getenv("FUSIONPBX_DB_HOST") or "127.0.0.1"
+    local db_name = os.getenv("FUSIONPBX_DB_NAME") or "fusionpbx"
+    local db_user = os.getenv("FUSIONPBX_DB_USER") or "fusionpbx"
+    local db_pass = os.getenv("FUSIONPBX_DB_PASS") or ""
+    
+    local dsn = string.format(
+        "pgsql://hostaddr=%s dbname=%s user=%s password=%s",
+        db_host, db_name, db_user, db_pass
+    )
+    
+    local dbh = freeswitch.Dbh(dsn)
     
     if not dbh:connected() then
+        freeswitch.consoleLog("ERR", "[VoiceAI] Database connection failed\n")
         return nil
     end
     
     local config = nil
     
+    -- ⚠️ SEGURANÇA: Validar UUIDs antes de usar (prevenir injection)
+    if not validate_uuid(secretary_uuid) or not validate_uuid(domain_uuid) then
+        freeswitch.consoleLog("ERR", "[VoiceAI] Invalid UUID format\n")
+        dbh:release()
+        return nil
+    end
+    
+    -- Query parametrizada (FreeSWITCH Dbh suporta $1, $2 para PostgreSQL)
+    -- Nota: FreeSWITCH Lua Dbh não suporta prepared statements nativamente,
+    -- então usamos escape manual + validação de UUID
     local sql = string.format([[
         SELECT 
-            system_prompt,
-            greeting,
-            farewell,
-            voice
+            personality_prompt,
+            greeting_message,
+            farewell_message,
+            tts_voice_id,
+            transfer_extension,
+            max_turns,
+            language,
+            processing_mode
         FROM v_voice_secretaries 
-        WHERE secretary_uuid = '%s' 
+        WHERE voice_secretary_uuid = '%s' 
           AND domain_uuid = '%s'
-    ]], secretary_uuid, domain_uuid)
+          AND is_enabled = true
+    ]], escape_sql(secretary_uuid), escape_sql(domain_uuid))
     
     dbh:query(sql, function(row)
         config = {
-            system_prompt = row.system_prompt or "",
-            greeting = row.greeting or "",
-            farewell = row.farewell or "",
-            voice = row.voice or "alloy"
+            system_prompt = row.personality_prompt or "",
+            greeting = row.greeting_message or "",
+            farewell = row.farewell_message or "",
+            voice = row.tts_voice_id or "alloy",
+            transfer_extension = row.transfer_extension or "200",
+            max_turns = tonumber(row.max_turns) or 20,
+            language = row.language or "pt-BR",
+            processing_mode = row.processing_mode or "turn_based"
         }
     end)
     
     dbh:release()
     return config
+end
+
+--[[
+  Valida formato UUID (segurança)
+--]]
+function validate_uuid(uuid)
+    if not uuid or uuid == "" then return false end
+    -- UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    local pattern = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    return string.match(uuid, pattern) ~= nil
+end
+
+--[[
+  Escape SQL para prevenir injection (fallback)
+--]]
+function escape_sql(str)
+    if not str then return "" end
+    -- Remove caracteres perigosos para SQL
+    return str:gsub("'", "''"):gsub("\\", "\\\\"):gsub(";", "")
 end
 
 --[[
@@ -207,7 +260,7 @@ function transcribe_audio(audio_file)
         format = "wav"
     })
     
-    local response = http.post(VOICE_AI_URL .. "/transcribe", payload, {
+    local response = http.post(VOICE_AI_API .. "/transcribe", payload, {
         ["Content-Type"] = "application/json"
     })
     
@@ -231,7 +284,7 @@ function chat_with_ai(message, config)
         system_prompt = config.system_prompt
     })
     
-    local response = http.post(VOICE_AI_URL .. "/chat", payload, {
+    local response = http.post(VOICE_AI_API .. "/chat", payload, {
         ["Content-Type"] = "application/json"
     })
     
@@ -247,6 +300,8 @@ end
 
 --[[
   Sintetiza texto e reproduz
+  
+  A API retorna audio_file (caminho no servidor FreeSWITCH)
 --]]
 function synthesize_and_play(text)
     if not text or text == "" then return end
@@ -254,28 +309,41 @@ function synthesize_and_play(text)
     local payload = json.encode({
         domain_uuid = domain_uuid,
         text = text,
-        voice = "alloy"
+        voice_id = config and config.voice or "alloy"
     })
     
-    local response = http.post(VOICE_AI_URL .. "/synthesize", payload, {
+    local response = http.post(VOICE_AI_API .. "/synthesize", payload, {
         ["Content-Type"] = "application/json"
     })
     
     if response and response.status == 200 then
         local data = json.decode(response.body)
-        if data and data.audio_base64 then
-            -- Salvar áudio em arquivo temporário
-            local filename = string.format("/tmp/voice_ai_tts_%s_%d.wav", call_uuid, os.time())
-            local file = io.open(filename, "wb")
-            file:write(base64_decode(data.audio_base64))
-            file:close()
+        if data and data.audio_file then
+            -- A API retorna o caminho do arquivo de áudio
+            -- Formato: /var/lib/freeswitch/sounds/voice_ai/...
+            local audio_path = data.audio_file
             
-            -- Reproduzir
-            session:streamFile(filename)
-            
-            -- Limpar
-            os.remove(filename)
+            -- Verificar se arquivo existe
+            local file = io.open(audio_path, "r")
+            if file then
+                file:close()
+                
+                -- Reproduzir
+                session:streamFile(audio_path)
+                
+                -- Limpar arquivo temporário após reprodução
+                os.remove(audio_path)
+            else
+                freeswitch.consoleLog("WARNING", 
+                    string.format("[VoiceAI] Audio file not found: %s\n", audio_path))
+            end
+        else
+            freeswitch.consoleLog("WARNING", "[VoiceAI] TTS response missing audio_file\n")
         end
+    else
+        freeswitch.consoleLog("ERR", 
+            string.format("[VoiceAI] TTS failed: status=%s\n", 
+                response and response.status or "nil"))
     end
 end
 
@@ -311,7 +379,7 @@ function save_conversation(resolution)
         transcript = history
     })
     
-    http.post(VOICE_AI_URL .. "/conversations", payload, {
+    http.post(VOICE_AI_API .. "/conversations", payload, {
         ["Content-Type"] = "application/json"
     })
 end

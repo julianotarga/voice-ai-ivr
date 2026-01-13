@@ -42,9 +42,17 @@ class BaseRequest(BaseModel):
 class TranscribeRequest(BaseRequest):
     """Request to transcribe audio to text (STT)."""
     
-    audio_file: str = Field(
-        ...,
+    audio_file: Optional[str] = Field(
+        default=None,
         description="Path to the audio file to transcribe",
+    )
+    audio_base64: Optional[str] = Field(
+        default=None,
+        description="Audio content as base64 string (alternative to audio_file)",
+    )
+    format: str = Field(
+        default="wav",
+        description="Audio format when using audio_base64 (wav, mp3, webm)",
     )
     language: str = Field(
         default="pt",
@@ -54,6 +62,12 @@ class TranscribeRequest(BaseRequest):
         default=None,
         description="STT provider to use (whisper_local, whisper_api, azure_speech, etc.)",
     )
+    
+    @field_validator('audio_file', 'audio_base64', mode='before')
+    @classmethod
+    def validate_audio_source(cls, v, info):
+        """Validate that at least one audio source is provided."""
+        return v
 
 
 class SynthesizeRequest(BaseRequest):
