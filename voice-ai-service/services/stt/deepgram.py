@@ -31,7 +31,9 @@ class DeepgramSTT(BaseSTT):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.api_key = config.get("api_key")
+        import os
+        # Fallback para env var DEEPGRAM_API_KEY
+        self.api_key = config.get("api_key") or os.environ.get("DEEPGRAM_API_KEY", "")
         self.model = config.get("model", "nova-2")
         self.smart_format = config.get("smart_format", True)
         self.punctuate = config.get("punctuate", True)

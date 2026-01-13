@@ -35,7 +35,8 @@ class ElevenLabsTTS(BaseTTS):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.api_key = config.get("api_key")
+        # Fallback para env var se não configurado no banco
+        self.api_key = config.get("api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
         self.default_voice_id = config.get("voice_id", "21m00Tcm4TlvDq8ikWAM")  # Rachel
         self.model_id = config.get("model_id", "eleven_multilingual_v2")
     

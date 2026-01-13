@@ -32,10 +32,12 @@ class OpenAILLM(BaseLLM):
     def _get_client(self) -> AsyncOpenAI:
         """Get or create OpenAI client."""
         if self._client is None:
+            # Fallback para env var OPENAI_API_KEY (auto-detectado pelo client se None)
+            api_key = self.config.get("api_key") or None
             self._client = AsyncOpenAI(
-                api_key=self.config.get("api_key"),
-                organization=self.config.get("organization"),
-                base_url=self.config.get("base_url"),
+                api_key=api_key,
+                organization=self.config.get("organization") or None,
+                base_url=self.config.get("base_url") or None,
             )
         return self._client
     

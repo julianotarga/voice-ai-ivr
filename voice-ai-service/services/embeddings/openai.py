@@ -44,9 +44,9 @@ class OpenAIEmbeddings(BaseEmbeddings):
     def _get_client(self) -> AsyncOpenAI:
         """Get or create OpenAI client."""
         if self._client is None:
-            self._client = AsyncOpenAI(
-                api_key=self.config.get("api_key"),
-            )
+            # Fallback para env var OPENAI_API_KEY (auto-detectado pelo client se None)
+            api_key = self.config.get("api_key") or None
+            self._client = AsyncOpenAI(api_key=api_key)
         return self._client
     
     async def embed(self, text: str) -> EmbeddingResult:

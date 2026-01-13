@@ -31,9 +31,9 @@ class AnthropicLLM(BaseLLM):
     def _get_client(self) -> AsyncAnthropic:
         """Get or create Anthropic client."""
         if self._client is None:
-            self._client = AsyncAnthropic(
-                api_key=self.config.get("api_key"),
-            )
+            # Fallback para env var ANTHROPIC_API_KEY (auto-detectado pelo client se None)
+            api_key = self.config.get("api_key") or None
+            self._client = AsyncAnthropic(api_key=api_key)
         return self._client
     
     async def chat(
