@@ -1,11 +1,12 @@
 -- ============================================
--- Migration 001: Create v_voice_ai_providers table
+-- Migration 001: v_voice_ai_providers
 -- Voice AI IVR - Provedores de IA Multi-Provider
 -- 
 -- ⚠️ MULTI-TENANT: domain_uuid é OBRIGATÓRIO
+-- ⚠️ IDEMPOTENTE: Pode ser executada múltiplas vezes
 -- ============================================
 
--- Criar tabela apenas se não existir
+-- Criar tabela
 CREATE TABLE IF NOT EXISTS v_voice_ai_providers (
     voice_ai_provider_uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     domain_uuid UUID NOT NULL REFERENCES v_domains(domain_uuid) ON DELETE CASCADE,
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS v_voice_ai_providers (
     -- Tipo e Provider
     provider_type VARCHAR(20) NOT NULL,
     provider_name VARCHAR(50) NOT NULL,
+    display_name VARCHAR(100),
     
     -- Configuração (JSON flexível)
     config JSONB NOT NULL DEFAULT '{}',
@@ -35,41 +37,38 @@ CREATE TABLE IF NOT EXISTS v_voice_ai_providers (
     UNIQUE(domain_uuid, provider_type, provider_name)
 );
 
--- Check constraints
-DO $$ 
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_provider_type'
-    ) THEN
-        ALTER TABLE v_voice_ai_providers ADD CONSTRAINT chk_provider_type 
-            CHECK (provider_type IN ('stt', 'tts', 'llm', 'embeddings'));
+-- Adicionar colunas se não existirem
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'v_voice_ai_providers' AND column_name = 'display_name') 
+    THEN
+        ALTER TABLE v_voice_ai_providers ADD COLUMN display_name VARCHAR(100);
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'v_voice_ai_providers' AND column_name = 'is_enabled') 
+    THEN
+        ALTER TABLE v_voice_ai_providers ADD COLUMN is_enabled BOOLEAN DEFAULT TRUE;
     END IF;
 END $$;
 
-DO $$ 
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_provider_name'
-    ) THEN
-        ALTER TABLE v_voice_ai_providers ADD CONSTRAINT chk_provider_name
-            CHECK (provider_name IN (
-                -- STT Providers
-                'whisper_local', 'whisper_api', 'azure_speech', 'google_speech', 
-                'aws_transcribe', 'deepgram',
-                -- TTS Providers
-                'piper_local', 'coqui_local', 'openai_tts', 'elevenlabs', 
-                'azure_neural', 'google_tts', 'aws_polly', 'playht',
-                -- LLM Providers
-                'openai', 'azure_openai', 'anthropic', 'google_gemini', 
-                'aws_bedrock', 'groq', 'ollama_local', 'lmstudio_local',
-                -- Embeddings Providers
-                'openai_embeddings', 'azure_embeddings', 'cohere', 'voyage', 
-                'local_embeddings'
-            ));
+-- Drop constraints antigas se existirem e criar novas
+DO $$ BEGIN
+    -- Drop constraint antiga de tipo
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_provider_type') THEN
+        ALTER TABLE v_voice_ai_providers DROP CONSTRAINT chk_provider_type;
     END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'v_voice_ai_providers_provider_type_check') THEN
+        ALTER TABLE v_voice_ai_providers DROP CONSTRAINT v_voice_ai_providers_provider_type_check;
+    END IF;
+    
+    -- Criar constraint de tipo incluindo 'realtime'
+    ALTER TABLE v_voice_ai_providers ADD CONSTRAINT chk_provider_type 
+        CHECK (provider_type IN ('stt', 'tts', 'llm', 'embeddings', 'realtime'));
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- Índices para performance multi-tenant
+-- Índices
 CREATE INDEX IF NOT EXISTS idx_voice_ai_providers_domain 
     ON v_voice_ai_providers(domain_uuid);
 CREATE INDEX IF NOT EXISTS idx_voice_ai_providers_type_enabled 
@@ -78,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_voice_ai_providers_default
     ON v_voice_ai_providers(domain_uuid, provider_type) 
     WHERE is_default = TRUE;
 
--- Comentário
-COMMENT ON TABLE v_voice_ai_providers IS 'Configuração de provedores de IA por tenant (STT, TTS, LLM, Embeddings)';
+-- Comentários
+COMMENT ON TABLE v_voice_ai_providers IS 'Configuração de provedores de IA por tenant (STT, TTS, LLM, Embeddings, Realtime)';
 COMMENT ON COLUMN v_voice_ai_providers.domain_uuid IS 'OBRIGATÓRIO: UUID do domínio para isolamento multi-tenant';
 COMMENT ON COLUMN v_voice_ai_providers.config IS 'Configuração JSON do provider (API keys, modelos, etc)';

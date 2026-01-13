@@ -1,8 +1,9 @@
 -- ============================================
--- Migration 003: Create v_voice_documents and chunks tables
+-- Migration 003: v_voice_documents e v_voice_document_chunks
 -- Voice AI IVR - Base de Conhecimento (RAG)
 -- 
 -- ⚠️ MULTI-TENANT: domain_uuid é OBRIGATÓRIO
+-- ⚠️ IDEMPOTENTE: Pode ser executada múltiplas vezes
 -- ============================================
 
 -- Documentos
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS v_voice_documents (
     processed_at TIMESTAMP WITH TIME ZONE,
     
     -- Controle
-    enabled BOOLEAN DEFAULT TRUE,
+    is_enabled BOOLEAN DEFAULT TRUE,
     insert_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     update_date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -54,13 +55,24 @@ CREATE TABLE IF NOT EXISTS v_voice_document_chunks (
     insert_date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Índices para performance multi-tenant
+-- Adicionar colunas se não existirem
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'v_voice_documents' AND column_name = 'is_enabled') 
+    THEN
+        ALTER TABLE v_voice_documents ADD COLUMN is_enabled BOOLEAN DEFAULT TRUE;
+    END IF;
+END $$;
+
+-- Índices
 CREATE INDEX IF NOT EXISTS idx_voice_documents_domain 
     ON v_voice_documents(domain_uuid);
 CREATE INDEX IF NOT EXISTS idx_voice_documents_secretary 
     ON v_voice_documents(voice_secretary_uuid);
 CREATE INDEX IF NOT EXISTS idx_voice_documents_enabled 
-    ON v_voice_documents(domain_uuid, enabled);
+    ON v_voice_documents(domain_uuid, is_enabled);
+CREATE INDEX IF NOT EXISTS idx_voice_documents_status 
+    ON v_voice_documents(processing_status);
 
 CREATE INDEX IF NOT EXISTS idx_voice_document_chunks_document 
     ON v_voice_document_chunks(voice_document_uuid);
@@ -71,5 +83,4 @@ CREATE INDEX IF NOT EXISTS idx_voice_document_chunks_index
 COMMENT ON TABLE v_voice_documents IS 'Documentos da base de conhecimento para RAG';
 COMMENT ON COLUMN v_voice_documents.domain_uuid IS 'OBRIGATÓRIO: UUID do domínio para isolamento multi-tenant';
 COMMENT ON COLUMN v_voice_documents.voice_secretary_uuid IS 'Secretária específica (NULL = disponível para todas do domínio)';
-
 COMMENT ON TABLE v_voice_document_chunks IS 'Fragmentos dos documentos com embeddings para busca vetorial';
