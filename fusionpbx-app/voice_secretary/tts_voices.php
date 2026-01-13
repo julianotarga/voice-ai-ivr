@@ -60,7 +60,8 @@ if (empty($row) || empty($row['provider_name'])) {
 $provider_name = $row['provider_name'];
 
 // Buscar service_url (domain settings) - fallback default
-$service_url = 'http://127.0.0.1:8089/api/v1';
+// NOTE: voice-ai-service expõe /api/v1 por padrão na porta 8100 (docker-compose).
+$service_url = 'http://127.0.0.1:8100/api/v1';
 try {
     $sql = "SELECT setting_value
             FROM v_default_settings
@@ -77,44 +78,67 @@ try {
 }
 
 $service_url = rtrim($service_url, '/');
-$url = $service_url . "/tts/voices"
-    . "?domain_uuid=" . urlencode($domain_uuid)
+$query = "?domain_uuid=" . urlencode($domain_uuid)
     . "&provider=" . urlencode($provider_name)
     . "&language=" . urlencode($language);
 
-// Proxy request via cURL
-$ch = curl_init($url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-curl_setopt($ch, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
-
-$resp = curl_exec($ch);
-$http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curl_err = curl_error($ch);
-curl_close($ch);
-
-if ($resp === false || !empty($curl_err)) {
-    http_response_code(502);
-    echo json_encode(["success" => false, "message" => "voice-ai-service unreachable", "detail" => $curl_err]);
-    exit;
+$urls_to_try = [];
+$urls_to_try[] = $service_url . "/tts/voices" . $query;
+// fallback legacy port (instalações antigas)
+$urls_to_try[] = "http://127.0.0.1:8089/api/v1/tts/voices" . $query;
+// fallback env (se o admin setar via nginx/php-fpm env)
+if (!empty($_ENV['VOICE_AI_SERVICE_URL'])) {
+    $env_service_url = rtrim($_ENV['VOICE_AI_SERVICE_URL'], '/');
+    $urls_to_try[] = $env_service_url . "/tts/voices" . $query;
 }
 
-if ($http_code < 200 || $http_code >= 300) {
-    http_response_code($http_code);
-    echo json_encode(["success" => false, "message" => "voice-ai-service error", "detail" => $resp]);
-    exit;
+// Proxy request via cURL (tenta múltiplas URLs)
+$last_err = null;
+$last_resp = null;
+$last_code = null;
+$used_url = null;
+
+foreach ($urls_to_try as $try_url) {
+    $used_url = $try_url;
+    $ch = curl_init($try_url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ["Accept: application/json"]);
+
+    $resp = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curl_err = curl_error($ch);
+    curl_close($ch);
+
+    $last_resp = $resp;
+    $last_code = $http_code;
+    $last_err = $curl_err;
+
+    // sucesso HTTP
+    if ($resp !== false && empty($curl_err) && $http_code >= 200 && $http_code < 300) {
+        $data = json_decode($resp, true);
+        if ($data !== null) {
+            echo json_encode([
+                "success" => true,
+                "voices" => $data,
+                "service_url" => $try_url
+            ]);
+            exit;
+        }
+    }
 }
+
+http_response_code(502);
+echo json_encode([
+    "success" => false,
+    "message" => "voice-ai-service unreachable",
+    "detail" => !empty($last_err) ? $last_err : $last_resp,
+    "service_url" => $used_url
+]);
+exit;
 
 // Return as-is, but wrap in success for UI convenience
-$data = json_decode($resp, true);
-if ($data === null) {
-    // Not JSON
-    echo json_encode(["success" => false, "message" => "invalid response from voice-ai-service", "detail" => $resp]);
-    exit;
-}
-
-echo json_encode(["success" => true, "voices" => $data]);
-exit;
+// (unreachable; handled above)
 
 ?>

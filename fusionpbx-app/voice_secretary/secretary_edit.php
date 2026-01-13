@@ -519,7 +519,9 @@ async function loadTtsVoices(silent) {
 		const resp = await fetch('tts_voices.php?provider_uuid=' + encodeURIComponent(providerUuid) + '&language=' + encodeURIComponent(language));
 		const data = await resp.json();
 		if (!data.success) {
-			status.textContent = 'Falha ao carregar vozes: ' + (data.message || 'erro');
+			status.textContent = 'Falha ao carregar vozes: ' + (data.message || 'erro')
+				+ (data.detail ? (' | ' + data.detail) : '')
+				+ (data.service_url ? (' | url=' + data.service_url) : '');
 			return;
 		}
 
