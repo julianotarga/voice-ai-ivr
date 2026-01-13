@@ -34,8 +34,10 @@ class PlayHTTTS(BaseTTS):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.api_key = config.get("api_key")
-        self.user_id = config.get("user_id")
+        import os
+        # Fallback para env vars Play.ht
+        self.api_key = config.get("api_key") or os.environ.get("PLAYHT_API_KEY", "")
+        self.user_id = config.get("user_id") or os.environ.get("PLAYHT_USER_ID", "")
         self.voice = config.get("voice", "pt-BR-AntonioNeural")
         self.quality = config.get("quality", "medium")
         self.default_speed = config.get("speed", 1.0)

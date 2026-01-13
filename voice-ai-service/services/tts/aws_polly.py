@@ -37,9 +37,11 @@ class AWSPollyTTS(BaseTTS):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.aws_access_key_id = config.get("aws_access_key_id")
-        self.aws_secret_access_key = config.get("aws_secret_access_key")
-        self.region_name = config.get("region_name", "us-east-1")
+        import os
+        # Fallback para env vars AWS
+        self.aws_access_key_id = config.get("aws_access_key_id") or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        self.aws_secret_access_key = config.get("aws_secret_access_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        self.region_name = config.get("region_name") or os.environ.get("AWS_REGION", "us-east-1")
         self.voice_id = config.get("voice_id", "Camila")
         self.engine = config.get("engine", "neural")
     

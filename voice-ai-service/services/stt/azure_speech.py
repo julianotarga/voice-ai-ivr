@@ -25,8 +25,10 @@ class AzureSpeechSTT(BaseSTT):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.subscription_key = config.get("subscription_key") or config.get("api_key")
-        self.region = config.get("region", "brazilsouth")
+        import os
+        # Fallback para env vars Azure Speech
+        self.subscription_key = config.get("subscription_key") or config.get("api_key") or os.environ.get("AZURE_SPEECH_KEY", "")
+        self.region = config.get("region") or os.environ.get("AZURE_SPEECH_REGION", "brazilsouth")
         self.language = config.get("language", "pt-BR")
     
     async def transcribe(

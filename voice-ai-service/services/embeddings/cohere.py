@@ -35,7 +35,9 @@ class CohereEmbeddings(BaseEmbeddings):
     
     def __init__(self, config: dict):
         super().__init__(config)
-        self.api_key = config.get("api_key")
+        import os
+        # Fallback para env var COHERE_API_KEY
+        self.api_key = config.get("api_key") or os.environ.get("COHERE_API_KEY", "")
         self.model = config.get("model", "embed-multilingual-v3.0")
         self.input_type = config.get("input_type", "search_document")
         self.dimensions = self.MODEL_DIMENSIONS.get(self.model, 1024)

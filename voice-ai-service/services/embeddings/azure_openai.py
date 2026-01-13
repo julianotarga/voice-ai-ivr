@@ -26,10 +26,12 @@ class AzureOpenAIEmbeddings(BaseEmbeddings):
     
     def __init__(self, config: dict):
         super().__init__(config)
+        import os
         self._client: Optional[AsyncAzureOpenAI] = None
         
-        self.api_key = config.get("api_key")
-        self.endpoint = config.get("endpoint") or config.get("azure_endpoint")
+        # Fallback para env vars Azure
+        self.api_key = config.get("api_key") or os.environ.get("AZURE_OPENAI_API_KEY", "")
+        self.endpoint = config.get("endpoint") or config.get("azure_endpoint") or os.environ.get("AZURE_OPENAI_ENDPOINT", "")
         self.deployment_name = config.get("deployment_name") or config.get("deployment")
         self.api_version = config.get("api_version", "2024-02-15-preview")
         self.dimensions = config.get("dimensions", 1536)
