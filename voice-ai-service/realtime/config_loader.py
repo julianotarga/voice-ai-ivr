@@ -245,42 +245,42 @@ class ConfigLoader:
             async with self.db_pool.acquire() as conn:
                 row = await conn.fetchrow("""
                     SELECT 
-                        secretary_uuid,
+                        voice_secretary_uuid,
                         domain_uuid,
-                        name,
+                        secretary_name,
                         extension,
                         processing_mode,
-                        system_prompt,
+                        personality_prompt,
                         greeting_message,
                         farewell_message,
                         realtime_provider_name,
                         realtime_provider_config,
-                        voice,
+                        tts_voice_id,
                         language,
                         max_turns,
-                        is_enabled
+                        enabled
                     FROM v_voice_secretaries
                     WHERE domain_uuid = $1 
                       AND extension = $2
-                      AND is_enabled = true
+                      AND enabled = true
                 """, domain_uuid, extension)
                 
                 if row:
                     return SecretaryConfig(
-                        secretary_uuid=str(row['secretary_uuid']),
+                        secretary_uuid=str(row['voice_secretary_uuid']),
                         domain_uuid=str(row['domain_uuid']),
-                        name=row['name'] or 'Secretária',
+                        name=row['secretary_name'] or 'Secretária',
                         extension=row['extension'],
                         processing_mode=row['processing_mode'] or 'turn_based',
-                        system_prompt=row['system_prompt'] or '',
+                        system_prompt=row['personality_prompt'] or '',
                         greeting_message=row['greeting_message'] or 'Olá!',
                         farewell_message=row['farewell_message'] or 'Até logo!',
                         realtime_provider=row['realtime_provider_name'],
                         realtime_provider_config=row['realtime_provider_config'] or {},
-                        voice=row['voice'] or 'alloy',
+                        voice=row['tts_voice_id'] or 'alloy',
                         language=row['language'] or 'pt-BR',
                         max_turns=row['max_turns'] or 20,
-                        is_enabled=row['is_enabled'],
+                        is_enabled=row['enabled'],
                     )
                     
         except Exception as e:
@@ -298,41 +298,41 @@ class ConfigLoader:
             async with self.db_pool.acquire() as conn:
                 row = await conn.fetchrow("""
                     SELECT 
-                        secretary_uuid,
+                        voice_secretary_uuid,
                         domain_uuid,
-                        name,
+                        secretary_name,
                         extension,
                         processing_mode,
-                        system_prompt,
+                        personality_prompt,
                         greeting_message,
                         farewell_message,
                         realtime_provider_name,
                         realtime_provider_config,
-                        voice,
+                        tts_voice_id,
                         language,
                         max_turns,
-                        is_enabled
+                        enabled
                     FROM v_voice_secretaries
                     WHERE domain_uuid = $1 
-                      AND secretary_uuid = $2
+                      AND voice_secretary_uuid = $2
                 """, domain_uuid, secretary_uuid)
                 
                 if row:
                     return SecretaryConfig(
-                        secretary_uuid=str(row['secretary_uuid']),
+                        secretary_uuid=str(row['voice_secretary_uuid']),
                         domain_uuid=str(row['domain_uuid']),
-                        name=row['name'] or 'Secretária',
+                        name=row['secretary_name'] or 'Secretária',
                         extension=row['extension'],
                         processing_mode=row['processing_mode'] or 'turn_based',
-                        system_prompt=row['system_prompt'] or '',
+                        system_prompt=row['personality_prompt'] or '',
                         greeting_message=row['greeting_message'] or 'Olá!',
                         farewell_message=row['farewell_message'] or 'Até logo!',
                         realtime_provider=row['realtime_provider_name'],
                         realtime_provider_config=row['realtime_provider_config'] or {},
-                        voice=row['voice'] or 'alloy',
+                        voice=row['tts_voice_id'] or 'alloy',
                         language=row['language'] or 'pt-BR',
                         max_turns=row['max_turns'] or 20,
-                        is_enabled=row['is_enabled'],
+                        is_enabled=row['enabled'],
                     )
                     
         except Exception as e:
@@ -352,7 +352,7 @@ class ConfigLoader:
                 if provider_name:
                     row = await conn.fetchrow("""
                         SELECT 
-                            provider_uuid,
+                            voice_ai_provider_uuid,
                             domain_uuid,
                             provider_type,
                             provider_name,
@@ -369,7 +369,7 @@ class ConfigLoader:
                     # Buscar provider default
                     row = await conn.fetchrow("""
                         SELECT 
-                            provider_uuid,
+                            voice_ai_provider_uuid,
                             domain_uuid,
                             provider_type,
                             provider_name,
@@ -387,7 +387,7 @@ class ConfigLoader:
                 
                 if row:
                     return ProviderCredentials(
-                        provider_uuid=str(row['provider_uuid']),
+                        provider_uuid=str(row['voice_ai_provider_uuid']),
                         domain_uuid=str(row['domain_uuid']),
                         provider_type=row['provider_type'],
                         provider_name=row['provider_name'],

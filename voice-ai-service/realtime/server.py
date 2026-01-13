@@ -2,9 +2,9 @@
 Realtime WebSocket Server - Bridge FreeSWITCH ↔ AI Providers
 
 Referências:
-- .context/docs/architecture.md: voice-ai-realtime:8080 (WebSocket)
-- .context/docs/data-flow.md: ws://localhost:8080/stream/{uuid}
-- .context/agents/devops-specialist.md: Porta 8080
+- .context/docs/architecture.md: voice-ai-realtime:8085 (WebSocket)
+- .context/docs/data-flow.md: ws://localhost:8085/stream/{uuid}
+- .context/agents/devops-specialist.md: Porta 8085
 - openspec/changes/voice-ai-realtime/design.md: Decision 2 (Protocol)
 """
 
@@ -34,7 +34,7 @@ class RealtimeServer:
     def __init__(
         self,
         host: str = "0.0.0.0",
-        port: int = 8080,
+        port: int = 8085,
         db_pool=None,
     ):
         self.host = host
@@ -193,9 +193,9 @@ class RealtimeServer:
         websocket: ServerConnection,
     ):
         """Cria sessão com configuração do banco."""
-        from services.database import get_pool
+        from services.database import db
         
-        pool = await get_pool()
+        pool = await db.get_pool()
         
         async with pool.acquire() as conn:
             # Buscar secretária configurada para este domain (Multi-tenant)
@@ -252,7 +252,7 @@ class RealtimeServer:
         return session
 
 
-async def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+async def run_server(host: str = "0.0.0.0", port: int = 8085) -> None:
     """Função helper para rodar o servidor."""
     server = RealtimeServer(host=host, port=port)
     await server.serve_forever()
@@ -266,5 +266,5 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8085
     asyncio.run(run_server(port=port))

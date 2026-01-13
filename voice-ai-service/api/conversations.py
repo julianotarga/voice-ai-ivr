@@ -11,8 +11,16 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
-from services.database import get_db_pool
+from services.database import db
 from models.request import BaseRequest
+
+
+async def get_db_pool():
+    """Get database pool (compatibility wrapper)."""
+    try:
+        return await db.get_pool()
+    except Exception:
+        return None
 
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])

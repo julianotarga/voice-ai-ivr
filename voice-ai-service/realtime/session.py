@@ -151,9 +151,9 @@ class RealtimeSession:
     async def _create_provider(self) -> None:
         """Cria e conecta ao provider."""
         # Buscar credenciais do banco (Multi-tenant)
-        from services.database import get_pool
+        from services.database import db
         
-        pool = await get_pool()
+        pool = await db.get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -395,10 +395,10 @@ class RealtimeSession:
     
     async def _save_conversation(self, resolution: str) -> None:
         """Salva conversa no banco."""
-        from services.database import get_pool
+        from services.database import db
         
         try:
-            pool = await get_pool()
+            pool = await db.get_pool()
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     conv_uuid = await conn.fetchval(
