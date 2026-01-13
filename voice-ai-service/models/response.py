@@ -140,3 +140,12 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
     code: Optional[str] = None
+
+
+class VoiceOption(BaseModel):
+    """Voice option for TTS providers."""
+
+    voice_id: str = Field(..., description="Provider-specific voice identifier")
+    name: str = Field(..., description="Human-readable voice name")
+    language: str = Field(..., description="Language code (e.g., pt-BR)")
+    gender: Optional[str] = Field(default=None, description="Gender if provided by provider")

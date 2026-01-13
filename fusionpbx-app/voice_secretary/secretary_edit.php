@@ -335,7 +335,7 @@
 			<?php echo $text['label-personality_prompt'] ?? 'Personality Prompt'; ?>
 		</td>
 		<td class="vtable" align="left">
-			<textarea class="formfld" name="system_prompt" rows="6"><?php echo escape($data['personality_prompt'] ?? ''); ?></textarea>
+			<textarea class="formfld" name="system_prompt" rows="10" style="width: 100%; min-height: 180px; resize: vertical;"><?php echo escape($data['personality_prompt'] ?? ''); ?></textarea>
 			<br><?php echo $text['description-personality_prompt'] ?? 'Instructions for the AI personality.'; ?>
 		</td>
 	</tr>
@@ -345,7 +345,7 @@
 			<?php echo $text['label-greeting'] ?? 'Greeting'; ?>
 		</td>
 		<td class="vtable" align="left">
-			<textarea class="formfld" name="greeting_message" rows="2"><?php echo escape($data['greeting_message'] ?? 'Olá! Como posso ajudar?'); ?></textarea>
+			<textarea class="formfld" name="greeting_message" rows="4" style="width: 100%; min-height: 110px; resize: vertical;"><?php echo escape($data['greeting_message'] ?? 'Olá! Como posso ajudar?'); ?></textarea>
 		</td>
 	</tr>
 
@@ -354,7 +354,7 @@
 			<?php echo $text['label-farewell'] ?? 'Farewell'; ?>
 		</td>
 		<td class="vtable" align="left">
-			<textarea class="formfld" name="farewell_message" rows="2"><?php echo escape($data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!'); ?></textarea>
+			<textarea class="formfld" name="farewell_message" rows="4" style="width: 100%; min-height: 110px; resize: vertical;"><?php echo escape($data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!'); ?></textarea>
 		</td>
 	</tr>
 
@@ -383,7 +383,7 @@
 			<?php echo $text['label-tts_provider'] ?? 'TTS Provider'; ?>
 		</td>
 		<td class="vtable" align="left">
-			<select class="formfld" name="tts_provider_uuid">
+			<select class="formfld" name="tts_provider_uuid" id="tts_provider_uuid" onchange="loadTtsVoices(true)">
 				<option value=""><?php echo $text['option-default'] ?? 'Default'; ?></option>
 				<?php foreach ($tts_providers as $p) { ?>
 					<option value="<?php echo $p['voice_ai_provider_uuid']; ?>" <?php echo (($data['tts_provider_uuid'] ?? '') === $p['voice_ai_provider_uuid']) ? 'selected' : ''; ?>>
@@ -399,7 +399,17 @@
 			<?php echo $text['label-tts_voice'] ?? 'TTS Voice'; ?>
 		</td>
 		<td class="vtable" align="left">
-			<input class="formfld" type="text" name="tts_voice" maxlength="100" value="<?php echo escape($data['tts_voice_id'] ?? ''); ?>">
+			<input class="formfld" type="text" name="tts_voice" id="tts_voice" maxlength="200" style="width: 420px;"
+				value="<?php echo escape($data['tts_voice_id'] ?? ''); ?>" placeholder="ex: nova, alloy, 21m00Tcm4TlvDq8ikWAM">
+			<br>
+			<select class="formfld" id="tts_voice_select" style="width: 420px; margin-top: 6px; display: none;"
+				onchange="document.getElementById('tts_voice').value = this.value;">
+				<option value=""><?php echo $text['option-select'] ?? 'Select...'; ?></option>
+			</select>
+			<button type="button" class="btn btn-default btn-xs" style="margin-left: 8px;" onclick="loadTtsVoices(false)">
+				<span class="fas fa-sync fa-fw"></span> Carregar vozes
+			</button>
+			<div id="tts_voice_status" style="margin-top: 6px; font-size: 12px; color: #666;"></div>
 		</td>
 	</tr>
 
@@ -485,9 +495,59 @@ function toggleRealtimeProvider() {
 		row.style.display = 'none';
 	}
 }
+
+async function loadTtsVoices(silent) {
+	try {
+		var providerUuid = document.getElementById('tts_provider_uuid')?.value || '';
+		var language = document.querySelector('select[name="language"]')?.value || 'pt-BR';
+		var select = document.getElementById('tts_voice_select');
+		var status = document.getElementById('tts_voice_status');
+
+		// Sem provider selecionado: não carregar
+		if (!providerUuid) {
+			if (!silent) {
+				status.textContent = 'Selecione um TTS Provider para listar vozes.';
+			}
+			select.style.display = 'none';
+			return;
+		}
+
+		status.textContent = silent ? '' : 'Carregando vozes...';
+		select.style.display = 'none';
+		select.innerHTML = '<option value=""><?php echo $text["option-select"] ?? "Select..."; ?></option>';
+
+		const resp = await fetch('tts_voices.php?provider_uuid=' + encodeURIComponent(providerUuid) + '&language=' + encodeURIComponent(language));
+		const data = await resp.json();
+		if (!data.success) {
+			status.textContent = 'Falha ao carregar vozes: ' + (data.message || 'erro');
+			return;
+		}
+
+		const voices = data.voices || [];
+		if (!Array.isArray(voices) || voices.length === 0) {
+			status.textContent = 'Nenhuma voz retornada pelo provider.';
+			return;
+		}
+
+		voices.forEach(v => {
+			const opt = document.createElement('option');
+			opt.value = v.voice_id;
+			const label = (v.name ? v.name + ' - ' : '') + v.voice_id + (v.gender ? ' (' + v.gender + ')' : '');
+			opt.textContent = label;
+			select.appendChild(opt);
+		});
+
+		select.style.display = '';
+		status.textContent = 'Vozes carregadas: ' + voices.length;
+	} catch (e) {
+		var status = document.getElementById('tts_voice_status');
+		if (status) status.textContent = 'Erro ao carregar vozes.';
+	}
+}
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
 	toggleRealtimeProvider();
+	loadTtsVoices(true);
 });
 </script>
 
