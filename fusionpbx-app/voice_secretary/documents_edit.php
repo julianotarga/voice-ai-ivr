@@ -8,24 +8,29 @@
  * @package voice_secretary
  */
 
-// Include required files
-require_once "root.php";
-require_once "resources/require.php";
-require_once "resources/check_auth.php";
+//includes files
+	require_once dirname(__DIR__, 2) . "/resources/require.php";
+	require_once "resources/check_auth.php";
 
-// Check permission
-if (permission_exists('voice_secretary_add')) {
-    // Access allowed
-} else {
-    echo "access denied";
-    exit;
-}
+//check permissions
+	if (permission_exists('voice_secretary_add')) {
+		//access granted
+	}
+	else {
+		echo "access denied";
+		exit;
+	}
 
-// Validate multi-tenant
-require_once "resources/classes/domain_validator.php";
-domain_validator::init();
+//add multi-lingual support
+	$language = new text;
+	$text = $language->get();
 
-$domain_uuid = domain_validator::require_domain_uuid();
+//get domain_uuid from session
+	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
+	if (!$domain_uuid) {
+		echo "Error: domain_uuid not found in session.";
+		exit;
+	}
 
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
@@ -53,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
         
         if (move_uploaded_file($file['tmp_name'], $filepath)) {
             // Insert into database
-            $database = database::new();
+            $database = new database;
             
             $sql = "INSERT INTO v_voice_documents (
                 document_uuid,
