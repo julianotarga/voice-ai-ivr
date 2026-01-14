@@ -76,6 +76,10 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         # Mesma regra para prompt: alguns Agents bloqueiam override de agent.prompt.
         # Já vimos o erro: "Override for field 'prompt' is not allowed by config."
         self.allow_prompt_override = bool(credentials.get("allow_prompt_override", False))
+        # Se você já configurou prompt/voz/primeira mensagem no painel da ElevenLabs,
+        # o mais seguro é NÃO reenviar overrides via API (evita policy violation 1008).
+        # Como o FusionPBX hoje só expõe API Key / Agent ID / Voice ID, o default precisa ser True.
+        self.use_agent_config = bool(credentials.get("use_agent_config", True))
         
         if not self.api_key:
             raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
@@ -148,97 +152,87 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         if not self._ws:
             raise RuntimeError("Not connected")
         
-        # Construir override de configuração do agente
-        agent_config = {}
-        
-        # System prompt (personalidade)
-        # IMPORTANTE: alguns Agents bloqueiam override de prompt.
-        # Então só enviamos no override se allow_prompt_override=true.
-        if self.config.system_prompt and self.allow_prompt_override:
-            agent_config["prompt"] = {
-                "prompt": self.config.system_prompt,
-            }
-            logger.info("Setting prompt override (allow_prompt_override=true)", extra={
-                "domain_uuid": self.config.domain_uuid,
-            })
-        elif self.config.system_prompt and not self.allow_prompt_override:
-            logger.warning(
-                "system_prompt configurado mas override desabilitado; não enviaremos agent.prompt para evitar policy violation",
-                extra={"domain_uuid": self.config.domain_uuid},
-            )
-        
-        # First message (saudação)
-        # IMPORTANTE: alguns Agents bloqueiam override de first_message.
-        # Já vimos o erro: "Override for field 'first_message' is not allowed by config."
-        # Então só enviamos se allow_first_message_override=true.
-        first_message_for_override = self.config.first_message or ""
-        if first_message_for_override and self.allow_first_message_override:
-            agent_config["first_message"] = first_message_for_override
-            logger.info(f"Setting first_message override: {first_message_for_override[:50]}...", extra={
-                "domain_uuid": self.config.domain_uuid,
-            })
-        elif first_message_for_override and not self.allow_first_message_override:
-            logger.warning(
-                "first_message configurado mas override desabilitado; não enviaremos agent.first_message para evitar policy violation",
-                extra={"domain_uuid": self.config.domain_uuid},
-            )
-        
-        # Construir conversation_config_override
-        conversation_config_override = {
-            "agent": agent_config,
-        }
-        
-        # Voice override se especificado
-        # Conforme AsyncAPI oficial, voice_id override existe, mas pode ser bloqueado pelo Agent.
+        # Se o Agent já está configurado no painel, não enviar overrides (evita 1008).
         # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
-        if self.voice_id and self.allow_voice_id_override:
-            conversation_config_override["tts"] = {
-                "voice_id": self.voice_id,
-            }
-        elif self.voice_id and not self.allow_voice_id_override:
-            logger.warning(
-                "voice_id presente nas credenciais mas override desabilitado; não enviaremos tts.voice_id para evitar policy violation",
-                extra={"domain_uuid": self.config.domain_uuid},
-            )
-        
-        # Mensagem inicial - formato do SDK oficial!
-        # Tipo: "conversation_initiation_client_data" (NÃO "conversation_config_override")
+        conversation_config_override = None
+        agent_config = {}
+        if not self.use_agent_config:
+            # ===== overrides opcionais (apenas se explicitamente habilitado) =====
+            # System prompt (personalidade)
+            if self.config.system_prompt and self.allow_prompt_override:
+                agent_config["prompt"] = {
+                    "prompt": self.config.system_prompt,
+                }
+                logger.info("Setting prompt override (allow_prompt_override=true)", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                })
+            elif self.config.system_prompt and not self.allow_prompt_override:
+                logger.warning(
+                    "system_prompt configurado mas override desabilitado; não enviaremos agent.prompt para evitar policy violation",
+                    extra={"domain_uuid": self.config.domain_uuid},
+                )
+            
+            # First message (saudação)
+            first_message_for_override = self.config.first_message or ""
+            if first_message_for_override and self.allow_first_message_override:
+                agent_config["first_message"] = first_message_for_override
+                logger.info(f"Setting first_message override: {first_message_for_override[:50]}...", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                })
+            elif first_message_for_override and not self.allow_first_message_override:
+                logger.warning(
+                    "first_message configurado mas override desabilitado; não enviaremos agent.first_message para evitar policy violation",
+                    extra={"domain_uuid": self.config.domain_uuid},
+                )
+            
+            conversation_config_override = {"agent": agent_config}
+            
+            # Voice override (opcional)
+            if self.voice_id and self.allow_voice_id_override:
+                conversation_config_override["tts"] = {
+                    "voice_id": self.voice_id,
+                }
+            elif self.voice_id and not self.allow_voice_id_override:
+                logger.warning(
+                    "voice_id presente nas credenciais mas override desabilitado; não enviaremos tts.voice_id para evitar policy violation",
+                    extra={"domain_uuid": self.config.domain_uuid},
+                )
+
         initiation_message = {
             "type": "conversation_initiation_client_data",
-            "conversation_config_override": conversation_config_override,
             "dynamic_variables": {},  # Pode ser usado para passar variáveis dinâmicas
         }
+        if conversation_config_override:
+            initiation_message["conversation_config_override"] = conversation_config_override
         
         logger.info("Sending conversation_initiation_client_data", extra={
             "domain_uuid": self.config.domain_uuid,
-            "has_system_prompt": bool(self.config.system_prompt),
-            "has_first_message_override": bool(agent_config.get("first_message")),
-            "has_voice_id": bool(self.voice_id),
+            "use_agent_config": self.use_agent_config,
+            "has_overrides": bool(conversation_config_override),
         })
         
         await self._ws.send(json.dumps(initiation_message))
 
-        # Se não pudermos usar override de prompt, enviamos como contextual_update (AsyncAPI permitido),
-        # que adiciona contexto ao estado da conversa sem violar o contrato de overrides.
-        # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
-        if self.config.system_prompt and "prompt" not in agent_config:
-            await self._ws.send(json.dumps({
-                "type": "contextual_update",
-                "text": self.config.system_prompt,
-            }))
-            logger.info("Contextual update sent (system_prompt)", extra={
-                "domain_uuid": self.config.domain_uuid,
-            })
+        # Se estivermos usando o Agent config, não enviar contextual_update/kickoff automaticamente.
+        # A conversa deve ser dirigida pelo Agent e pelo áudio do usuário.
+        if not self.use_agent_config:
+            # Se não pudermos usar override de prompt, enviamos como contextual_update (AsyncAPI permitido)
+            if self.config.system_prompt and "prompt" not in agent_config:
+                await self._ws.send(json.dumps({
+                    "type": "contextual_update",
+                    "text": self.config.system_prompt,
+                }))
+                logger.info("Contextual update sent (system_prompt)", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                })
 
-        # Se o Agent não permitir first_message override, iniciamos a conversa com user_message,
-        # que é permitido pelo AsyncAPI oficial e força uma resposta do agente.
-        # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
-        if not agent_config.get("first_message"):
-            kickoff_text = self.config.first_message or "Olá!"
-            logger.info("Kickoff via user_message (sem first_message override)", extra={
-                "domain_uuid": self.config.domain_uuid,
-            })
-            await self.send_text(kickoff_text)
+            # Se o Agent não permitir first_message override, iniciamos via user_message
+            if not agent_config.get("first_message"):
+                kickoff_text = self.config.first_message or "Olá!"
+                logger.info("Kickoff via user_message (sem first_message override)", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                })
+                await self.send_text(kickoff_text)
     
     async def send_audio(self, audio_bytes: bytes) -> None:
         """
