@@ -64,7 +64,13 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         # Fallback para variáveis de ambiente se credentials estiver vazio
         self.api_key = credentials.get("api_key") or os.getenv("ELEVENLABS_API_KEY")
         self.agent_id = credentials.get("agent_id") or os.getenv("ELEVENLABS_AGENT_ID")
-        self.voice_id = credentials.get("voice_id") or config.voice
+        # IMPORTANTE:
+        # A AsyncAPI/Agents Platform pode bloquear override de voice_id dependendo do Agent config.
+        # Já vimos o erro: "Override for field 'voice_id' is not allowed by config."
+        # Portanto, NÃO fazemos fallback para config.voice e NÃO enviamos override por padrão.
+        # Só enviaremos se houver voice_id explícito em credentials e allow_voice_id_override=true.
+        self.voice_id = credentials.get("voice_id")
+        self.allow_voice_id_override = bool(credentials.get("allow_voice_id_override", False))
         
         if not self.api_key:
             raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
@@ -165,10 +171,17 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         }
         
         # Voice override se especificado
-        if self.voice_id:
+        # Conforme AsyncAPI oficial, voice_id override existe, mas pode ser bloqueado pelo Agent.
+        # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
+        if self.voice_id and self.allow_voice_id_override:
             conversation_config_override["tts"] = {
                 "voice_id": self.voice_id,
             }
+        elif self.voice_id and not self.allow_voice_id_override:
+            logger.warning(
+                "voice_id presente nas credenciais mas override desabilitado; não enviaremos tts.voice_id para evitar policy violation",
+                extra={"domain_uuid": self.config.domain_uuid},
+            )
         
         # Mensagem inicial - formato do SDK oficial!
         # Tipo: "conversation_initiation_client_data" (NÃO "conversation_config_override")
