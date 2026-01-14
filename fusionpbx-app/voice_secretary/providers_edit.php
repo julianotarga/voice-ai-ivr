@@ -182,6 +182,10 @@
 				echo "		</select>\n";
 			} elseif ($field['type'] === 'password') {
 				echo "		<input type='password' name='config[".escape($field['name'])."]' class='formfld' value='".escape($value)."' autocomplete='new-password' ".(!empty($field['required']) ? 'required' : '').">\n";
+			} elseif ($field['type'] === 'textarea') {
+				echo "		<textarea name='config[".escape($field['name'])."]' class='formfld' rows='6'>".escape($value)."</textarea>\n";
+			} elseif ($field['type'] === 'number') {
+				echo "		<input type='number' name='config[".escape($field['name'])."]' class='formfld' value='".escape($value)."' step='".escape($field['step'] ?? '1')."' min='".escape($field['min'] ?? '')."' max='".escape($field['max'] ?? '')."'>\n";
 			} else {
 				echo "		<input type='text' name='config[".escape($field['name'])."]' class='formfld' value='".escape($value)."' ".(!empty($field['required']) ? 'required' : '').">\n";
 			}

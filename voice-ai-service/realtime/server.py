@@ -301,9 +301,36 @@ class RealtimeServer:
                 "provider": row["provider_name"],
             })
         
-        # Configurar sessão
+        # Configurar sessão (com overrides por provider/tenant)
         vad_threshold = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.65"))
         silence_duration_ms = int(os.getenv("REALTIME_SILENCE_MS", "900"))
+        prefix_padding_ms = int(os.getenv("REALTIME_PREFIX_PADDING_MS", "300"))
+        max_response_output_tokens = int(os.getenv("REALTIME_MAX_OUTPUT_TOKENS", "4096"))
+        voice = (os.getenv("REALTIME_VOICE", "") or "").strip()
+        tools = None
+
+        # Provider config pode sobrescrever defaults
+        provider_config_raw = row.get("provider_config")
+        if isinstance(provider_config_raw, str):
+            try:
+                provider_config_raw = json.loads(provider_config_raw)
+            except Exception:
+                provider_config_raw = {}
+        provider_config = provider_config_raw or {}
+
+        if isinstance(provider_config, dict):
+            vad_threshold = float(provider_config.get("vad_threshold", vad_threshold))
+            silence_duration_ms = int(provider_config.get("silence_duration_ms", silence_duration_ms))
+            prefix_padding_ms = int(provider_config.get("prefix_padding_ms", prefix_padding_ms))
+            max_response_output_tokens = int(provider_config.get("max_response_output_tokens", max_response_output_tokens))
+            voice = str(provider_config.get("voice", voice or "alloy")).strip()
+            tools_json = provider_config.get("tools_json")
+            if tools_json:
+                try:
+                    tools = json.loads(tools_json) if isinstance(tools_json, str) else tools_json
+                except Exception:
+                    logger.warning("Invalid tools_json in provider_config", extra={"call_uuid": call_uuid})
+
         config = RealtimeSessionConfig(
             domain_uuid=domain_uuid,
             call_uuid=call_uuid,
@@ -316,6 +343,10 @@ class RealtimeServer:
             farewell=row["farewell"],
             vad_threshold=vad_threshold,
             silence_duration_ms=silence_duration_ms,
+            prefix_padding_ms=prefix_padding_ms,
+            max_response_output_tokens=max_response_output_tokens,
+            voice=voice or "alloy",
+            tools=tools,
         )
         
         logger.debug("Session config created", extra={

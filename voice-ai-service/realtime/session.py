@@ -54,10 +54,13 @@ class RealtimeSessionConfig:
     voice: str = "alloy"
     vad_threshold: float = 0.5
     silence_duration_ms: int = 500
+    prefix_padding_ms: int = 300
     freeswitch_sample_rate: int = 16000
     idle_timeout_seconds: int = 30
     max_duration_seconds: int = 600
     omniplay_webhook_url: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    max_response_output_tokens: int = 4096
 
 
 class RealtimeSession:
@@ -183,6 +186,9 @@ class RealtimeSession:
             first_message=self.config.greeting,
             vad_threshold=self.config.vad_threshold,
             silence_duration_ms=self.config.silence_duration_ms,
+            prefix_padding_ms=self.config.prefix_padding_ms,
+            tools=self.config.tools,
+            max_response_output_tokens=self.config.max_response_output_tokens,
         )
         
         self._provider = RealtimeProviderFactory.create(

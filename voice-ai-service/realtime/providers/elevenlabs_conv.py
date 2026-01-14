@@ -76,10 +76,20 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         # Mesma regra para prompt: alguns Agents bloqueiam override de agent.prompt.
         # Já vimos o erro: "Override for field 'prompt' is not allowed by config."
         self.allow_prompt_override = bool(credentials.get("allow_prompt_override", False))
+        # Overrides de TTS (stability/speed/similarity) podem ser bloqueados pelo Agent.
+        self.allow_tts_override = bool(credentials.get("allow_tts_override", False))
         # Se você já configurou prompt/voz/primeira mensagem no painel da ElevenLabs,
         # o mais seguro é NÃO reenviar overrides via API (evita policy violation 1008).
         # Como o FusionPBX hoje só expõe API Key / Agent ID / Voice ID, o default precisa ser True.
         self.use_agent_config = bool(credentials.get("use_agent_config", True))
+
+        # Campos opcionais (documentação oficial)
+        self.language = credentials.get("language")
+        self.tts_stability = credentials.get("tts_stability")
+        self.tts_speed = credentials.get("tts_speed")
+        self.tts_similarity_boost = credentials.get("tts_similarity_boost")
+        self.custom_llm_extra_body = credentials.get("custom_llm_extra_body")
+        self.dynamic_variables = credentials.get("dynamic_variables")
         
         if not self.api_key:
             raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
@@ -186,6 +196,9 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
                 )
             
             conversation_config_override = {"agent": agent_config}
+            # Language override (opcional)
+            if self.language:
+                conversation_config_override["agent"]["language"] = self.language
             
             # Voice override (opcional)
             if self.voice_id and self.allow_voice_id_override:
@@ -197,6 +210,23 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
                     "voice_id presente nas credenciais mas override desabilitado; não enviaremos tts.voice_id para evitar policy violation",
                     extra={"domain_uuid": self.config.domain_uuid},
                 )
+            
+            # TTS overrides (stability/speed/similarity)
+            if self.allow_tts_override:
+                tts_config = conversation_config_override.get("tts", {}) if conversation_config_override else {}
+                if self.tts_stability is not None:
+                    tts_config["stability"] = float(self.tts_stability)
+                if self.tts_speed is not None:
+                    tts_config["speed"] = float(self.tts_speed)
+                if self.tts_similarity_boost is not None:
+                    tts_config["similarity_boost"] = float(self.tts_similarity_boost)
+                if tts_config:
+                    conversation_config_override["tts"] = tts_config
+            elif any(v is not None for v in [self.tts_stability, self.tts_speed, self.tts_similarity_boost]):
+                logger.warning(
+                    "TTS overrides presentes mas allow_tts_override=false; não enviaremos para evitar policy violation",
+                    extra={"domain_uuid": self.config.domain_uuid},
+                )
 
         initiation_message = {
             "type": "conversation_initiation_client_data",
@@ -204,6 +234,26 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         }
         if conversation_config_override:
             initiation_message["conversation_config_override"] = conversation_config_override
+        # Custom LLM extra body (opcional)
+        if self.custom_llm_extra_body:
+            try:
+                initiation_message["custom_llm_extra_body"] = (
+                    json.loads(self.custom_llm_extra_body)
+                    if isinstance(self.custom_llm_extra_body, str)
+                    else self.custom_llm_extra_body
+                )
+            except Exception:
+                logger.warning("Invalid custom_llm_extra_body JSON", extra={"domain_uuid": self.config.domain_uuid})
+        # Dynamic variables (opcional)
+        if self.dynamic_variables:
+            try:
+                initiation_message["dynamic_variables"] = (
+                    json.loads(self.dynamic_variables)
+                    if isinstance(self.dynamic_variables, str)
+                    else self.dynamic_variables
+                )
+            except Exception:
+                logger.warning("Invalid dynamic_variables JSON", extra={"domain_uuid": self.config.domain_uuid})
         
         logger.info("Sending conversation_initiation_client_data", extra={
             "domain_uuid": self.config.domain_uuid,

@@ -225,6 +225,36 @@ export REALTIME_SILENCE_MS=1000       # espera mais silencio antes de responder
 
 Isso reduz falsos positivos de fala do usuario e evita respostas fantasmas.
 
+### Controle avançado por tenant (Realtime Providers)
+
+Admins de tenants podem configurar parâmetros avançados via **Voice Secretary > AI Providers**:
+
+**OpenAI Realtime**
+- `vad_threshold` (0-1)
+- `silence_duration_ms`
+- `prefix_padding_ms`
+- `max_response_output_tokens`
+- `voice`
+- `tools_json` (JSON de tools)
+
+**ElevenLabs Conversational**
+- `use_agent_config` (true/false)
+- `allow_prompt_override` (true/false)
+- `allow_first_message_override` (true/false)
+- `allow_voice_id_override` (true/false)
+- `language` (ex: pt-BR)
+- `tts_stability`, `tts_speed`, `tts_similarity_boost`
+- `custom_llm_extra_body` (JSON)
+- `dynamic_variables` (JSON)
+
+**Gemini Live**
+- `voice`
+- `tools_json` (JSON de tools)
+
+Referências:
+- https://elevenlabs.io/docs/agents-platform/customization/personalization
+- https://platform.openai.com/docs/guides/realtime-vad
+
 ## Troubleshooting
 
 ### "No audio heard"
