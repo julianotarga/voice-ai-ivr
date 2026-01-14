@@ -240,6 +240,21 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         try:
             async for message in self._ws:
                 event = json.loads(message)
+                
+                # Responder ping com pong para manter conexão ativa
+                if event.get("type") == "ping":
+                    ping_event = event.get("ping_event", {})
+                    event_id = ping_event.get("event_id")
+                    ping_ms = ping_event.get("ping_ms", 0)
+                    # Aguardar o tempo indicado antes de responder
+                    if ping_ms > 0:
+                        await asyncio.sleep(ping_ms / 1000.0)
+                    await self._ws.send(json.dumps({
+                        "type": "pong",
+                        "event_id": event_id,
+                    }))
+                    continue
+                
                 provider_event = self._parse_event(event)
                 if provider_event:
                     await self._event_queue.put(provider_event)
@@ -267,12 +282,15 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
             })
         
         if etype == "audio":
-            # Áudio em base64
-            audio_b64 = event.get("audio", "")
+            # Áudio em base64 - formato: {"type": "audio", "audio_event": {"audio_base_64": "...", "event_id": 123}}
+            # Ref: https://elevenlabs.io/docs/agents-platform/customization/events/client-events
+            audio_event = event.get("audio_event", {})
+            audio_b64 = audio_event.get("audio_base_64", "")
             audio_bytes = base64.b64decode(audio_b64) if audio_b64 else b""
             logger.info(f"ElevenLabs audio received: {len(audio_bytes)} bytes", extra={
                 "domain_uuid": self.config.domain_uuid,
                 "audio_size": len(audio_bytes),
+                "event_id": audio_event.get("event_id"),
             })
             return ProviderEvent(
                 type=ProviderEventType.AUDIO_DELTA,
@@ -284,7 +302,10 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         
         if etype == "agent_response":
             # Transcript da resposta do agente
-            transcript = event.get("agent_response", "")
+            # Formato: {"type": "agent_response", "agent_response_event": {"agent_response": "..."}}
+            agent_event = event.get("agent_response_event", {})
+            transcript = agent_event.get("agent_response", "")
+            logger.debug(f"Agent response: {transcript[:50]}..." if transcript else "Agent response (empty)")
             return ProviderEvent(
                 type=ProviderEventType.TRANSCRIPT_DONE,
                 data={"transcript": transcript}
@@ -292,13 +313,18 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         
         if etype == "user_transcript":
             # Transcript do usuário
-            transcript = event.get("user_transcript", "")
+            # Formato: {"type": "user_transcript", "user_transcription_event": {"user_transcript": "..."}}
+            user_event = event.get("user_transcription_event", {})
+            transcript = user_event.get("user_transcript", "")
+            logger.debug(f"User transcript: {transcript[:50]}..." if transcript else "User transcript (empty)")
             return ProviderEvent(
                 type=ProviderEventType.USER_TRANSCRIPT,
                 data={"transcript": transcript}
             )
         
         if etype == "interruption":
+            # Formato: {"type": "interruption", "interruption_event": {"event_id": 123}}
+            logger.debug("Interruption event received")
             return ProviderEvent(type=ProviderEventType.SPEECH_STARTED, data={})
         
         if etype == "agent_response_started":
