@@ -158,10 +158,30 @@ class RealtimeServer:
             await websocket.close(1011, f"Session creation failed: {e}")
             return
         
+        # Log para debug - início do loop de mensagens
+        logger.info("Starting message loop, waiting for audio from FreeSWITCH...", extra={
+            "call_uuid": call_uuid,
+            "session_active": session.is_active if session else False,
+        })
+        
+        message_count = 0
+        audio_bytes_total = 0
+        
         try:
             async for message in websocket:
+                message_count += 1
+                
+                # Log a cada 100 mensagens para não poluir muito
+                if message_count <= 5 or message_count % 100 == 0:
+                    logger.info(f"Message #{message_count} received", extra={
+                        "call_uuid": call_uuid,
+                        "message_type": "bytes" if isinstance(message, bytes) else "str",
+                        "message_size": len(message) if message else 0,
+                    })
+                
                 # Processar mensagens
                 if isinstance(message, bytes):
+                    audio_bytes_total += len(message)
                     # Áudio binário do FreeSWITCH
                     if session and session.is_active:
                         await session.handle_audio_input(message)
@@ -200,6 +220,13 @@ class RealtimeServer:
             logger.info(f"WebSocket closed: {e}", extra={"call_uuid": call_uuid})
         
         finally:
+            # Log de estatísticas finais
+            logger.info(f"Session ended - Stats: {message_count} messages, {audio_bytes_total} audio bytes", extra={
+                "call_uuid": call_uuid,
+                "message_count": message_count,
+                "audio_bytes_total": audio_bytes_total,
+            })
+            
             if session and session.is_active:
                 await session.stop("connection_closed")
     
