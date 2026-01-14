@@ -17,14 +17,78 @@ Este guia configura o sistema para que:
 
 ### 1. Instalar mod_audio_stream v1.0.3+
 
-O módulo v1.0.3+ suporta streaming bidirecional com playback automático.
+O módulo v1.0.3+ suporta streaming bidirecional com playback automático. Abaixo está o passo a passo completo para repetir a instalação no futuro.
 
 ```bash
-# No servidor FreeSWITCH
+# No servidor FreeSWITCH (modo automatizado)
 cd /tmp
 wget https://raw.githubusercontent.com/julianotarga/voice-ai-ivr/main/scripts/install-mod-audio-stream-v103.sh
 chmod +x install-mod-audio-stream-v103.sh
 sudo bash install-mod-audio-stream-v103.sh
+```
+
+#### 1.1 Passo a passo manual (recomendado para repetição)
+
+```bash
+# 1) Dependências do build
+sudo apt-get update
+sudo apt-get install -y git cmake build-essential \
+  libfreeswitch-dev libssl-dev zlib1g-dev \
+  libevent-dev libspeexdsp-dev pkg-config
+
+# 2) Backup do módulo atual (se existir)
+if [ -f /usr/lib/freeswitch/mod/mod_audio_stream.so ]; then
+  sudo cp /usr/lib/freeswitch/mod/mod_audio_stream.so \
+    /usr/lib/freeswitch/mod/mod_audio_stream.so.bak.$(date +%Y%m%d_%H%M%S)
+fi
+
+# 3) Clonar e inicializar submodules
+cd /usr/src
+sudo rm -rf mod_audio_stream
+sudo git clone https://github.com/amigniter/mod_audio_stream.git
+cd mod_audio_stream
+sudo git submodule init
+sudo git submodule update
+
+# 4) Build (TLS opcional, mas recomendado para wss://)
+sudo mkdir -p build && cd build
+sudo cmake -DCMAKE_BUILD_TYPE=Release -DUSE_TLS=ON ..
+sudo make -j$(nproc)
+sudo make install
+
+# 5) Recarregar no FreeSWITCH
+fs_cli -x "unload mod_audio_stream" || true
+fs_cli -x "load mod_audio_stream"
+```
+
+#### 1.2 Verificações obrigatórias
+
+```bash
+# Deve retornar: true
+fs_cli -x "module_exists mod_audio_stream"
+
+# Verificar se carregou na lista
+fs_cli -x "show modules" | grep -i audio_stream
+```
+
+#### 1.3 Checar versão (v1.0.3+)
+
+```bash
+strings /usr/lib/freeswitch/mod/mod_audio_stream.so | grep -i "1.0.3" || true
+```
+
+#### 1.4 Reversão (rollback)
+
+```bash
+# Descarregar módulo atual
+fs_cli -x "unload mod_audio_stream"
+
+# Restaurar backup (se necessário)
+sudo cp /usr/lib/freeswitch/mod/mod_audio_stream.so.bak.<DATA> \
+  /usr/lib/freeswitch/mod/mod_audio_stream.so
+
+# Recarregar
+fs_cli -x "load mod_audio_stream"
 ```
 
 Ou manualmente:
