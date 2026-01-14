@@ -167,7 +167,13 @@ class RealtimeSession:
             )
             if not row:
                 raise ValueError(f"Provider '{self.config.provider_name}' not configured")
-            credentials = row["config"]
+            # Config pode vir como string JSON ou dict (JSONB)
+            raw_config = row["config"]
+            if isinstance(raw_config, str):
+                import json
+                credentials = json.loads(raw_config)
+            else:
+                credentials = raw_config or {}
         
         provider_config = RealtimeConfig(
             domain_uuid=self.domain_uuid,
@@ -404,23 +410,23 @@ class RealtimeSession:
                     conv_uuid = await conn.fetchval(
                         """
                         INSERT INTO v_voice_conversations (
-                            domain_uuid, secretary_uuid, caller_id, call_uuid,
-                            started_at, ended_at, resolution, processing_mode
+                            domain_uuid, voice_secretary_uuid, caller_id_number, call_uuid,
+                            start_time, end_time, final_action, processing_mode
                         ) VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'realtime')
-                        RETURNING conversation_uuid
+                        RETURNING voice_conversation_uuid
                         """,
                         self.domain_uuid, self.config.secretary_uuid,
                         self.config.caller_id, self.call_uuid,
                         self._started_at, resolution,
                     )
                     
-                    for entry in self._transcript:
+                    for idx, entry in enumerate(self._transcript, 1):
                         await conn.execute(
                             """
-                            INSERT INTO v_voice_messages (conversation_uuid, role, content, created_at)
-                            VALUES ($1, $2, $3, to_timestamp($4))
+                            INSERT INTO v_voice_messages (voice_conversation_uuid, turn_number, role, content, insert_date)
+                            VALUES ($1, $2, $3, $4, to_timestamp($5))
                             """,
-                            conv_uuid, entry.role, entry.text, entry.timestamp,
+                            conv_uuid, idx, entry.role, entry.text, entry.timestamp,
                         )
         except Exception as e:
             logger.error(f"Error saving conversation: {e}")
