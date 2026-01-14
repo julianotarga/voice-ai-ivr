@@ -50,14 +50,43 @@
 		if (!in_array($extension, $allowed_types)) {
 			message::add($text['message-invalid_file_type'] ?? 'Invalid file type', 'negative');
 		} elseif ($file['error'] !== UPLOAD_ERR_OK) {
-			message::add($text['message-upload_error'] ?? 'Upload error', 'negative');
+			$upload_errors = [
+				UPLOAD_ERR_INI_SIZE => 'File too large (php.ini limit)',
+				UPLOAD_ERR_FORM_SIZE => 'File too large (form limit)',
+				UPLOAD_ERR_PARTIAL => 'File only partially uploaded',
+				UPLOAD_ERR_NO_FILE => 'No file uploaded',
+				UPLOAD_ERR_NO_TMP_DIR => 'Missing temp directory',
+				UPLOAD_ERR_CANT_WRITE => 'Failed to write to disk',
+				UPLOAD_ERR_EXTENSION => 'Blocked by PHP extension',
+			];
+			$err_msg = $upload_errors[$file['error']] ?? 'Unknown upload error';
+			message::add('Upload error: ' . $err_msg, 'negative');
 		} else {
-			//save file
+			//save file - usar diretório de storage do FusionPBX
 			$document_uuid = uuid();
-			$upload_dir = $_SERVER['DOCUMENT_ROOT'] . '/app/voice_secretary/uploads/' . $domain_uuid;
 			
-			if (!is_dir($upload_dir)) {
-				mkdir($upload_dir, 0755, true);
+			// Tentar vários caminhos possíveis
+			$possible_dirs = [
+				$_SESSION['switch']['storage']['dir'] . '/voice_secretary/' . $domain_uuid,
+				'/var/lib/freeswitch/storage/voice_secretary/' . $domain_uuid,
+				'/tmp/voice_secretary/' . $domain_uuid,
+			];
+			
+			$upload_dir = null;
+			foreach ($possible_dirs as $dir) {
+				if (!is_dir($dir)) {
+					@mkdir($dir, 0777, true);
+				}
+				if (is_dir($dir) && is_writable($dir)) {
+					$upload_dir = $dir;
+					break;
+				}
+			}
+			
+			if (!$upload_dir) {
+				message::add('Upload error: No writable directory found. Tried: ' . implode(', ', $possible_dirs), 'negative');
+				header('Location: documents_edit.php');
+				exit;
 			}
 			
 			$filename = $document_uuid . '.' . $extension;
