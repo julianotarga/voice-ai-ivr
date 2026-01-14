@@ -102,6 +102,7 @@
 					file_path,
 					file_size,
 					processing_status,
+					enabled,
 					is_enabled,
 					insert_date
 				) VALUES (
@@ -112,7 +113,8 @@
 					:file_path,
 					:file_size,
 					:processing_status,
-					:is_enabled,
+					true,
+					true,
 					NOW()
 				)";
 				
@@ -124,7 +126,6 @@
 				$parameters['file_path'] = $filepath;
 				$parameters['file_size'] = $file['size'];
 				$parameters['processing_status'] = 'pending';
-				$parameters['is_enabled'] = 'true';
 				
 				$database = new database;
 				$database->execute($sql, $parameters);
