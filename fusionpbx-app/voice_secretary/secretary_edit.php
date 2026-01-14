@@ -62,13 +62,13 @@
 			exit;
 		}
 
-		//collect form data
+		//collect form data - normalizar quebras de linha (Windows \r\n -> Unix \n)
 		$form_data = [
 			'secretary_name' => trim($_POST['secretary_name'] ?? ''),
 			'company_name' => trim($_POST['company_name'] ?? ''),
-			'system_prompt' => trim($_POST['system_prompt'] ?? ''),
-			'greeting_message' => trim($_POST['greeting_message'] ?? ''),
-			'farewell_message' => trim($_POST['farewell_message'] ?? ''),
+			'system_prompt' => str_replace("\r\n", "\n", trim($_POST['system_prompt'] ?? '')),
+			'greeting_message' => str_replace("\r\n", "\n", trim($_POST['greeting_message'] ?? '')),
+			'farewell_message' => str_replace("\r\n", "\n", trim($_POST['farewell_message'] ?? '')),
 			'processing_mode' => $_POST['processing_mode'] ?? 'turn_based',
 			'realtime_provider_uuid' => !empty($_POST['realtime_provider_uuid']) ? $_POST['realtime_provider_uuid'] : null,
 			'extension' => $_POST['extension'] ?? '',
@@ -272,10 +272,15 @@
 	echo "	</td>\n";
 	echo "</tr>\n";
 
+	//normalizar quebras de linha ao exibir (remover \r duplicados)
+	$personality_prompt = str_replace("\r\n", "\n", str_replace("\r", "", $data['personality_prompt'] ?? ''));
+	$greeting_msg = str_replace("\r\n", "\n", str_replace("\r", "", $data['greeting_message'] ?? 'Olá! Como posso ajudar?'));
+	$farewell_msg = str_replace("\r\n", "\n", str_replace("\r", "", $data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!'));
+
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-personality_prompt'] ?? 'Personality Prompt')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<textarea class='formfld' name='system_prompt' rows='8' style='width: 100%; min-height: 200px;'>".escape(trim($data['personality_prompt'] ?? ''))."</textarea>\n";
+	echo "		<textarea class='formfld' name='system_prompt' rows='8' style='width: 100%; min-height: 200px;'>".escape(trim($personality_prompt))."</textarea>\n";
 	echo "		<br />".($text['description-personality_prompt'] ?? 'Instructions for the AI personality.')."\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
@@ -283,14 +288,14 @@
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-greeting'] ?? 'Greeting')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<textarea class='formfld' name='greeting_message' rows='3' style='width: 100%;'>".escape($data['greeting_message'] ?? 'Olá! Como posso ajudar?')."</textarea>\n";
+	echo "		<textarea class='formfld' name='greeting_message' rows='3' style='width: 100%;'>".escape(trim($greeting_msg))."</textarea>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-farewell'] ?? 'Farewell')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<textarea class='formfld' name='farewell_message' rows='3' style='width: 100%;'>".escape($data['farewell_message'] ?? 'Foi um prazer ajudar! Até logo!')."</textarea>\n";
+	echo "		<textarea class='formfld' name='farewell_message' rows='3' style='width: 100%;'>".escape(trim($farewell_msg))."</textarea>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
