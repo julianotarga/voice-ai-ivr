@@ -9,7 +9,6 @@
 */
 
 require_once dirname(__DIR__, 2) . "/resources/require.php";
-require_once "resources/check_auth.php";
 
 header("Content-Type: application/json; charset=utf-8");
 

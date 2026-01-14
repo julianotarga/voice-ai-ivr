@@ -56,7 +56,7 @@ class voice_ai_provider {
         ],
         'realtime' => [
             'openai_realtime' => 'OpenAI Realtime API',
-            'elevenlabs_conv' => 'ElevenLabs Conversational',
+            'elevenlabs_conversational' => 'ElevenLabs Conversational',
             'gemini_live' => 'Google Gemini Live',
             'custom_pipeline' => 'Custom Pipeline (Deepgram+Groq+Piper)',
         ],
@@ -193,30 +193,71 @@ class voice_ai_provider {
     
     /**
      * Delete provider(s)
-     * @param mixed $uuids Single UUID string or array of UUIDs
+     * @param mixed $providers Array with checkbox data from form
      * @param string $domain_uuid Domain UUID for security
      */
-    public function delete($uuids, $domain_uuid) {
-        if (!is_array($uuids)) {
-            $uuids = [$uuids];
-        }
-        
+    public function delete($providers, $domain_uuid) {
         $database = new database;
         
-        foreach ($uuids as $provider_uuid) {
-            if (is_uuid($provider_uuid)) {
+        foreach ($providers as $provider) {
+            if (!empty($provider['checked']) && !empty($provider['uuid']) && is_uuid($provider['uuid'])) {
                 $sql = "DELETE FROM v_voice_ai_providers 
                         WHERE voice_ai_provider_uuid = :provider_uuid 
                         AND domain_uuid = :domain_uuid";
                 
                 $parameters = [];
-                $parameters['provider_uuid'] = $provider_uuid;
+                $parameters['provider_uuid'] = $provider['uuid'];
                 $parameters['domain_uuid'] = $domain_uuid;
                 
                 $database->execute($sql, $parameters);
             }
         }
         
+        message::add($GLOBALS['text']['message-delete'] ?? 'Delete completed.');
+        return true;
+    }
+    
+    /**
+     * Toggle enabled status
+     * @param array $providers Array with checkbox data from form
+     * @param string $domain_uuid Domain UUID for security
+     */
+    public function toggle($providers, $domain_uuid) {
+        $database = new database;
+        
+        foreach ($providers as $provider) {
+            if (!empty($provider['checked']) && !empty($provider['uuid']) && is_uuid($provider['uuid'])) {
+                // Get current status
+                $sql = "SELECT is_enabled FROM v_voice_ai_providers 
+                        WHERE voice_ai_provider_uuid = :provider_uuid 
+                        AND domain_uuid = :domain_uuid";
+                
+                $parameters = [];
+                $parameters['provider_uuid'] = $provider['uuid'];
+                $parameters['domain_uuid'] = $domain_uuid;
+                
+                $row = $database->select($sql, $parameters, 'row');
+                
+                if ($row) {
+                    // Toggle status
+                    $new_status = ($row['is_enabled'] === true || $row['is_enabled'] === 't' || $row['is_enabled'] === 'true') ? 'false' : 'true';
+                    
+                    $sql = "UPDATE v_voice_ai_providers 
+                            SET is_enabled = :is_enabled, update_date = NOW()
+                            WHERE voice_ai_provider_uuid = :provider_uuid 
+                            AND domain_uuid = :domain_uuid";
+                    
+                    $parameters = [];
+                    $parameters['provider_uuid'] = $provider['uuid'];
+                    $parameters['domain_uuid'] = $domain_uuid;
+                    $parameters['is_enabled'] = $new_status;
+                    
+                    $database->execute($sql, $parameters);
+                }
+            }
+        }
+        
+        message::add($GLOBALS['text']['message-toggle'] ?? 'Toggle completed.');
         return true;
     }
     
@@ -362,7 +403,7 @@ class voice_ai_provider {
                 ['name' => 'model', 'label' => 'Model', 'type' => 'text', 'default' => 'gpt-4o-realtime-preview'],
                 ['name' => 'voice', 'label' => 'Voice', 'type' => 'select', 'options' => ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']],
             ],
-            'elevenlabs_conv' => [
+            'elevenlabs_conversational' => [
                 ['name' => 'api_key', 'label' => 'API Key', 'type' => 'password'],
                 ['name' => 'agent_id', 'label' => 'Agent ID', 'type' => 'text', 'required' => true],
                 ['name' => 'voice_id', 'label' => 'Voice ID', 'type' => 'text'],

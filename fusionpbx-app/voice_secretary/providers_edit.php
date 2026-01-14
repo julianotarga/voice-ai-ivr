@@ -10,7 +10,6 @@
 
 //includes files
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
-	require_once "resources/check_auth.php";
 
 //check permissions
 	if (permission_exists('voice_secretary_add') || permission_exists('voice_secretary_edit')) {
@@ -264,7 +263,7 @@ const configFields = <?php echo json_encode([
 	'voyage' => voice_ai_provider::get_config_fields('voyage'),
 	'local_embeddings' => voice_ai_provider::get_config_fields('local_embeddings'),
 	'openai_realtime' => voice_ai_provider::get_config_fields('openai_realtime'),
-	'elevenlabs_conv' => voice_ai_provider::get_config_fields('elevenlabs_conv'),
+	'elevenlabs_conversational' => voice_ai_provider::get_config_fields('elevenlabs_conversational'),
 	'gemini_live' => voice_ai_provider::get_config_fields('gemini_live'),
 	'custom_pipeline' => voice_ai_provider::get_config_fields('custom_pipeline'),
 ]); ?>;

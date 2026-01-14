@@ -10,7 +10,6 @@
 
 //includes files
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
-	require_once "resources/check_auth.php";
 
 //check permissions
 	if (permission_exists('voice_secretary_edit')) {
