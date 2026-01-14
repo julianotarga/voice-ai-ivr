@@ -302,6 +302,8 @@ class RealtimeServer:
             })
         
         # Configurar sessão
+        vad_threshold = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.65"))
+        silence_duration_ms = int(os.getenv("REALTIME_SILENCE_MS", "900"))
         config = RealtimeSessionConfig(
             domain_uuid=domain_uuid,
             call_uuid=call_uuid,
@@ -312,6 +314,8 @@ class RealtimeServer:
             system_prompt=row["system_prompt"] or "",
             greeting=row["greeting"],
             farewell=row["farewell"],
+            vad_threshold=vad_threshold,
+            silence_duration_ms=silence_duration_ms,
         )
         
         logger.debug("Session config created", extra={

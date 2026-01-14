@@ -214,6 +214,17 @@ session:setVariable("STREAM_BUFFER_SIZE", "100")
 
 Depois reinicie o container do bridge e recarregue o dialplan.
 
+### Ajuste de VAD (quando o agente responde sozinho)
+
+Se o agente estiver \"falando sozinho\" sem voce responder, ajuste a sensibilidade do VAD:
+
+```bash
+export REALTIME_VAD_THRESHOLD=0.7     # mais alto = menos falso positivo
+export REALTIME_SILENCE_MS=1000       # espera mais silencio antes de responder
+```
+
+Isso reduz falsos positivos de fala do usuario e evita respostas fantasmas.
+
 ## Troubleshooting
 
 ### "No audio heard"
