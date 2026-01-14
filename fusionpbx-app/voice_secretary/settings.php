@@ -31,19 +31,29 @@
 		exit;
 	}
 
-//get current settings
+//ensure settings table exists
 	$database = new database;
-	$sql = "SELECT default_setting_subcategory, default_setting_value FROM v_default_settings ";
-	$sql .= "WHERE domain_uuid = :domain_uuid ";
-	$sql .= "AND default_setting_category = 'voice_secretary' ";
-	$sql .= "AND default_setting_enabled = 'true'";
+	$sql_create = "CREATE TABLE IF NOT EXISTS v_voice_secretary_settings (
+		voice_secretary_setting_uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		domain_uuid UUID NOT NULL,
+		setting_name VARCHAR(100) NOT NULL,
+		setting_value TEXT,
+		insert_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		update_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		UNIQUE(domain_uuid, setting_name)
+	)";
+	$database->execute($sql_create, []);
+
+//get current settings
+	$sql = "SELECT setting_name, setting_value FROM v_voice_secretary_settings ";
+	$sql .= "WHERE domain_uuid = :domain_uuid";
 	$parameters['domain_uuid'] = $domain_uuid;
 	$rows = $database->select($sql, $parameters, 'all') ?: [];
 	unset($sql, $parameters);
 
 	$settings = [];
 	foreach ($rows as $row) {
-		$settings[$row['default_setting_subcategory']] = $row['default_setting_value'];
+		$settings[$row['setting_name']] = $row['setting_value'];
 	}
 
 //process form submission
@@ -68,44 +78,19 @@
 		];
 		
 		foreach ($new_settings as $name => $value) {
-			//check if exists
-			$sql_check = "SELECT count(*) as cnt FROM v_default_settings ";
-			$sql_check .= "WHERE domain_uuid = :domain_uuid ";
-			$sql_check .= "AND default_setting_category = 'voice_secretary' ";
-			$sql_check .= "AND default_setting_subcategory = :name";
-			$check = $database->select($sql_check, [
-				'domain_uuid' => $domain_uuid,
-				'name' => $name
-			], 'row');
+			// Usar UPSERT (INSERT ... ON CONFLICT UPDATE)
+			$sql_upsert = "INSERT INTO v_voice_secretary_settings (domain_uuid, setting_name, setting_value, update_date) ";
+			$sql_upsert .= "VALUES (:domain_uuid, :name, :value, NOW()) ";
+			$sql_upsert .= "ON CONFLICT (domain_uuid, setting_name) DO UPDATE SET setting_value = :value, update_date = NOW()";
 			
-			if ($check && $check['cnt'] > 0) {
-				//update
-				$sql_upd = "UPDATE v_default_settings SET default_setting_value = :value, default_setting_enabled = 'true' ";
-				$sql_upd .= "WHERE domain_uuid = :domain_uuid ";
-				$sql_upd .= "AND default_setting_category = 'voice_secretary' ";
-				$sql_upd .= "AND default_setting_subcategory = :name";
-				$database->execute($sql_upd, [
-					'domain_uuid' => $domain_uuid,
-					'name' => $name,
-					'value' => (string)$value
-				]);
-			} else {
-				//insert - usar uuid() do PHP em vez de função SQL
-				$setting_uuid = uuid();
-				$sql_upd = "INSERT INTO v_default_settings ";
-				$sql_upd .= "(default_setting_uuid, domain_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled, default_setting_order) ";
-				$sql_upd .= "VALUES (:setting_uuid, :domain_uuid, 'voice_secretary', :name, :name, :value, 'true', 0)";
-				$database->execute($sql_upd, [
-					'setting_uuid' => $setting_uuid,
-					'domain_uuid' => $domain_uuid,
-					'name' => $name,
-					'value' => (string)$value
-				]);
-			}
-			unset($sql_upd);
+			$database->execute($sql_upsert, [
+				'domain_uuid' => $domain_uuid,
+				'name' => $name,
+				'value' => (string)$value
+			]);
 		}
 		
-		message::add($text['message-update']);
+		message::add($text['message-update'] ?? 'Settings saved.');
 		header('Location: settings.php');
 		exit;
 	}
