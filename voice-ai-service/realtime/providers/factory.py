@@ -7,6 +7,7 @@ Referências:
 - openspec/changes/voice-ai-realtime/design.md: Decision 4
 """
 
+import json
 import logging
 from typing import Any, Dict, Type
 
@@ -17,6 +18,36 @@ from .gemini_live import GeminiLiveProvider
 from .custom_pipeline import CustomPipelineProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_credentials(credentials: Any) -> Dict[str, Any]:
+    """
+    Normaliza credentials para dict.
+    
+    O config pode vir do banco como:
+    - dict (JSONB parseado automaticamente)
+    - str (JSON string)
+    - None
+    """
+    if credentials is None:
+        return {}
+    
+    if isinstance(credentials, dict):
+        return credentials
+    
+    if isinstance(credentials, str):
+        try:
+            parsed = json.loads(credentials)
+            if isinstance(parsed, dict):
+                return parsed
+            logger.warning(f"Credentials JSON parsed to non-dict: {type(parsed)}")
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse credentials JSON: {e}")
+            return {}
+    
+    logger.warning(f"Unexpected credentials type: {type(credentials)}")
+    return {}
 
 
 class RealtimeProviderFactory:
@@ -58,7 +89,7 @@ class RealtimeProviderFactory:
     def create(
         cls,
         provider_name: str,
-        credentials: Dict[str, Any],
+        credentials: Any,
         config: RealtimeConfig,
     ) -> BaseRealtimeProvider:
         """
@@ -66,7 +97,7 @@ class RealtimeProviderFactory:
         
         Args:
             provider_name: Nome do provider
-            credentials: API keys e auth
+            credentials: API keys e auth (dict, JSON string, ou None)
             config: Configuração da sessão
         """
         if provider_name not in cls._providers:
@@ -75,9 +106,13 @@ class RealtimeProviderFactory:
         
         provider_class = cls._providers[provider_name]
         
+        # Normalizar credentials para dict
+        normalized_credentials = _normalize_credentials(credentials)
+        
         logger.info("Creating realtime provider", extra={
             "provider": provider_name,
             "domain_uuid": config.domain_uuid,
+            "credentials_keys": list(normalized_credentials.keys()) if normalized_credentials else [],
         })
         
-        return provider_class(credentials=credentials, config=config)
+        return provider_class(credentials=normalized_credentials, config=config)

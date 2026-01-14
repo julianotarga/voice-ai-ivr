@@ -73,19 +73,21 @@ async def save_conversation(request: SaveConversationRequest):
     
     async with pool.acquire() as conn:
         # Insert conversation
+        # Usando nomes de colunas corretos conforme migration 004_create_conversations.sql
         await conn.execute(
             """
             INSERT INTO v_voice_conversations (
-                conversation_uuid,
+                voice_conversation_uuid,
                 domain_uuid,
                 voice_secretary_uuid,
                 call_uuid,
-                caller_id,
+                caller_id_number,
                 final_action,
-                transfer_target,
+                transfer_extension,
                 duration_seconds,
-                created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                start_time,
+                insert_date
+            ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, NOW(), NOW())
             """,
             conversation_uuid,
             request.domain_uuid,
@@ -98,38 +100,33 @@ async def save_conversation(request: SaveConversationRequest):
         )
         
         # Insert messages
+        # Usando nomes de colunas corretos conforme migration 004_create_conversations.sql
         for i, msg in enumerate(request.messages, start=1):
             message_uuid = str(uuid.uuid4())
             await conn.execute(
                 """
                 INSERT INTO v_voice_messages (
-                    message_uuid,
-                    domain_uuid,
-                    conversation_uuid,
-                    sequence_number,
+                    voice_message_uuid,
+                    voice_conversation_uuid,
+                    turn_number,
                     role,
                     content,
-                    audio_file,
+                    audio_file_path,
                     audio_duration_ms,
-                    stt_provider,
-                    tts_provider,
+                    provider_used,
                     detected_intent,
-                    intent_confidence,
-                    created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+                    insert_date
+                ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NOW())
                 """,
                 message_uuid,
-                request.domain_uuid,
                 conversation_uuid,
                 i,
                 msg.role,
                 msg.content,
                 msg.audio_file,
                 msg.audio_duration_ms,
-                msg.stt_provider,
-                msg.tts_provider,
+                msg.stt_provider or msg.tts_provider,  # Use whichever is set
                 msg.detected_intent,
-                msg.intent_confidence,
             )
     
     return ConversationResponse(
@@ -168,9 +165,10 @@ async def list_conversations(
         raise HTTPException(status_code=503, detail="Database unavailable")
     
     query = """
-        SELECT c.conversation_uuid, c.caller_id, c.final_action, c.transfer_target,
-               c.duration_seconds, c.created_at,
-               (SELECT COUNT(*) FROM v_voice_messages m WHERE m.conversation_uuid = c.conversation_uuid) as message_count
+        SELECT c.voice_conversation_uuid as conversation_uuid, c.caller_id_number as caller_id, 
+               c.final_action, c.transfer_extension as transfer_target,
+               c.duration_seconds, c.insert_date as created_at,
+               (SELECT COUNT(*) FROM v_voice_messages m WHERE m.voice_conversation_uuid = c.voice_conversation_uuid) as message_count
         FROM v_voice_conversations c
         WHERE c.domain_uuid = $1
     """
@@ -224,7 +222,7 @@ async def get_conversation(conversation_uuid: str, domain_uuid: str):
         conv = await conn.fetchrow(
             """
             SELECT * FROM v_voice_conversations 
-            WHERE conversation_uuid = $1 AND domain_uuid = $2
+            WHERE voice_conversation_uuid = $1::uuid AND domain_uuid = $2::uuid
             """,
             conversation_uuid,
             domain_uuid,
@@ -237,11 +235,10 @@ async def get_conversation(conversation_uuid: str, domain_uuid: str):
         messages = await conn.fetch(
             """
             SELECT * FROM v_voice_messages 
-            WHERE conversation_uuid = $1 AND domain_uuid = $2
-            ORDER BY sequence_number ASC
+            WHERE voice_conversation_uuid = $1::uuid
+            ORDER BY turn_number ASC
             """,
             conversation_uuid,
-            domain_uuid,
         )
     
     return {

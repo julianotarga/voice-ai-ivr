@@ -245,42 +245,49 @@ class ConfigLoader:
             async with self.db_pool.acquire() as conn:
                 row = await conn.fetchrow("""
                     SELECT 
-                        voice_secretary_uuid,
-                        domain_uuid,
-                        secretary_name,
-                        extension,
-                        processing_mode,
-                        personality_prompt,
-                        greeting_message,
-                        farewell_message,
-                        realtime_provider_name,
-                        realtime_provider_config,
-                        tts_voice_id,
-                        language,
-                        max_turns,
-                        enabled
-                    FROM v_voice_secretaries
-                    WHERE domain_uuid = $1 
-                      AND extension = $2
-                      AND enabled = true
+                        s.voice_secretary_uuid,
+                        s.domain_uuid,
+                        s.secretary_name,
+                        s.extension,
+                        s.processing_mode,
+                        s.personality_prompt,
+                        s.greeting_message,
+                        s.farewell_message,
+                        s.tts_voice_id,
+                        s.language,
+                        s.max_turns,
+                        s.is_enabled,
+                        p.provider_name as realtime_provider_name,
+                        p.config as realtime_provider_config
+                    FROM v_voice_secretaries s
+                    LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
+                    WHERE s.domain_uuid = $1 
+                      AND s.extension = $2
+                      AND s.is_enabled = true
                 """, domain_uuid, extension)
                 
                 if row:
+                    # Config pode vir como string JSON
+                    provider_config = row['realtime_provider_config']
+                    if isinstance(provider_config, str):
+                        import json
+                        provider_config = json.loads(provider_config)
+                    
                     return SecretaryConfig(
                         secretary_uuid=str(row['voice_secretary_uuid']),
                         domain_uuid=str(row['domain_uuid']),
                         name=row['secretary_name'] or 'Secretária',
-                        extension=row['extension'],
+                        extension=row['extension'] or '',
                         processing_mode=row['processing_mode'] or 'turn_based',
                         system_prompt=row['personality_prompt'] or '',
                         greeting_message=row['greeting_message'] or 'Olá!',
                         farewell_message=row['farewell_message'] or 'Até logo!',
                         realtime_provider=row['realtime_provider_name'],
-                        realtime_provider_config=row['realtime_provider_config'] or {},
+                        realtime_provider_config=provider_config or {},
                         voice=row['tts_voice_id'] or 'alloy',
                         language=row['language'] or 'pt-BR',
                         max_turns=row['max_turns'] or 20,
-                        is_enabled=row['enabled'],
+                        is_enabled=row['is_enabled'],
                     )
                     
         except Exception as e:
@@ -298,41 +305,48 @@ class ConfigLoader:
             async with self.db_pool.acquire() as conn:
                 row = await conn.fetchrow("""
                     SELECT 
-                        voice_secretary_uuid,
-                        domain_uuid,
-                        secretary_name,
-                        extension,
-                        processing_mode,
-                        personality_prompt,
-                        greeting_message,
-                        farewell_message,
-                        realtime_provider_name,
-                        realtime_provider_config,
-                        tts_voice_id,
-                        language,
-                        max_turns,
-                        enabled
-                    FROM v_voice_secretaries
-                    WHERE domain_uuid = $1 
-                      AND voice_secretary_uuid = $2
+                        s.voice_secretary_uuid,
+                        s.domain_uuid,
+                        s.secretary_name,
+                        s.extension,
+                        s.processing_mode,
+                        s.personality_prompt,
+                        s.greeting_message,
+                        s.farewell_message,
+                        s.tts_voice_id,
+                        s.language,
+                        s.max_turns,
+                        s.is_enabled,
+                        p.provider_name as realtime_provider_name,
+                        p.config as realtime_provider_config
+                    FROM v_voice_secretaries s
+                    LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
+                    WHERE s.domain_uuid = $1 
+                      AND s.voice_secretary_uuid = $2
                 """, domain_uuid, secretary_uuid)
                 
                 if row:
+                    # Config pode vir como string JSON
+                    provider_config = row['realtime_provider_config']
+                    if isinstance(provider_config, str):
+                        import json
+                        provider_config = json.loads(provider_config)
+                    
                     return SecretaryConfig(
                         secretary_uuid=str(row['voice_secretary_uuid']),
                         domain_uuid=str(row['domain_uuid']),
                         name=row['secretary_name'] or 'Secretária',
-                        extension=row['extension'],
+                        extension=row['extension'] or '',
                         processing_mode=row['processing_mode'] or 'turn_based',
                         system_prompt=row['personality_prompt'] or '',
                         greeting_message=row['greeting_message'] or 'Olá!',
                         farewell_message=row['farewell_message'] or 'Até logo!',
                         realtime_provider=row['realtime_provider_name'],
-                        realtime_provider_config=row['realtime_provider_config'] or {},
+                        realtime_provider_config=provider_config or {},
                         voice=row['tts_voice_id'] or 'alloy',
                         language=row['language'] or 'pt-BR',
                         max_turns=row['max_turns'] or 20,
-                        is_enabled=row['enabled'],
+                        is_enabled=row['is_enabled'],
                     )
                     
         except Exception as e:
