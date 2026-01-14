@@ -27,6 +27,7 @@ def _normalize_credentials(credentials: Any) -> Dict[str, Any]:
     O config pode vir do banco como:
     - dict (JSONB parseado automaticamente)
     - str (JSON string)
+    - list (array JSON - erro de configuração, tenta extrair primeiro dict)
     - None
     """
     if credentials is None:
@@ -35,11 +36,24 @@ def _normalize_credentials(credentials: Any) -> Dict[str, Any]:
     if isinstance(credentials, dict):
         return credentials
     
+    if isinstance(credentials, list):
+        # Config incorretamente configurado como array
+        # Tenta encontrar primeiro dict na lista
+        logger.warning(f"Credentials is a list (should be dict). Attempting to extract first dict.")
+        for item in credentials:
+            if isinstance(item, dict):
+                return item
+        logger.error("No dict found in credentials list")
+        return {}
+    
     if isinstance(credentials, str):
         try:
             parsed = json.loads(credentials)
             if isinstance(parsed, dict):
                 return parsed
+            if isinstance(parsed, list):
+                # Recursivamente trata lista parseada
+                return _normalize_credentials(parsed)
             logger.warning(f"Credentials JSON parsed to non-dict: {type(parsed)}")
             return {}
         except json.JSONDecodeError as e:
