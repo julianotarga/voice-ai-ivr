@@ -285,6 +285,11 @@ class RealtimeServer:
         
         async def send_audio(audio_bytes: bytes):
             try:
+                logger.info(f"send_audio callback called: {len(audio_bytes)} bytes", extra={
+                    "call_uuid": call_uuid,
+                    "audio_size": len(audio_bytes),
+                })
+                
                 # Enviar formato na primeira vez
                 if not format_sent["value"]:
                     format_msg = json.dumps({
@@ -298,12 +303,12 @@ class RealtimeServer:
                 # Enviar áudio binário diretamente
                 # O mod_audio_stream v1.0.3+ aceita raw binary após o formato
                 await websocket.send(audio_bytes)
-                logger.debug("Audio sent to FreeSWITCH", extra={
+                logger.info(f"Audio binary sent to FreeSWITCH: {len(audio_bytes)} bytes", extra={
                     "call_uuid": call_uuid,
                     "bytes": len(audio_bytes),
                 })
             except Exception as e:
-                logger.error(f"Error sending audio: {e}", extra={"call_uuid": call_uuid})
+                logger.error(f"Error sending audio: {e}", exc_info=True, extra={"call_uuid": call_uuid})
         
         # Criar sessão via manager
         manager = get_session_manager()

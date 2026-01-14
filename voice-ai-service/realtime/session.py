@@ -274,7 +274,15 @@ class RealtimeSession:
         elif event.type == ProviderEventType.AUDIO_DELTA:
             self._assistant_speaking = True
             if event.audio_bytes:
+                logger.info(f"Audio delta received: {len(event.audio_bytes)} bytes", extra={
+                    "call_uuid": self.call_uuid,
+                    "audio_size": len(event.audio_bytes),
+                })
                 await self._handle_audio_output(event.audio_bytes)
+            else:
+                logger.warning("Audio delta event with no audio bytes", extra={
+                    "call_uuid": self.call_uuid,
+                })
         
         elif event.type == ProviderEventType.AUDIO_DONE:
             self._assistant_speaking = False

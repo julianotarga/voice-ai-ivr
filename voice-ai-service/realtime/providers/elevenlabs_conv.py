@@ -233,12 +233,24 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         """Converte evento ElevenLabs para ProviderEvent."""
         etype = event.get("type", "")
         
+        # Log de eventos recebidos para debug
+        if etype not in ("ping", "pong"):
+            logger.debug(f"ElevenLabs event received: {etype}", extra={
+                "domain_uuid": self.config.domain_uuid,
+                "event_type": etype,
+            })
+        
         if etype == "audio":
             # Áudio em base64
             audio_b64 = event.get("audio", "")
+            audio_bytes = base64.b64decode(audio_b64) if audio_b64 else b""
+            logger.info(f"ElevenLabs audio received: {len(audio_bytes)} bytes", extra={
+                "domain_uuid": self.config.domain_uuid,
+                "audio_size": len(audio_bytes),
+            })
             return ProviderEvent(
                 type=ProviderEventType.AUDIO_DELTA,
-                data={"audio": base64.b64decode(audio_b64) if audio_b64 else b""},
+                data={"audio": audio_bytes},
             )
         
         if etype == "audio_done":
