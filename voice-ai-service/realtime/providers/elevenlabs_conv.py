@@ -117,27 +117,53 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         Configura a sessão.
         
         ElevenLabs usa conversation_config_override para customização.
+        Ref: https://elevenlabs.io/docs/agents-platform/customization/personalization/dynamic-variables
         """
         if not self._ws:
             raise RuntimeError("Not connected")
         
-        # Configurar override se necessário
+        # Construir override de configuração
+        agent_config = {}
+        
+        # System prompt (personalidade)
         if self.config.system_prompt:
-            config_override = {
-                "type": "conversation_config_override",
-                "conversation_config_override": {
-                    "agent": {
-                        "prompt": {
-                            "prompt": self.config.system_prompt,
-                        },
-                        "first_message": self.config.first_message,
-                    },
-                    "tts": {
-                        "voice_id": self.voice_id,
-                    },
-                },
+            agent_config["prompt"] = {
+                "prompt": self.config.system_prompt,
             }
-            await self._ws.send(json.dumps(config_override))
+        
+        # First message (saudação) - CRÍTICO para iniciar a conversa
+        if self.config.first_message:
+            agent_config["first_message"] = self.config.first_message
+            logger.info(f"Setting first_message: {self.config.first_message[:50]}...", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
+        else:
+            # Se não tem first_message, usar um padrão para garantir que o agente fale
+            agent_config["first_message"] = "Olá! Como posso ajudar você hoje?"
+            logger.warning("No first_message configured, using default", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
+        
+        config_override = {
+            "type": "conversation_config_override",
+            "conversation_config_override": {
+                "agent": agent_config,
+            },
+        }
+        
+        # Voice override se especificado
+        if self.voice_id:
+            config_override["conversation_config_override"]["tts"] = {
+                "voice_id": self.voice_id,
+            }
+        
+        logger.info("Sending conversation_config_override", extra={
+            "domain_uuid": self.config.domain_uuid,
+            "has_system_prompt": bool(self.config.system_prompt),
+            "has_first_message": bool(self.config.first_message),
+        })
+        
+        await self._ws.send(json.dumps(config_override))
     
     async def send_audio(self, audio_bytes: bytes) -> None:
         """
