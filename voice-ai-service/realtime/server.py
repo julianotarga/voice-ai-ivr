@@ -306,42 +306,24 @@ class RealtimeServer:
         })
         
         # Callback para enviar áudio de volta ao FreeSWITCH
-        # mod_audio_stream v1.0.3+ suporta dois métodos:
-        # 1. rawAudio: Enviar formato primeiro, depois chunks binários (mais eficiente)
-        # 2. streamAudio: JSON com base64 (mais compatível)
-        # 
-        # Referência: https://github.com/os11k/freeswitch-elevenlabs-bridge
-        # - Primeiro: {type: "rawAudio", data: {sampleRate: 16000}}
-        # - Depois: chunks binários de áudio PCM L16
-        # IMPORTANTE:
-        # O mod_audio_stream costuma tocar áudio corretamente quando recebemos:
-        # 1) Uma mensagem JSON de formato: {"type":"rawAudio","data":{"sampleRate":16000}}
-        # 2) Depois, CHUNKS BINÁRIOS de 20ms (640 bytes em 16k PCM16 mono) enviados a cada 20ms
-        # Se enviarmos buffers enormes de uma vez, pode resultar em silêncio ou playback quebrado.
-        # Referência de implementação: https://github.com/os11k/freeswitch-elevenlabs-bridge/blob/main/server.js
-
-        format_sent = {"value": False}
+        #
+        # IMPORTANTE (compatibilidade):
+        # O formato universal do mod_audio_stream (inclusive versões OSS) para playback é:
+        #   {"type":"streamAudio","data":{"audioDataType":"raw","sampleRate":16000,"audioData":"<base64>"}}
+        # conforme README oficial do módulo.
+        # Isso evita depender do modo rawAudio+binário, que pode não existir no build instalado.
+        #
+        # Ref: https://github.com/amigniter/mod_audio_stream/blob/main/README.md
         audio_out_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         pending = bytearray()
         sender_task: Optional[asyncio.Task] = None
 
-        async def _sender_loop() -> None:
+        async def _sender_loop_streamaudio() -> None:
             """
-            Envia áudio para o FreeSWITCH com pacing (20ms) e warmup (200ms).
+            Envia áudio para o FreeSWITCH como JSON streamAudio, com pacing (20ms) e warmup (200ms).
             """
             try:
-                # Enviar formato uma vez antes do primeiro chunk
-                if not format_sent["value"]:
-                    format_msg = json.dumps({
-                        "type": "rawAudio",
-                        "data": {"sampleRate": 16000}
-                    })
-                    await websocket.send(format_msg)
-                    format_sent["value"] = True
-                    logger.info("Audio format sent to FreeSWITCH", extra={"call_uuid": call_uuid})
-
-                # Warmup: aguarda pelo menos 200ms (10 chunks) no buffer antes de começar a tocar
-                warmup_chunks = 10
+                warmup_chunks = 10  # 200ms
                 buffered_chunks: list[bytes] = []
 
                 while True:
@@ -350,63 +332,75 @@ class RealtimeServer:
                         return
 
                     buffered_chunks.append(chunk)
-
                     if len(buffered_chunks) < warmup_chunks:
                         continue
 
-                    # Agora toca continuamente: primeiro esvazia warmup buffer
                     while buffered_chunks:
                         c = buffered_chunks.pop(0)
-                        await websocket.send(c)
+                        payload = json.dumps({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioDataType": "raw",
+                                "sampleRate": 16000,
+                                "audioData": base64.b64encode(c).decode("utf-8"),
+                            }
+                        })
+                        await websocket.send(payload)
                         await asyncio.sleep(0.02)
 
-                    # Depois toca o que chegar em tempo real (se ficar sem, espera próximo)
+                    # Depois envia em tempo real; se ficar sem, volta a reaquecer
                     while True:
                         try:
                             c = await asyncio.wait_for(audio_out_queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
-                            # sem áudio por 1s, volta ao warmup mode
                             break
 
                         if c is None:
                             return
 
-                        await websocket.send(c)
+                        payload = json.dumps({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioDataType": "raw",
+                                "sampleRate": 16000,
+                                "audioData": base64.b64encode(c).decode("utf-8"),
+                            }
+                        })
+                        await websocket.send(payload)
                         await asyncio.sleep(0.02)
-
-                    # volta ao warmup mode (reacumula 200ms)
             except Exception as e:
-                logger.error(f"Error in FreeSWITCH audio sender loop: {e}", exc_info=True, extra={"call_uuid": call_uuid})
+                logger.error(
+                    f"Error in FreeSWITCH streamAudio sender loop: {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
 
         async def send_audio(audio_bytes: bytes):
             """
-            Recebe áudio do provider (PCM16) e enfileira em chunks de 20ms.
+            Recebe áudio do provider (PCM16) e enfileira em chunks de 20ms (640 bytes).
             """
             nonlocal sender_task
             try:
                 if not audio_bytes:
                     return
 
-                # Inicia sender task na primeira vez
                 if sender_task is None:
-                    sender_task = asyncio.create_task(_sender_loop())
+                    sender_task = asyncio.create_task(_sender_loop_streamaudio())
+                    logger.info("FreeSWITCH playback sender started (streamAudio)", extra={"call_uuid": call_uuid})
 
                 pending.extend(audio_bytes)
 
-                # Transformar em chunks de 20ms (640 bytes)
                 while len(pending) >= PCM16_16K_CHUNK_BYTES:
                     chunk = bytes(pending[:PCM16_16K_CHUNK_BYTES])
                     del pending[:PCM16_16K_CHUNK_BYTES]
                     await audio_out_queue.put(chunk)
 
-                logger.debug("Audio queued for FreeSWITCH", extra={
-                    "call_uuid": call_uuid,
-                    "received_bytes": len(audio_bytes),
-                    "pending_bytes": len(pending),
-                    "queue_size": audio_out_queue.qsize(),
-                })
             except Exception as e:
-                logger.error(f"Error queueing audio for FreeSWITCH: {e}", exc_info=True, extra={"call_uuid": call_uuid})
+                logger.error(
+                    f"Error queueing audio for FreeSWITCH (streamAudio): {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
         
         # Criar sessão via manager
         manager = get_session_manager()
