@@ -43,10 +43,25 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
     CONV_API_URL = "wss://api.elevenlabs.io/v1/convai/conversation"
     
     def __init__(self, credentials: Dict[str, Any], config: RealtimeConfig):
+        import os
         super().__init__(credentials, config)
-        self.api_key = credentials.get("api_key")
-        self.agent_id = credentials.get("agent_id")
+        
+        # Fallback para variáveis de ambiente se credentials estiver vazio
+        self.api_key = credentials.get("api_key") or os.getenv("ELEVENLABS_API_KEY")
+        self.agent_id = credentials.get("agent_id") or os.getenv("ELEVENLABS_AGENT_ID")
         self.voice_id = credentials.get("voice_id") or config.voice
+        
+        if not self.api_key:
+            raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
+        if not self.agent_id:
+            raise ValueError("ElevenLabs Agent ID not configured (check DB config or ELEVENLABS_AGENT_ID env)")
+        
+        logger.info("ElevenLabs credentials loaded", extra={
+            "api_key_source": "db" if credentials.get("api_key") else "env",
+            "agent_id_source": "db" if credentials.get("agent_id") else "env",
+            "agent_id": self.agent_id[:20] + "..." if self.agent_id else None,
+        })
+        
         self._ws: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
         self._event_queue: asyncio.Queue[ProviderEvent] = asyncio.Queue()

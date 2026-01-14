@@ -40,9 +40,21 @@ class GeminiLiveProvider(BaseRealtimeProvider):
     DEFAULT_MODEL = "gemini-2.0-flash-exp"
     
     def __init__(self, credentials: Dict[str, Any], config: RealtimeConfig):
+        import os
         super().__init__(credentials, config)
-        self.api_key = credentials.get("api_key")
+        
+        # Fallback para variáveis de ambiente se credentials estiver vazio
+        self.api_key = credentials.get("api_key") or os.getenv("GOOGLE_API_KEY")
         self.model = credentials.get("model", self.DEFAULT_MODEL)
+        
+        if not self.api_key:
+            raise ValueError("Google API key not configured (check DB config or GOOGLE_API_KEY env)")
+        
+        logger.info("Gemini Live credentials loaded", extra={
+            "api_key_source": "db" if credentials.get("api_key") else "env",
+            "model": self.model,
+        })
+        
         self._session = None
         self._client = None
         self._receive_task: Optional[asyncio.Task] = None

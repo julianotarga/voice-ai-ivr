@@ -80,9 +80,21 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     DEFAULT_MODEL = "gpt-4o-realtime-preview"
     
     def __init__(self, credentials: Dict[str, Any], config: RealtimeConfig):
+        import os
         super().__init__(credentials, config)
-        self.api_key = credentials.get("api_key")
+        
+        # Fallback para variáveis de ambiente se credentials estiver vazio
+        self.api_key = credentials.get("api_key") or os.getenv("OPENAI_API_KEY")
         self.model = credentials.get("model", self.DEFAULT_MODEL)
+        
+        if not self.api_key:
+            raise ValueError("OpenAI API key not configured (check DB config or OPENAI_API_KEY env)")
+        
+        logger.info("OpenAI Realtime credentials loaded", extra={
+            "api_key_source": "db" if credentials.get("api_key") else "env",
+            "model": self.model,
+        })
+        
         self._ws: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
         self._event_queue: asyncio.Queue[ProviderEvent] = asyncio.Queue()
