@@ -222,10 +222,19 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         }))
     
     async def interrupt(self) -> None:
-        """Interrompe resposta atual (barge-in)."""
+        """
+        Interrompe resposta atual (barge-in).
+        
+        IMPORTANTE (AsyncAPI oficial):
+        No schema Client → Server não existe mensagem `type: "interrupt"`.
+        As mensagens permitidas incluem `user_activity`, então usamos isso para
+        sinalizar atividade do usuário sem violar o contrato.
+        
+        Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
+        """
         if self._ws:
             await self._ws.send(json.dumps({
-                "type": "interrupt",
+                "type": "user_activity",
             }))
     
     async def send_function_result(
