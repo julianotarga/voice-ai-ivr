@@ -73,6 +73,9 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         self.allow_voice_id_override = bool(credentials.get("allow_voice_id_override", False))
         # Mesma regra para first_message: o Agent pode bloquear override.
         self.allow_first_message_override = bool(credentials.get("allow_first_message_override", False))
+        # Mesma regra para prompt: alguns Agents bloqueiam override de agent.prompt.
+        # Já vimos o erro: "Override for field 'prompt' is not allowed by config."
+        self.allow_prompt_override = bool(credentials.get("allow_prompt_override", False))
         
         if not self.api_key:
             raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
@@ -149,10 +152,20 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         agent_config = {}
         
         # System prompt (personalidade)
-        if self.config.system_prompt:
+        # IMPORTANTE: alguns Agents bloqueiam override de prompt.
+        # Então só enviamos no override se allow_prompt_override=true.
+        if self.config.system_prompt and self.allow_prompt_override:
             agent_config["prompt"] = {
                 "prompt": self.config.system_prompt,
             }
+            logger.info("Setting prompt override (allow_prompt_override=true)", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
+        elif self.config.system_prompt and not self.allow_prompt_override:
+            logger.warning(
+                "system_prompt configurado mas override desabilitado; não enviaremos agent.prompt para evitar policy violation",
+                extra={"domain_uuid": self.config.domain_uuid},
+            )
         
         # First message (saudação)
         # IMPORTANTE: alguns Agents bloqueiam override de first_message.
@@ -204,6 +217,18 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         })
         
         await self._ws.send(json.dumps(initiation_message))
+
+        # Se não pudermos usar override de prompt, enviamos como contextual_update (AsyncAPI permitido),
+        # que adiciona contexto ao estado da conversa sem violar o contrato de overrides.
+        # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
+        if self.config.system_prompt and "prompt" not in agent_config:
+            await self._ws.send(json.dumps({
+                "type": "contextual_update",
+                "text": self.config.system_prompt,
+            }))
+            logger.info("Contextual update sent (system_prompt)", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
 
         # Se o Agent não permitir first_message override, iniciamos a conversa com user_message,
         # que é permitido pelo AsyncAPI oficial e força uma resposta do agente.
