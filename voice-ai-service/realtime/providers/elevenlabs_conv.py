@@ -71,6 +71,8 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         # Só enviaremos se houver voice_id explícito em credentials e allow_voice_id_override=true.
         self.voice_id = credentials.get("voice_id")
         self.allow_voice_id_override = bool(credentials.get("allow_voice_id_override", False))
+        # Mesma regra para first_message: o Agent pode bloquear override.
+        self.allow_first_message_override = bool(credentials.get("allow_first_message_override", False))
         
         if not self.api_key:
             raise ValueError("ElevenLabs API key not configured (check DB config or ELEVENLABS_API_KEY env)")
@@ -152,18 +154,21 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
                 "prompt": self.config.system_prompt,
             }
         
-        # First message (saudação) - CRÍTICO para iniciar a conversa
-        if self.config.first_message:
-            agent_config["first_message"] = self.config.first_message
-            logger.info(f"Setting first_message: {self.config.first_message[:50]}...", extra={
+        # First message (saudação)
+        # IMPORTANTE: alguns Agents bloqueiam override de first_message.
+        # Já vimos o erro: "Override for field 'first_message' is not allowed by config."
+        # Então só enviamos se allow_first_message_override=true.
+        first_message_for_override = self.config.first_message or ""
+        if first_message_for_override and self.allow_first_message_override:
+            agent_config["first_message"] = first_message_for_override
+            logger.info(f"Setting first_message override: {first_message_for_override[:50]}...", extra={
                 "domain_uuid": self.config.domain_uuid,
             })
-        else:
-            # Se não tem first_message, usar um padrão para garantir que o agente fale
-            agent_config["first_message"] = "Olá! Como posso ajudar você hoje?"
-            logger.warning("No first_message configured, using default", extra={
-                "domain_uuid": self.config.domain_uuid,
-            })
+        elif first_message_for_override and not self.allow_first_message_override:
+            logger.warning(
+                "first_message configurado mas override desabilitado; não enviaremos agent.first_message para evitar policy violation",
+                extra={"domain_uuid": self.config.domain_uuid},
+            )
         
         # Construir conversation_config_override
         conversation_config_override = {
@@ -194,11 +199,21 @@ class ElevenLabsConversationalProvider(BaseRealtimeProvider):
         logger.info("Sending conversation_initiation_client_data", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_system_prompt": bool(self.config.system_prompt),
-            "has_first_message": bool(agent_config.get("first_message")),
+            "has_first_message_override": bool(agent_config.get("first_message")),
             "has_voice_id": bool(self.voice_id),
         })
         
         await self._ws.send(json.dumps(initiation_message))
+
+        # Se o Agent não permitir first_message override, iniciamos a conversa com user_message,
+        # que é permitido pelo AsyncAPI oficial e força uma resposta do agente.
+        # Ref: https://elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket
+        if not agent_config.get("first_message"):
+            kickoff_text = self.config.first_message or "Olá!"
+            logger.info("Kickoff via user_message (sem first_message override)", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
+            await self.send_text(kickoff_text)
     
     async def send_audio(self, audio_bytes: bytes) -> None:
         """
