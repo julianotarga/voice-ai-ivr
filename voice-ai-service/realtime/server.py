@@ -32,7 +32,7 @@ PCM16_CHUNK_MS = 20
 
 # Warmup: acumular N chunks antes de começar a enviar (evita stuttering inicial)
 # Ref: os11k/freeswitch-elevenlabs-bridge usa BUFFER_WARMUP_CHUNKS = 10 (200ms)
-BUFFER_WARMUP_CHUNKS = 10  # 200ms
+BUFFER_WARMUP_CHUNKS = int(os.getenv("FS_WARMUP_CHUNKS", "10"))
 
 # Fallback streamAudio (base64) usa frames maiores para reduzir overhead de arquivos
 STREAMAUDIO_FRAME_MS = int(os.getenv("FS_STREAMAUDIO_FRAME_MS", "200"))

@@ -36,7 +36,7 @@ session:sleep(300) -- pequeno delay para estabilizar o canal
 session:setVariable("STREAM_PLAYBACK", "true")
 session:setVariable("STREAM_SAMPLE_RATE", "16000")
 
-session:setVariable("STREAM_BUFFER_SIZE", "200")
+session:setVariable("STREAM_BUFFER_SIZE", "100")
 session:setVariable("STREAM_SUPPRESS_LOG", "false")
 -- session:setVariable("STREAM_HEART_BEAT", "15") -- opcional
 

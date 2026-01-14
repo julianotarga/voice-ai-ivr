@@ -197,6 +197,23 @@ Critérios de sucesso:
 - O agent responde quando você fala
 - Não há erros de policy violation (1008) nos logs
 
+### Ajuste de qualidade/latência (opcional)
+
+Se o áudio estiver com lag perceptível, ajuste:
+
+1) **Warmup do bridge** (reduz buffer inicial):
+```bash
+export FS_WARMUP_CHUNKS=5   # 5 chunks = 100ms
+```
+
+2) **Buffer do FreeSWITCH** (reduz buffer de captura):
+```lua
+-- no voice_secretary.lua
+session:setVariable("STREAM_BUFFER_SIZE", "100")
+```
+
+Depois reinicie o container do bridge e recarregue o dialplan.
+
 ## Troubleshooting
 
 ### "No audio heard"
