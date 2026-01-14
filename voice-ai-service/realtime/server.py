@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # 20ms => 640 bytes
 PCM16_16K_CHUNK_BYTES = 640
 
+# Para playback via streamAudio (arquivo temporário), enviar 20ms por mensagem
+# gera muitos arquivos (50/s) e pode virar silêncio por overhead.
+# Então agrupamos em frames maiores para reduzir I/O e latência de playback.
+STREAMAUDIO_FRAME_MS = 200
+STREAMAUDIO_FRAME_BYTES = PCM16_16K_CHUNK_BYTES * (STREAMAUDIO_FRAME_MS // 20)  # 6400 bytes
+
 
 class RealtimeServer:
     """
@@ -320,33 +326,43 @@ class RealtimeServer:
 
         async def _sender_loop_streamaudio() -> None:
             """
-            Envia áudio para o FreeSWITCH como JSON streamAudio, com pacing (20ms) e warmup (200ms).
+            Envia áudio para o FreeSWITCH como JSON streamAudio, com pacing e warmup.
+            IMPORTANTÍSSIMO: agrupamos em ~200ms por mensagem para reduzir overhead de arquivos temporários.
             """
             try:
-                warmup_chunks = 10  # 200ms
-                buffered_chunks: list[bytes] = []
+                warmup_frames = 1  # 200ms (1 frame)
+                buffered_frames: list[bytes] = []
+                frame_buf = bytearray()
 
                 while True:
                     chunk = await audio_out_queue.get()
                     if chunk is None:
                         return
 
-                    buffered_chunks.append(chunk)
-                    if len(buffered_chunks) < warmup_chunks:
+                    # acumula até formar um frame de ~200ms
+                    frame_buf.extend(chunk)
+                    if len(frame_buf) < STREAMAUDIO_FRAME_BYTES:
                         continue
 
-                    while buffered_chunks:
-                        c = buffered_chunks.pop(0)
+                    frame = bytes(frame_buf[:STREAMAUDIO_FRAME_BYTES])
+                    del frame_buf[:STREAMAUDIO_FRAME_BYTES]
+
+                    buffered_frames.append(frame)
+                    if len(buffered_frames) < warmup_frames:
+                        continue
+
+                    while buffered_frames:
+                        frame_to_send = buffered_frames.pop(0)
                         payload = json.dumps({
                             "type": "streamAudio",
                             "data": {
                                 "audioDataType": "raw",
                                 "sampleRate": 16000,
-                                "audioData": base64.b64encode(c).decode("utf-8"),
+                                "audioData": base64.b64encode(frame_to_send).decode("utf-8"),
                             }
                         })
                         await websocket.send(payload)
-                        await asyncio.sleep(0.02)
+                        await asyncio.sleep(STREAMAUDIO_FRAME_MS / 1000.0)
 
                     # Depois envia em tempo real; se ficar sem, volta a reaquecer
                     while True:
@@ -358,16 +374,23 @@ class RealtimeServer:
                         if c is None:
                             return
 
+                        frame_buf.extend(c)
+                        if len(frame_buf) < STREAMAUDIO_FRAME_BYTES:
+                            continue
+
+                        frame_to_send = bytes(frame_buf[:STREAMAUDIO_FRAME_BYTES])
+                        del frame_buf[:STREAMAUDIO_FRAME_BYTES]
+
                         payload = json.dumps({
                             "type": "streamAudio",
                             "data": {
                                 "audioDataType": "raw",
                                 "sampleRate": 16000,
-                                "audioData": base64.b64encode(c).decode("utf-8"),
+                                "audioData": base64.b64encode(frame_to_send).decode("utf-8"),
                             }
                         })
                         await websocket.send(payload)
-                        await asyncio.sleep(0.02)
+                        await asyncio.sleep(STREAMAUDIO_FRAME_MS / 1000.0)
             except Exception as e:
                 logger.error(
                     f"Error in FreeSWITCH streamAudio sender loop: {e}",
