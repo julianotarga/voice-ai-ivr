@@ -9,6 +9,7 @@ Referências:
 """
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Optional
@@ -133,56 +134,67 @@ class RealtimeServer:
         """Gerencia uma sessão de chamada."""
         manager = get_session_manager()
         session = None
-        metadata_received = False
         caller_id = ""
+        
+        # Criar sessão imediatamente (mod_audio_stream não envia metadata)
+        # Buscar secretária pela extensão de destino (8000)
+        try:
+            session = await self._create_session_from_db(
+                domain_uuid=domain_uuid,
+                call_uuid=call_uuid,
+                caller_id=caller_id,
+                websocket=websocket,
+            )
+            logger.info("Session created", extra={
+                "domain_uuid": domain_uuid,
+                "call_uuid": call_uuid,
+                "session_active": session.is_active if session else False,
+            })
+        except Exception as e:
+            logger.error(f"Failed to create session: {e}", extra={
+                "domain_uuid": domain_uuid,
+                "call_uuid": call_uuid,
+            })
+            await websocket.close(1011, f"Session creation failed: {e}")
+            return
         
         try:
             async for message in websocket:
-                # Primeira mensagem deve ser metadata (TEXT)
-                if not metadata_received:
-                    if isinstance(message, str):
-                        metadata = json.loads(message)
-                        if metadata.get("type") == "metadata":
-                            caller_id = metadata.get("caller_id", "")
-                            metadata_received = True
-                            
-                            # Criar sessão com config do banco
-                            session = await self._create_session_from_db(
-                                domain_uuid=domain_uuid,
-                                call_uuid=call_uuid,
-                                caller_id=caller_id,
-                                websocket=websocket,
-                            )
-                            continue
-                    
-                    # Se não recebeu metadata, usa valores default
-                    metadata_received = True
-                    session = await self._create_session_from_db(
-                        domain_uuid=domain_uuid,
-                        call_uuid=call_uuid,
-                        caller_id=caller_id,
-                        websocket=websocket,
-                    )
-                
                 # Processar mensagens
                 if isinstance(message, bytes):
                     # Áudio binário do FreeSWITCH
                     if session and session.is_active:
                         await session.handle_audio_input(message)
+                    else:
+                        logger.warning("Received audio but session is not active", extra={
+                            "call_uuid": call_uuid,
+                            "session_active": session.is_active if session else False,
+                        })
                 
                 elif isinstance(message, str):
-                    # Comando de texto
-                    data = json.loads(message)
-                    msg_type = data.get("type")
-                    
-                    if msg_type == "dtmf":
-                        logger.debug(f"DTMF: {data.get('digit')}")
-                    
-                    elif msg_type == "hangup":
-                        logger.info("Hangup received", extra={"call_uuid": call_uuid})
-                        if session:
-                            await session.stop("hangup")
-                        break
+                    # Comando de texto (metadata ou comandos)
+                    try:
+                        data = json.loads(message)
+                        msg_type = data.get("type")
+                        
+                        if msg_type == "metadata":
+                            # Metadata recebida após criação da sessão
+                            caller_id = data.get("caller_id", caller_id)
+                            logger.info("Metadata received", extra={
+                                "call_uuid": call_uuid,
+                                "caller_id": caller_id,
+                            })
+                        
+                        elif msg_type == "dtmf":
+                            logger.debug(f"DTMF: {data.get('digit')}", extra={"call_uuid": call_uuid})
+                        
+                        elif msg_type == "hangup":
+                            logger.info("Hangup received", extra={"call_uuid": call_uuid})
+                            if session:
+                                await session.stop("hangup")
+                            break
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON message: {message[:100]}", extra={"call_uuid": call_uuid})
         
         except websockets.exceptions.ConnectionClosed as e:
             logger.info(f"WebSocket closed: {e}", extra={"call_uuid": call_uuid})
@@ -204,22 +216,27 @@ class RealtimeServer:
         pool = await db.get_pool()
         
         async with pool.acquire() as conn:
-            # Buscar secretária configurada para este domain (Multi-tenant)
+            # Buscar secretária pela extensão de destino (8000)
+            # Primeiro tenta buscar pela extensão, depois fallback para qualquer secretária do domínio
             row = await conn.fetchrow(
                 """
                 SELECT 
-                    s.secretary_uuid,
-                    s.name,
-                    s.system_prompt,
-                    s.greeting,
-                    s.farewell,
+                    s.voice_secretary_uuid as secretary_uuid,
+                    s.secretary_name as name,
+                    s.personality_prompt as system_prompt,
+                    s.greeting_message as greeting,
+                    s.farewell_message as farewell,
                     p.provider_name,
-                    p.config as provider_config
+                    p.config as provider_config,
+                    s.extension
                 FROM v_voice_secretaries s
-                LEFT JOIN v_voice_ai_providers p ON p.provider_uuid = s.realtime_provider_uuid
+                LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
                 WHERE s.domain_uuid = $1
                   AND s.is_enabled = true
                   AND s.processing_mode IN ('realtime', 'auto')
+                ORDER BY 
+                    CASE WHEN s.extension = '8000' THEN 0 ELSE 1 END,
+                    s.insert_date DESC
                 LIMIT 1
                 """,
                 domain_uuid
@@ -227,26 +244,66 @@ class RealtimeServer:
             
             if not row:
                 raise ValueError(f"No realtime secretary configured for domain {domain_uuid}")
+            
+            logger.info("Secretary found", extra={
+                "domain_uuid": domain_uuid,
+                "secretary_uuid": str(row["secretary_uuid"]),
+                "secretary_name": row["name"],
+                "extension": row["extension"],
+                "provider": row["provider_name"],
+            })
         
         # Configurar sessão
         config = RealtimeSessionConfig(
             domain_uuid=domain_uuid,
             call_uuid=call_uuid,
-            caller_id=caller_id,
+            caller_id=caller_id or "unknown",
             secretary_uuid=str(row["secretary_uuid"]),
-            secretary_name=row["name"],
-            provider_name=row["provider_name"] or "openai",
+            secretary_name=row["name"] or "Voice Secretary",
+            provider_name=row["provider_name"] or "elevenlabs_conversational",
             system_prompt=row["system_prompt"] or "",
             greeting=row["greeting"],
             farewell=row["farewell"],
         )
         
+        logger.debug("Session config created", extra={
+            "domain_uuid": domain_uuid,
+            "call_uuid": call_uuid,
+            "secretary_uuid": config.secretary_uuid,
+            "provider": config.provider_name,
+        })
+        
         # Callback para enviar áudio de volta ao FreeSWITCH
+        # mod_audio_stream v1.0.3+ suporta dois métodos:
+        # 1. rawAudio: Enviar formato primeiro, depois chunks binários (mais eficiente)
+        # 2. streamAudio: JSON com base64 (mais compatível)
+        # 
+        # Referência: https://github.com/os11k/freeswitch-elevenlabs-bridge
+        # - Primeiro: {type: "rawAudio", data: {sampleRate: 16000}}
+        # - Depois: chunks binários de áudio PCM L16
+        format_sent = {"value": False}
+        
         async def send_audio(audio_bytes: bytes):
             try:
+                # Enviar formato na primeira vez
+                if not format_sent["value"]:
+                    format_msg = json.dumps({
+                        "type": "rawAudio",
+                        "data": {"sampleRate": 16000}
+                    })
+                    await websocket.send(format_msg)
+                    format_sent["value"] = True
+                    logger.info("Audio format sent to FreeSWITCH", extra={"call_uuid": call_uuid})
+                
+                # Enviar áudio binário diretamente
+                # O mod_audio_stream v1.0.3+ aceita raw binary após o formato
                 await websocket.send(audio_bytes)
+                logger.debug("Audio sent to FreeSWITCH", extra={
+                    "call_uuid": call_uuid,
+                    "bytes": len(audio_bytes),
+                })
             except Exception as e:
-                logger.error(f"Error sending audio: {e}")
+                logger.error(f"Error sending audio: {e}", extra={"call_uuid": call_uuid})
         
         # Criar sessão via manager
         manager = get_session_manager()
