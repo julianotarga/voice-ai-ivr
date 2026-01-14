@@ -73,7 +73,7 @@
 					file_path,
 					file_size,
 					processing_status,
-					enabled,
+					is_enabled,
 					insert_date
 				) VALUES (
 					:document_uuid,
@@ -83,7 +83,7 @@
 					:file_path,
 					:file_size,
 					:processing_status,
-					:enabled,
+					:is_enabled,
 					NOW()
 				)";
 				
@@ -95,7 +95,7 @@
 				$parameters['file_path'] = $filepath;
 				$parameters['file_size'] = $file['size'];
 				$parameters['processing_status'] = 'pending';
-				$parameters['enabled'] = 'true';
+				$parameters['is_enabled'] = 'true';
 				
 				$database = new database;
 				$database->execute($sql, $parameters);

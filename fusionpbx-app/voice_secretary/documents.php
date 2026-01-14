@@ -52,16 +52,24 @@
 			case 'delete':
 				if (permission_exists('voice_secretary_delete')) {
 					$database = new database;
+					$deleted = 0;
 					foreach ($documents_list as $doc) {
-						if (!empty($doc['uuid']) && is_uuid($doc['uuid'])) {
-							$array['voice_documents'][]['voice_document_uuid'] = $doc['uuid'];
+						// Check se o item foi marcado E tem UUID válido
+						if (!empty($doc['checked']) && !empty($doc['uuid']) && is_uuid($doc['uuid'])) {
+							// Usar SQL direto para evitar problemas com database->delete
+							$sql = "DELETE FROM v_voice_documents 
+									WHERE voice_document_uuid = :uuid 
+									AND domain_uuid = :domain_uuid";
+							$params = [
+								'uuid' => $doc['uuid'],
+								'domain_uuid' => $domain_uuid
+							];
+							$database->execute($sql, $params);
+							$deleted++;
 						}
 					}
-					if (!empty($array)) {
-						$database->app_name = 'voice_secretary';
-						$database->app_uuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-						$database->delete($array);
-						unset($array);
+					if ($deleted > 0) {
+						message::add($text['message-delete'] ?? 'Delete completed.');
 					}
 				}
 				break;
