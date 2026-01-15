@@ -193,11 +193,13 @@ class RealtimeServer:
         
         try:
             # Verificar estado do WebSocket antes de entrar no loop
-            if websocket.closed:
+            # Nota: websockets >= 12.0 usa close_code ao invés de closed
+            ws_closed = getattr(websocket, 'closed', None) or getattr(websocket, 'close_code', None) is not None
+            if ws_closed:
                 logger.error("WebSocket already closed before message loop!", extra={"call_uuid": call_uuid})
                 return
             
-            logger.debug(f"WebSocket state: open={not websocket.closed}", extra={"call_uuid": call_uuid})
+            logger.debug(f"WebSocket ready for messages", extra={"call_uuid": call_uuid})
             
             async for message in websocket:
                 message_count += 1
