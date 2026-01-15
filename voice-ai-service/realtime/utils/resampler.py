@@ -75,13 +75,13 @@ class AudioBuffer:
     
     def __init__(
         self, 
-        warmup_ms: int = 200,
+        warmup_ms: int = 400,  # Aumentado para evitar audio underruns
         sample_rate: int = 16000,
         bytes_per_sample: int = 2  # PCM16
     ):
         """
         Args:
-            warmup_ms: Tempo de warmup em milissegundos (default: 200ms)
+            warmup_ms: Tempo de warmup em milissegundos (default: 400ms)
             sample_rate: Taxa de amostragem em Hz
             bytes_per_sample: Bytes por sample (2 para PCM16)
         """
@@ -180,7 +180,7 @@ class ResamplerPair:
         freeswitch_rate: int = 16000, 
         provider_input_rate: int = 24000,
         provider_output_rate: int = None,  # Se None, usa provider_input_rate
-        output_warmup_ms: int = 300  # Aumentado de 200ms para 300ms para reduzir picotamento
+        output_warmup_ms: int = 400  # Aumentado para 400ms para evitar audio underruns
     ):
         # Se output rate não especificado, assume igual ao input
         if provider_output_rate is None:

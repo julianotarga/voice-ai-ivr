@@ -484,9 +484,11 @@ class RealtimeServer:
         playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
         allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
         adaptive_warmup = os.getenv("FS_ADAPTIVE_WARMUP", "true").lower() in ("1", "true", "yes")
-        warmup_min = int(os.getenv("FS_WARMUP_CHUNKS_MIN", "3"))
-        warmup_max = int(os.getenv("FS_WARMUP_CHUNKS_MAX", "8"))
-        warmup_default = int(os.getenv("FS_WARMUP_CHUNKS", "5"))
+        # Aumentado para evitar audio underruns
+        # Cada chunk = 20ms, então 15 chunks = 300ms de buffer inicial
+        warmup_min = int(os.getenv("FS_WARMUP_CHUNKS_MIN", "10"))
+        warmup_max = int(os.getenv("FS_WARMUP_CHUNKS_MAX", "25"))
+        warmup_default = int(os.getenv("FS_WARMUP_CHUNKS", "15"))
         if isinstance(provider_config, dict):
             adaptive_warmup = str(provider_config.get("adaptive_warmup", str(adaptive_warmup))).lower() in ("1", "true", "yes")
             warmup_min = int(provider_config.get("warmup_chunks_min", warmup_min))
