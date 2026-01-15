@@ -127,6 +127,12 @@
 			$array['voice_secretaries'][0]['time_condition_uuid'] = $form_data['time_condition_uuid'];
 			$array['voice_secretaries'][0]['enabled'] = $form_data['enabled'];
 			$array['voice_secretaries'][0]['omniplay_webhook_url'] = $form_data['webhook_url'] ?: null;
+			// Handoff OmniPlay settings
+			$array['voice_secretaries'][0]['handoff_enabled'] = $form_data['handoff_enabled'];
+			$array['voice_secretaries'][0]['handoff_keywords'] = $form_data['handoff_keywords'] ?: null;
+			$array['voice_secretaries'][0]['fallback_ticket_enabled'] = $form_data['fallback_ticket_enabled'];
+			$array['voice_secretaries'][0]['handoff_queue_id'] = $form_data['handoff_queue_id'] ?: null;
+			$array['voice_secretaries'][0]['omniplay_company_id'] = $form_data['omniplay_company_id'] ?: null;
 			
 			//add permissions
 			$p = permissions::new();
