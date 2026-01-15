@@ -775,3 +775,55 @@ def build_transfer_tools_schema() -> List[Dict[str, Any]]:
             }
         }
     ]
+
+
+# =============================================================================
+# Helper function for ESL mode
+# =============================================================================
+
+async def load_secretary_config(
+    domain_uuid: str,
+    secretary_uuid: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Carrega configuração da secretária pelo UUID.
+    
+    Helper function para uso no ESL mode.
+    
+    Args:
+        domain_uuid: UUID do domínio (tenant)
+        secretary_uuid: UUID da secretária
+    
+    Returns:
+        Dict com configuração ou None se não encontrada
+    """
+    loader = ConfigLoader.get_instance()
+    config = await loader.get_secretary_by_uuid(domain_uuid, secretary_uuid)
+    
+    if not config:
+        logger.warning(
+            f"Secretary not found: domain={domain_uuid}, uuid={secretary_uuid}"
+        )
+        return None
+    
+    # Converter para dict para compatibilidade
+    return {
+        "secretary_uuid": config.secretary_uuid,
+        "domain_uuid": config.domain_uuid,
+        "secretary_name": config.name,
+        "extension": config.extension,
+        "system_prompt": config.system_prompt,
+        "first_message": config.greeting_message,
+        "farewell": config.farewell_message,
+        "provider_name": config.realtime_provider or "elevenlabs",
+        "voice": config.voice,
+        "language": config.language,
+        "vad_threshold": config.vad_threshold,
+        "silence_duration_ms": config.silence_duration_ms,
+        "provider_config": config.realtime_provider_config,
+        # Handoff
+        "handoff_enabled": config.handoff_enabled,
+        "handoff_keywords": config.handoff_keywords,
+        "handoff_max_turns": config.handoff_max_turns,
+        "handoff_queue_id": config.handoff_queue_id,
+    }

@@ -1,30 +1,148 @@
 """
-Realtime package entrypoint.
+Realtime package entrypoint - Dual Mode Server
 
-Why this exists:
-- Running `python -m realtime.server` can emit a noisy `RuntimeWarning` from runpy in some environments.
-- Running `python -m realtime` avoids that, while keeping the package layout intact.
+Suporta dois modos de operação:
+1. WebSocket (default): Via mod_audio_stream - porta 8085
+2. ESL + RTP: Via greenswitch - porta 8022 + UDP 10000-10100
+
+Modo controlado por AUDIO_MODE env var:
+- AUDIO_MODE=websocket (default)
+- AUDIO_MODE=rtp
+- AUDIO_MODE=dual (ambos simultaneamente)
 """
 
 import asyncio
 import logging
 import os
+import sys
+import signal
+import threading
+from typing import Optional
 
-from .server import run_server
+# Logger
+logger = logging.getLogger(__name__)
+
+
+def setup_logging() -> None:
+    """Configura logging baseado em DEBUG env."""
+    level = logging.DEBUG if os.getenv("DEBUG") else logging.INFO
+    
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    
+    # Reduzir verbosidade de algumas libs
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+
+def run_websocket_server(host: str, port: int) -> None:
+    """Inicia servidor WebSocket (asyncio)."""
+    from .server import run_server
+    
+    logger.info(f"Starting WebSocket server on {host}:{port}")
+    asyncio.run(run_server(host=host, port=port))
+
+
+def run_esl_server(host: str, port: int) -> None:
+    """Inicia servidor ESL (gevent)."""
+    from .esl import create_server
+    
+    logger.info(f"Starting ESL server on {host}:{port}")
+    server = create_server(host=host, port=port)
+    server.start()
+
+
+def run_dual_mode(
+    ws_host: str,
+    ws_port: int,
+    esl_host: str,
+    esl_port: int,
+) -> None:
+    """
+    Executa ambos os servidores simultaneamente.
+    
+    WebSocket roda em asyncio (thread principal).
+    ESL roda em gevent (thread separada).
+    """
+    from .esl import create_server
+    from .server import run_server
+    
+    # Criar servidor ESL
+    esl_server = create_server(host=esl_host, port=esl_port)
+    
+    # Thread para ESL (gevent)
+    esl_thread = threading.Thread(
+        target=esl_server.start,
+        name="ESLServer",
+        daemon=True,
+    )
+    
+    # Handler para shutdown gracioso
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down...")
+        esl_server.stop()
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Iniciar ESL em thread separada
+    logger.info(f"Starting ESL server on {esl_host}:{esl_port}")
+    esl_thread.start()
+    
+    # Rodar WebSocket na thread principal (asyncio)
+    logger.info(f"Starting WebSocket server on {ws_host}:{ws_port}")
+    
+    try:
+        asyncio.run(run_server(host=ws_host, port=ws_port))
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    finally:
+        esl_server.stop()
+        esl_thread.join(timeout=5.0)
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    host = os.getenv("REALTIME_HOST", "0.0.0.0")
-    port = int(os.getenv("REALTIME_PORT", "8085"))
-
-    asyncio.run(run_server(host=host, port=port))
+    """Entry point principal."""
+    setup_logging()
+    
+    # Configuração
+    audio_mode = os.getenv("AUDIO_MODE", "websocket").lower()
+    
+    # WebSocket config
+    ws_host = os.getenv("REALTIME_HOST", "0.0.0.0")
+    ws_port = int(os.getenv("REALTIME_PORT", "8085"))
+    
+    # ESL config
+    esl_host = os.getenv("ESL_SERVER_HOST", "0.0.0.0")
+    esl_port = int(os.getenv("ESL_SERVER_PORT", "8022"))
+    
+    logger.info("=" * 60)
+    logger.info("Voice AI Realtime Server")
+    logger.info(f"Mode: {audio_mode.upper()}")
+    logger.info("=" * 60)
+    
+    if audio_mode == "websocket":
+        # Modo WebSocket apenas (via mod_audio_stream)
+        run_websocket_server(ws_host, ws_port)
+        
+    elif audio_mode == "rtp" or audio_mode == "esl":
+        # Modo ESL + RTP apenas
+        run_esl_server(esl_host, esl_port)
+        
+    elif audio_mode == "dual":
+        # Ambos os modos simultaneamente
+        run_dual_mode(ws_host, ws_port, esl_host, esl_port)
+        
+    else:
+        logger.error(f"Unknown AUDIO_MODE: {audio_mode}")
+        logger.error("Valid modes: websocket, rtp, esl, dual")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-

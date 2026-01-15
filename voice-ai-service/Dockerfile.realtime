@@ -1,14 +1,17 @@
 # =============================================================================
 # Voice AI Realtime Bridge - Dockerfile
 # =============================================================================
-# WebSocket Bridge para comunicação bidirecional FreeSWITCH ↔ AI Providers
+# Dual-mode bridge para comunicação FreeSWITCH ↔ AI Providers:
+# - Mode 1 (WebSocket): mod_audio_stream via WS (porta 8085)
+# - Mode 2 (ESL+RTP): Direct integration via ESL (8022) + RTP (10000-10100)
 #
 # Referências:
 # - .context/docs/architecture.md: voice-ai-realtime:8085 (WS)
-# - .context/agents/devops-specialist.md: Dockerfile.realtime
+# - openspec/changes/refactor-esl-rtp-bridge: ESL + RTP mode
+# - https://github.com/EvoluxBR/greenswitch: ESL Python client
 #
 # Build:   docker build -f Dockerfile.realtime -t voice-ai-realtime .
-# Run:     docker run -p 8085:8085 --env-file .env voice-ai-realtime
+# Run:     docker run -p 8085:8085 -p 8022:8022 --env-file .env voice-ai-realtime
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -39,8 +42,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 FROM python:3.11-slim AS production
 
 LABEL maintainer="OmniPlay <contato@omniplay.com.br>"
-LABEL description="Voice AI Realtime Bridge - WebSocket FreeSWITCH to AI"
-LABEL version="1.0.0"
+LABEL description="Voice AI Realtime Bridge - WebSocket/ESL+RTP FreeSWITCH to AI"
+LABEL version="2.0.0"
 
 WORKDIR /app
 
@@ -76,12 +79,24 @@ USER voiceai
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
+    # WebSocket Mode (mod_audio_stream)
     REALTIME_HOST=0.0.0.0 \
     REALTIME_PORT=8085 \
+    # ESL Mode (greenswitch)
+    ESL_SERVER_HOST=0.0.0.0 \
+    ESL_SERVER_PORT=8022 \
+    # RTP Mode
+    RTP_PORT_MIN=10000 \
+    RTP_PORT_MAX=10100 \
+    # Audio Mode: "websocket" or "rtp"
+    AUDIO_MODE=websocket \
     LOG_DIR=/app/logs
 
-# Expose WebSocket port
-EXPOSE 8085
+# Expose ports:
+# - 8085: WebSocket (mod_audio_stream)
+# - 8022: ESL Outbound (greenswitch)
+# - 10000-10100: RTP UDP (direct audio)
+EXPOSE 8085 8022 10000-10100/udp
 
 # Health check - WebSocket endpoints don't have HTTP health, use TCP
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

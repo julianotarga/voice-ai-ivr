@@ -237,9 +237,12 @@ services:
         max-file: "3"
 
   # ===========================================================================
-  # Voice AI Realtime Bridge - WebSocket Server (v2)
+  # Voice AI Realtime Bridge - Dual Mode (WebSocket + ESL/RTP)
   # ===========================================================================
-  # Realtime WebSocket: por padrão publicamos 8085 (override via VOICE_AI_REALTIME_PORT)
+  # Modo de áudio controlado por AUDIO_MODE:
+  # - websocket (default): Via mod_audio_stream na porta 8085
+  # - rtp/esl: Via ESL (8022) + RTP direto (UDP 10000-10100)
+  # - dual: Ambos os modos simultaneamente
   voice-ai-realtime:
     build:
       context: ./voice-ai-service
@@ -249,17 +252,38 @@ services:
     restart: unless-stopped
     
     ports:
+      # WebSocket (mod_audio_stream)
       - "${VOICE_AI_REALTIME_PORT:-8085}:8085"
+      # ESL Outbound (greenswitch) 
+      - "${VOICE_AI_ESL_PORT:-8022}:8022"
+      # RTP UDP (direct audio) - apenas se AUDIO_MODE=rtp ou dual
+      - "${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}:10000-10100/udp"
     
     environment:
-      # Application
+      # Application - Audio Mode: websocket, rtp, esl, dual
+      - AUDIO_MODE=${AUDIO_MODE:-websocket}
+      - DEBUG=${DEBUG:-false}
+      
+      # WebSocket Mode Config (mod_audio_stream)
       - REALTIME_HOST=0.0.0.0
       - REALTIME_PORT=8085
       - REALTIME_VAD_THRESHOLD=0.7
       - REALTIME_SILENCE_MS=1000
-      - DEBUG=${DEBUG:-false}
       
-      # FreeSWITCH Audio Playback
+      # ESL Mode Config (greenswitch)
+      - ESL_SERVER_HOST=0.0.0.0
+      - ESL_SERVER_PORT=8022
+      - ESL_MAX_CONNECTIONS=100
+      
+      # RTP Mode Config
+      - RTP_PORT_MIN=10000
+      - RTP_PORT_MAX=10100
+      - RTP_BIND_ADDRESS=0.0.0.0
+      - RTP_JITTER_MIN_MS=60
+      - RTP_JITTER_MAX_MS=200
+      - RTP_JITTER_TARGET_MS=100
+      
+      # FreeSWITCH Audio Playback (WebSocket mode only)
       - FS_PLAYBACK_MODE=rawAudio
       - FS_STREAMAUDIO_FALLBACK=false
       - FS_WARMUP_CHUNKS=10

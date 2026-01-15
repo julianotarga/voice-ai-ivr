@@ -1,0 +1,91 @@
+<!-- 
+  Voice AI ESL Mode - Dialplan
+  
+  Este dialplan usa ESL Outbound para controle direto da chamada.
+  O áudio é transportado via RTP direto (sem mod_audio_stream).
+  
+  IMPORTANTE: O Voice AI Service deve estar rodando com AUDIO_MODE=rtp ou dual
+  
+  Instalação:
+    1. Copiar para /etc/freeswitch/dialplan/default/
+    2. Ajustar IP:PORT do socket conforme ambiente
+    3. Recarregar dialplan: fs_cli -x "reloadxml"
+  
+  Referências:
+    - docs/ESL_RTP_SETUP.md
+    - openspec/changes/refactor-esl-rtp-bridge/
+-->
+
+<include>
+  <!-- 
+    Voice AI ESL - Pattern: 8XXX (ramais 8000-8999 reservados para Voice AI)
+    Ajuste o pattern conforme necessidade.
+  -->
+  <extension name="voice_ai_esl" continue="false">
+    <condition field="destination_number" expression="^(8\d{3})$">
+      <!-- Log da chamada -->
+      <action application="log" data="INFO Voice AI ESL: Incoming call to $1 from ${caller_id_number}"/>
+      
+      <!-- Variáveis obrigatórias para o Voice AI -->
+      <action application="set" data="domain_uuid=${domain_uuid}"/>
+      <action application="set" data="secretary_uuid=${secretary_uuid}"/>
+      
+      <!-- Configuração de codec para RTP -->
+      <action application="set" data="absolute_codec_string=PCMU"/>
+      <action application="set" data="rtp_use_timer_name=none"/>
+      
+      <!-- Atender a chamada -->
+      <action application="answer"/>
+      
+      <!-- 
+        Conectar ao ESL Outbound Server do Voice AI
+        
+        Parâmetros:
+        - IP:PORT = Endereço do Voice AI container (ajustar conforme ambiente)
+        - async = Execução assíncrona
+        - full = Enviar todas as variáveis do canal
+        
+        Se Voice AI e FreeSWITCH estão no mesmo host:
+          socket 127.0.0.1:8022 async full
+        
+        Se Voice AI está em container Docker (network_mode: host):
+          socket 127.0.0.1:8022 async full
+        
+        Se Voice AI está em container Docker (bridge network):
+          socket <IP_DO_CONTAINER>:8022 async full
+          ou
+          socket voice-ai-realtime:8022 async full (se DNS resolve)
+      -->
+      <action application="socket" data="127.0.0.1:8022 async full"/>
+    </condition>
+  </extension>
+
+  <!--
+    Alternativa: Voice AI por ramal específico
+    Descomente e ajuste conforme necessidade
+  -->
+  <!--
+  <extension name="voice_ai_esl_8000" continue="false">
+    <condition field="destination_number" expression="^8000$">
+      <action application="set" data="domain_uuid=${domain_uuid}"/>
+      <action application="set" data="secretary_uuid=dc923a2f-b88a-4a2f-8029-d6e0c06893c5"/>
+      <action application="set" data="absolute_codec_string=PCMU"/>
+      <action application="answer"/>
+      <action application="socket" data="127.0.0.1:8022 async full"/>
+    </condition>
+  </extension>
+  -->
+
+  <!--
+    Fallback: Se ESL não estiver disponível, usar mod_audio_stream (WebSocket)
+    Este dialplan só é acionado se o ESL falhar
+  -->
+  <!--
+  <extension name="voice_ai_esl_fallback" continue="false">
+    <condition field="destination_number" expression="^8\d{3}$">
+      <action application="log" data="WARNING Voice AI: ESL unavailable, falling back to WebSocket"/>
+      <action application="lua" data="voice_secretary.lua"/>
+    </condition>
+  </extension>
+  -->
+</include>
