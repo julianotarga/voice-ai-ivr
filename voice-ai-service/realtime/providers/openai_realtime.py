@@ -40,21 +40,29 @@ Server → Client:
 - error: Erros (rate_limit_exceeded, etc.)
 
 === VAD (TURN DETECTION) ===
-Ref: session.update → session.audio.input.turn_detection
-ATUALIZADO Jan/2026 (Context7):
-- type: "semantic_vad" (novo, mais inteligente que server_vad)
-- Parâmetros antigos (threshold, prefix_padding_ms, etc.) NÃO são mais suportados
-- VAD é automaticamente gerenciado pelo modelo
+API Beta (atual): turn_detection no nível superior
+- type: "server_vad"
+- threshold: 0.5 (0.0-1.0, sensibilidade)
+- prefix_padding_ms: 300 (áudio antes da fala)
+- silence_duration_ms: 200 (silêncio para encerrar turno)
+- create_response: true (auto-responder)
 
-=== SESSION.UPDATE FORMAT (Jan/2026) ===
-IMPORTANTE: Formato mudou! Verificar Context7.
-- session.type: "realtime" (obrigatório)
-- session.model: "gpt-realtime" (obrigatório)
-- session.output_modalities: ["audio"] (NÃO "modalities")
-- session.audio.input.format: { type: "audio/pcm", rate: 24000 }
-- session.audio.input.turn_detection: { type: "semantic_vad" }
-- session.audio.output: { format: {...}, voice: "..." }
-- session.instructions: "system prompt"
+=== SESSION.UPDATE FORMAT ===
+IMPORTANTE: API Beta usa formato DIFERENTE da documentação GA!
+
+API BETA (ATUAL):
+- modalities: ["audio", "text"] (não "output_modalities")
+- voice: "alloy" (nível superior)
+- input_audio_format: "pcm16" (string plana)
+- output_audio_format: "pcm16" (string plana)
+- turn_detection: {...} (nível superior)
+- instructions: "system prompt"
+- NÃO TEM session.type!
+
+API GA (FUTURO - Context7):
+- session.type: "realtime"
+- output_modalities: ["audio"]
+- audio: { input: {...}, output: {...} }
 """
 
 import asyncio
@@ -132,10 +140,10 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     """
     
     REALTIME_URL = "wss://api.openai.com/v1/realtime"
-    # Modelo padrão para Realtime API (Jan/2026)
-    # Ref: Context7 - usar "gpt-realtime" ou "gpt-realtime-2025-08-28"
-    # O modelo antigo "gpt-4o-realtime-preview" pode não suportar o novo formato de session.update
-    DEFAULT_MODEL = "gpt-realtime"
+    # Modelo padrão para Realtime API (Beta)
+    # IMPORTANTE: A API ainda está em Beta! Usar gpt-4o-realtime-preview
+    # O modelo "gpt-realtime" é para a versão GA (futura)
+    DEFAULT_MODEL = "gpt-4o-realtime-preview"
     
     def __init__(self, credentials: Dict[str, Any], config: RealtimeConfig):
         import os
@@ -215,67 +223,78 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         Configura sessão com prompt, voz, VAD, tools.
         
         Ref: session.update event
-        Context7: /websites/platform_openai → "Session Update Event" (Jan/2026)
         
-        FORMATO CORRETO (Context7 verificado Jan/2026):
+        IMPORTANTE: A API Beta usa formato DIFERENTE da documentação GA!
+        
+        FORMATO BETA (ATUAL - Jan/2026):
+        - modalities: ["audio", "text"] (não "output_modalities")
+        - voice: string (nível superior, não em audio.output)
+        - input_audio_format: "pcm16" (plano, não aninhado)
+        - output_audio_format: "pcm16" (plano, não aninhado)
+        - turn_detection: { type: "server_vad", ... } (nível superior)
+        - instructions: string
+        - NÃO TEM session.type!
+        
+        FORMATO GA (FUTURO - Context7 docs):
         - session.type: "realtime"
-        - session.model: "gpt-realtime"
-        - session.output_modalities: ["audio"] (NÃO "modalities"!)
-        - session.audio.input.format: { type: "audio/pcm", rate: 24000 }
-        - session.audio.input.turn_detection: { type: "semantic_vad" }
-        - session.audio.output: { format, voice }
-        - session.instructions: string
+        - output_modalities: ["audio"]
+        - audio: { input: {...}, output: {...} }
         """
         if not self._ws:
             raise RuntimeError("Not connected")
         
-        # Vozes disponíveis (Jan/2026): alloy, echo, fable, onyx, nova, shimmer, marin
+        # Vozes disponíveis: alloy, echo, fable, onyx, nova, shimmer, sage
         voice = self.config.voice or "alloy"
         
-        # Construir configuração de sessão conforme Context7 docs (Jan/2026)
-        # IMPORTANTE: usar "output_modalities" e incluir "type": "realtime", "model": "gpt-realtime"
+        # === FORMATO BETA (ATUAL) ===
+        # Ref: session.updated response from API Beta
         session_config = {
             "type": "session.update",
             "session": {
-                "type": "realtime",
-                "model": "gpt-realtime",
-                "output_modalities": ["audio"],  # CORRIGIDO: era "modalities"
+                # Modalities (formato Beta: "modalities", não "output_modalities")
+                "modalities": ["audio", "text"],
+                
+                # System prompt
                 "instructions": self.config.system_prompt or "",
-                # Configuração de áudio (formato Context7 Jan/2026)
-                "audio": {
-                    "input": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
-                        },
-                        # VAD (Voice Activity Detection)
-                        # CORRIGIDO: usar "semantic_vad" (Jan/2026), não "server_vad"
-                        "turn_detection": {
-                            "type": "semantic_vad"
-                        }
-                    },
-                    "output": {
-                        "format": {
-                            "type": "audio/pcm"
-                        },
-                        "voice": voice
-                    }
+                
+                # Voz (formato Beta: nível superior, não aninhado em audio.output)
+                "voice": voice,
+                
+                # Formatos de áudio (formato Beta: strings planas)
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                
+                # Transcrição do input (opcional)
+                "input_audio_transcription": {
+                    "model": "whisper-1"
                 },
+                
+                # VAD - Turn Detection (formato Beta: nível superior)
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": self.config.vad_threshold or 0.5,
+                    "prefix_padding_ms": self.config.prefix_padding_ms or 300,
+                    "silence_duration_ms": self.config.silence_duration_ms or 200,
+                    "create_response": True,
+                },
+                
                 # Tools (function calling)
                 "tools": self.config.tools or DEFAULT_TOOLS,
                 "tool_choice": "auto",
             }
         }
         
-        # max_response_output_tokens (limitar resposta) - opcional
+        # max_response_output_tokens (limitar resposta)
         if self.config.max_response_output_tokens and self.config.max_response_output_tokens > 0:
             session_config["session"]["max_response_output_tokens"] = int(self.config.max_response_output_tokens)
+        else:
+            session_config["session"]["max_response_output_tokens"] = "inf"
         
-        logger.debug("Sending session.update", extra={
+        logger.debug("Sending session.update (Beta format)", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_instructions": bool(self.config.system_prompt),
             "voice": voice,
-            "turn_detection": "semantic_vad",
+            "vad_threshold": self.config.vad_threshold or 0.5,
         })
         
         await self._ws.send(json.dumps(session_config))
