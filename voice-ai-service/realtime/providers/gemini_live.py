@@ -88,14 +88,16 @@ class GeminiLiveProvider(BaseRealtimeProvider):
     LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     
     # Modelo padrão para Live API (bidiGenerateContent)
-    # IMPORTANTE: gemini-2.0-flash-exp NÃO suporta bidiGenerateContent!
+    # IMPORTANTE: Testar diferentes modelos para encontrar o que funciona
+    # A API Live pode ter modelos específicos que mudam com frequência
     # Ref: https://ai.google.dev/gemini-api/docs/models
-    DEFAULT_MODEL = "models/gemini-2.0-flash-live-001"
+    DEFAULT_MODEL = "models/gemini-2.0-flash"
     
-    # Modelos que suportam Live API (bidiGenerateContent)
+    # Modelos para tentar em ordem de preferência
     AVAILABLE_MODELS = [
-        "models/gemini-2.0-flash-live-001",   # Recomendado para Voice AI
-        "models/gemini-2.0-flash",             # Fallback (pode não suportar Live)
+        "models/gemini-2.0-flash",             # Modelo base
+        "models/gemini-2.0-flash-001",         # Versão específica
+        "models/gemini-2.0-flash-live",        # Live específico
     ]
     
     def __init__(self, credentials: Dict[str, Any], config: RealtimeConfig):
@@ -105,32 +107,19 @@ class GeminiLiveProvider(BaseRealtimeProvider):
         # Fallback para variáveis de ambiente se credentials estiver vazio
         self.api_key = credentials.get("api_key") or os.getenv("GOOGLE_API_KEY")
         
-        # Validar modelo - CRÍTICO: gemini-2.0-flash-exp NÃO suporta bidiGenerateContent!
-        requested_model = credentials.get("model", self.DEFAULT_MODEL)
-        
-        # Modelos que NÃO suportam Live API (bidiGenerateContent)
-        UNSUPPORTED_MODELS = [
-            "gemini-2.0-flash-exp",
-            "models/gemini-2.0-flash-exp",
-            "gemini-1.5",
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-pro",
-        ]
-        
-        # Se modelo não suportado, usar o padrão
-        if any(unsup in requested_model for unsup in UNSUPPORTED_MODELS):
-            logger.warning(f"Model '{requested_model}' does NOT support bidiGenerateContent (Live API). "
-                         f"Using default: {self.DEFAULT_MODEL}")
-            self.model = self.DEFAULT_MODEL
-        else:
-            # Adicionar prefixo models/ se necessário
-            if not requested_model.startswith("models/"):
-                self.model = f"models/{requested_model}"
-            else:
-                self.model = requested_model
-        
         if not self.api_key:
             raise ValueError("Google API key not configured (check DB config or GOOGLE_API_KEY env)")
+        
+        # Obter modelo das credenciais ou usar padrão
+        requested_model = credentials.get("model", self.DEFAULT_MODEL)
+        
+        # Adicionar prefixo models/ se necessário
+        if requested_model and not requested_model.startswith("models/"):
+            self.model = f"models/{requested_model}"
+        else:
+            self.model = requested_model or self.DEFAULT_MODEL
+        
+        logger.info(f"Using Gemini model: {self.model}")
         
         # Validar voz
         voice = self.config.voice or "Aoede"
