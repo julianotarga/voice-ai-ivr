@@ -290,14 +290,19 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         else:
             session_config["session"]["max_response_output_tokens"] = "inf"
         
-        logger.debug("Sending session.update (Beta format)", extra={
+        logger.info("Sending session.update (Beta format)", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_instructions": bool(self.config.system_prompt),
             "voice": voice,
             "vad_threshold": self.config.vad_threshold or 0.5,
         })
         
-        await self._ws.send(json.dumps(session_config))
+        try:
+            await self._ws.send(json.dumps(session_config))
+            logger.info("session.update sent successfully")
+        except Exception as e:
+            logger.error(f"Failed to send session.update: {e}")
+            raise
         
         # Se houver first_message (saudação), enviar como texto e solicitar resposta
         if self.config.first_message:

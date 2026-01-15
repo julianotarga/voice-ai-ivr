@@ -184,12 +184,21 @@ class RealtimeServer:
         logger.info("Starting message loop, waiting for audio from FreeSWITCH...", extra={
             "call_uuid": call_uuid,
             "session_active": session.is_active if session else False,
+            "provider": session.config.provider_name if session else "none",
         })
         
         message_count = 0
         audio_bytes_total = 0
+        last_message_time = asyncio.get_event_loop().time()
         
         try:
+            # Verificar estado do WebSocket antes de entrar no loop
+            if websocket.closed:
+                logger.error("WebSocket already closed before message loop!", extra={"call_uuid": call_uuid})
+                return
+            
+            logger.debug(f"WebSocket state: open={not websocket.closed}", extra={"call_uuid": call_uuid})
+            
             async for message in websocket:
                 message_count += 1
                 
