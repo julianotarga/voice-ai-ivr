@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 import websockets
@@ -21,6 +22,11 @@ from websockets.asyncio.server import ServerConnection, serve
 from .session import RealtimeSessionConfig
 from .session_manager import get_session_manager
 from .utils.metrics import get_metrics
+from .config_loader import (
+    get_config_loader,
+    build_transfer_context,
+    build_transfer_tools_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +37,7 @@ PCM16_16K_CHUNK_BYTES = 640
 PCM16_CHUNK_MS = 20
 
 # Warmup: acumular N chunks antes de começar a enviar (evita stuttering inicial)
-# Ref: os11k/freeswitch-elevenlabs-bridge usa BUFFER_WARMUP_CHUNKS = 10 (200ms)
-BUFFER_WARMUP_CHUNKS = int(os.getenv("FS_WARMUP_CHUNKS", "10"))
+# Ref: os11k/freeswitch-elevenlabs-bridge usa 10 chunks (200ms)
 
 # Fallback streamAudio (base64) usa frames maiores para reduzir overhead de arquivos
 STREAMAUDIO_FRAME_MS = int(os.getenv("FS_STREAMAUDIO_FRAME_MS", "200"))
@@ -307,6 +312,8 @@ class RealtimeServer:
         prefix_padding_ms = int(os.getenv("REALTIME_PREFIX_PADDING_MS", "300"))
         max_response_output_tokens = int(os.getenv("REALTIME_MAX_OUTPUT_TOKENS", "4096"))
         voice = (os.getenv("REALTIME_VOICE", "") or "").strip()
+        fallback_providers_env = os.getenv("REALTIME_FALLBACK_PROVIDERS", "").strip()
+        barge_in_enabled = os.getenv("REALTIME_BARGE_IN", "true").lower() in ("1", "true", "yes")
         tools = None
 
         # Provider config pode sobrescrever defaults
@@ -324,21 +331,86 @@ class RealtimeServer:
             prefix_padding_ms = int(provider_config.get("prefix_padding_ms", prefix_padding_ms))
             max_response_output_tokens = int(provider_config.get("max_response_output_tokens", max_response_output_tokens))
             voice = str(provider_config.get("voice", voice or "alloy")).strip()
+            barge_in_enabled = str(provider_config.get("barge_in_enabled", str(barge_in_enabled))).lower() in ("1", "true", "yes")
+            fallback_providers_env = str(provider_config.get("fallback_providers", fallback_providers_env)).strip()
             tools_json = provider_config.get("tools_json")
             if tools_json:
                 try:
                     tools = json.loads(tools_json) if isinstance(tools_json, str) else tools_json
                 except Exception:
+        fallback_providers = []
+        if fallback_providers_env:
+            try:
+                if isinstance(fallback_providers_env, list):
+                    fallback_providers = [str(p).strip() for p in fallback_providers_env if str(p).strip()]
+                elif fallback_providers_env.startswith("["):
+                    fallback_providers = [str(p).strip() for p in json.loads(fallback_providers_env) if str(p).strip()]
+                else:
+                    fallback_providers = [p.strip() for p in fallback_providers_env.split(",") if p.strip()]
+            except Exception:
+                logger.warning("Invalid fallback_providers format", extra={"call_uuid": call_uuid})
                     logger.warning("Invalid tools_json in provider_config", extra={"call_uuid": call_uuid})
+
+        # ========================================
+        # Transfer Rules Integration
+        # Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (5.1-5.2)
+        # ========================================
+        system_prompt_base = row["system_prompt"] or ""
+        secretary_uuid = str(row["secretary_uuid"])
+        
+        # Carregar transfer_rules e construir contexto para o LLM
+        config_loader = get_config_loader()
+        transfer_context = ""
+        
+        if config_loader:
+            try:
+                transfer_rules = await config_loader.get_transfer_rules(
+                    domain_uuid=domain_uuid,
+                    secretary_uuid=secretary_uuid
+                )
+                
+                if transfer_rules:
+                    # Detectar idioma da secretária (fallback pt-BR)
+                    language = "pt-BR"  # Pode ser extraído da config futuramente
+                    
+                    transfer_context = build_transfer_context(transfer_rules, language)
+                    
+                    # Adicionar tools de transfer se não existirem
+                    if not tools:
+                        tools = build_transfer_tools_schema()
+                    else:
+                        # Verificar se transfer_call já existe
+                        tool_names = [t.get("function", {}).get("name") for t in tools if isinstance(t, dict)]
+                        if "transfer_call" not in tool_names:
+                            tools.extend(build_transfer_tools_schema())
+                    
+                    logger.info("Transfer rules injected into session", extra={
+                        "domain_uuid": domain_uuid,
+                        "secretary_uuid": secretary_uuid,
+                        "rules_count": len(transfer_rules),
+                        "call_uuid": call_uuid,
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Failed to load transfer rules: {e}", extra={
+                    "domain_uuid": domain_uuid,
+                    "secretary_uuid": secretary_uuid,
+                    "call_uuid": call_uuid,
+                })
+        
+        # Combinar system_prompt base + transfer_context
+        final_system_prompt = system_prompt_base
+        if transfer_context:
+            final_system_prompt = f"{system_prompt_base}\n{transfer_context}"
 
         config = RealtimeSessionConfig(
             domain_uuid=domain_uuid,
             call_uuid=call_uuid,
             caller_id=caller_id or "unknown",
-            secretary_uuid=str(row["secretary_uuid"]),
+            secretary_uuid=secretary_uuid,
             secretary_name=row["name"] or "Voice Secretary",
             provider_name=row["provider_name"] or "elevenlabs_conversational",
-            system_prompt=row["system_prompt"] or "",
+            system_prompt=final_system_prompt,
             greeting=row["greeting"],
             farewell=row["farewell"],
             vad_threshold=vad_threshold,
@@ -347,6 +419,8 @@ class RealtimeServer:
             max_response_output_tokens=max_response_output_tokens,
             voice=voice or "alloy",
             tools=tools,
+            fallback_providers=fallback_providers,
+            barge_in_enabled=barge_in_enabled,
         )
         
         logger.debug("Session config created", extra={
@@ -364,12 +438,23 @@ class RealtimeServer:
         # 3. Warmup de 10 chunks (200ms) antes de começar a enviar
         #
         # Ref: https://github.com/os11k/freeswitch-elevenlabs-bridge/blob/main/server.js
-        audio_out_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        audio_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
         pending = bytearray()
         sender_task: Optional[asyncio.Task] = None
         format_sent = False
+        playback_generation = 0
+        playback_lock = asyncio.Lock()
         playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
         allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
+        adaptive_warmup = os.getenv("FS_ADAPTIVE_WARMUP", "true").lower() in ("1", "true", "yes")
+        warmup_min = int(os.getenv("FS_WARMUP_CHUNKS_MIN", "3"))
+        warmup_max = int(os.getenv("FS_WARMUP_CHUNKS_MAX", "8"))
+        warmup_default = int(os.getenv("FS_WARMUP_CHUNKS", "5"))
+        if isinstance(provider_config, dict):
+            adaptive_warmup = str(provider_config.get("adaptive_warmup", str(adaptive_warmup))).lower() in ("1", "true", "yes")
+            warmup_min = int(provider_config.get("warmup_chunks_min", warmup_min))
+            warmup_max = int(provider_config.get("warmup_chunks_max", warmup_max))
+            warmup_default = int(provider_config.get("warmup_chunks", warmup_default))
         if playback_mode not in ("rawaudio", "streamaudio"):
             playback_mode = "rawaudio"
 
@@ -415,20 +500,26 @@ class RealtimeServer:
             """
             nonlocal playback_mode
             try:
-                buffered_chunks: list[bytes] = []
+                buffered_chunks: list[tuple[int, bytes]] = []
                 streaming_started = False
                 streamaudio_buffer = bytearray()
+                warmup_chunks = max(warmup_min, min(warmup_default, warmup_max))
+                underrun_count = 0
+                last_health_update = 0.0
 
                 while True:
-                    chunk = await audio_out_queue.get()
-                    if chunk is None:
+                    item = await audio_out_queue.get()
+                    if item is None:
                         # Flush remaining chunks
-                        for remaining in buffered_chunks:
+                        for _, remaining in buffered_chunks:
                             await websocket.send(remaining)
                             await asyncio.sleep(PCM16_CHUNK_MS / 1000.0)
                         if streamaudio_buffer:
                             await _send_streamaudio_frame(bytes(streamaudio_buffer))
                         return
+                    generation, chunk = item
+                    if generation != playback_generation:
+                        continue
 
                     # rawAudio header
                     if playback_mode == "rawaudio":
@@ -439,20 +530,22 @@ class RealtimeServer:
 
                     if playback_mode == "rawaudio":
                         # Acumular chunks para warmup
-                        buffered_chunks.append(chunk)
+                        buffered_chunks.append((generation, chunk))
 
                         # Iniciar streaming após warmup
-                        if not streaming_started and len(buffered_chunks) >= BUFFER_WARMUP_CHUNKS:
+                        if not streaming_started and len(buffered_chunks) >= warmup_chunks:
                             streaming_started = True
                             logger.debug(
-                                f"Warmup complete ({BUFFER_WARMUP_CHUNKS} chunks), starting playback",
+                                f"Warmup complete ({warmup_chunks} chunks), starting playback",
                                 extra={"call_uuid": call_uuid},
                             )
 
                         # Enviar chunks com pacing
                         if streaming_started:
                             while buffered_chunks:
-                                chunk_to_send = buffered_chunks.pop(0)
+                                buffered_generation, chunk_to_send = buffered_chunks.pop(0)
+                                if buffered_generation != playback_generation:
+                                    continue
                                 try:
                                     await websocket.send(chunk_to_send)
                                     try:
@@ -474,25 +567,35 @@ class RealtimeServer:
                             # Continuar recebendo e enviando em tempo real
                             while playback_mode == "rawaudio":
                                 try:
-                                    c = await asyncio.wait_for(audio_out_queue.get(), timeout=0.5)
+                                    c = await asyncio.wait_for(
+                                        audio_out_queue.get(),
+                                        timeout=PCM16_CHUNK_MS / 1000.0,
+                                    )
                                 except asyncio.TimeoutError:
+                                    underrun_count += 1
+                                    metrics.record_playback_underrun(call_uuid)
+                                    if adaptive_warmup and warmup_chunks < warmup_max:
+                                        warmup_chunks += 1
                                     # Sem mais áudio, sair do loop de streaming contínuo
                                     break
 
                                 if c is None:
                                     return
+                                c_generation, c_bytes = c
+                                if c_generation != playback_generation:
+                                    continue
 
                                 try:
-                                    await websocket.send(c)
+                                    await websocket.send(c_bytes)
                                     try:
-                                        metrics.record_audio(call_uuid, "out", len(c))
+                                        metrics.record_audio(call_uuid, "out", len(c_bytes))
                                     except Exception:
                                         pass
                                     await asyncio.sleep(PCM16_CHUNK_MS / 1000.0)
                                 except Exception as e:
                                     if allow_streamaudio_fallback:
                                         playback_mode = "streamaudio"
-                                        streamaudio_buffer.extend(c)
+                                        streamaudio_buffer.extend(c_bytes)
                                         logger.warning(
                                             f"Switching to streamAudio fallback (send failed): {e}",
                                             extra={"call_uuid": call_uuid},
@@ -502,6 +605,8 @@ class RealtimeServer:
 
                             # Reset para próximo burst de áudio
                             streaming_started = False
+                            if adaptive_warmup and underrun_count == 0 and warmup_chunks > warmup_min:
+                                warmup_chunks -= 1
 
                     if playback_mode == "streamaudio":
                         streamaudio_buffer.extend(chunk)
@@ -509,6 +614,18 @@ class RealtimeServer:
                             frame = bytes(streamaudio_buffer[:STREAMAUDIO_FRAME_BYTES])
                             del streamaudio_buffer[:STREAMAUDIO_FRAME_BYTES]
                             await _send_streamaudio_frame(frame)
+
+                    # Atualizar health score periodicamente
+                    now = time.time()
+                    if now - last_health_update >= 1.0:
+                        session_metrics = metrics.get_session_metrics(call_uuid)
+                        if session_metrics:
+                            underrun_ratio = session_metrics.playback_underruns / max(1, session_metrics.audio_chunks_sent)
+                            latency_penalty = min(30.0, session_metrics.avg_latency_ms / 50.0)
+                            underrun_penalty = min(50.0, underrun_ratio * 200.0)
+                            health_score = 100.0 - latency_penalty - underrun_penalty
+                            metrics.update_health_score(call_uuid, health_score)
+                        last_health_update = now
 
             except websockets.exceptions.ConnectionClosed:
                 logger.debug("WebSocket closed during audio playback", extra={"call_uuid": call_uuid})
@@ -537,7 +654,7 @@ class RealtimeServer:
                 while len(pending) >= PCM16_16K_CHUNK_BYTES:
                     chunk = bytes(pending[:PCM16_16K_CHUNK_BYTES])
                     del pending[:PCM16_16K_CHUNK_BYTES]
-                    await audio_out_queue.put(chunk)
+                    await audio_out_queue.put((playback_generation, chunk))
 
             except Exception as e:
                 logger.error(
@@ -545,12 +662,27 @@ class RealtimeServer:
                     exc_info=True,
                     extra={"call_uuid": call_uuid},
                 )
+
+        async def clear_playback(_: str) -> None:
+            """
+            Barge-in: limpa buffer e descarta áudio pendente.
+            """
+            nonlocal playback_generation
+            async with playback_lock:
+                playback_generation += 1
+                pending.clear()
+                try:
+                    while True:
+                        audio_out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
         
         # Criar sessão via manager
         manager = get_session_manager()
         session = await manager.create_session(
             config=config,
             on_audio_output=send_audio,
+            on_barge_in=clear_playback,
         )
         
         return session

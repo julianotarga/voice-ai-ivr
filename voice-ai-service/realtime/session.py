@@ -23,6 +23,7 @@ from .providers.base import (
 from .providers.factory import RealtimeProviderFactory
 from .utils.resampler import ResamplerPair
 from .utils.metrics import get_metrics
+from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,14 @@ class RealtimeSessionConfig:
     omniplay_webhook_url: Optional[str] = None
     tools: Optional[List[Dict[str, Any]]] = None
     max_response_output_tokens: int = 4096
+    fallback_providers: List[str] = field(default_factory=list)
+    barge_in_enabled: bool = True
+    # Handoff configuration
+    handoff_enabled: bool = True
+    handoff_timeout_ms: int = 30000
+    handoff_keywords: List[str] = field(default_factory=lambda: ["atendente", "humano", "pessoa", "operador"])
+    handoff_max_ai_turns: int = 20
+    handoff_queue_id: Optional[int] = None
 
 
 class RealtimeSession:
@@ -78,12 +87,16 @@ class RealtimeSession:
         on_transcript: Optional[Callable[[str, str], Any]] = None,
         on_function_call: Optional[Callable[[str, Dict], Any]] = None,
         on_session_end: Optional[Callable[[str], Any]] = None,
+        on_barge_in: Optional[Callable[[str], Any]] = None,
+        on_transfer: Optional[Callable[[str], Any]] = None,
     ):
         self.config = config
         self._on_audio_output = on_audio_output
         self._on_transcript = on_transcript
         self._on_function_call = on_function_call
         self._on_session_end = on_session_end
+        self._on_barge_in = on_barge_in
+        self._on_transfer = on_transfer
         
         self._provider: Optional[BaseRealtimeProvider] = None
         self._resampler: Optional[ResamplerPair] = None
@@ -104,6 +117,28 @@ class RealtimeSession:
         self._speech_start_time: Optional[float] = None
         
         self._metrics = get_metrics()
+        self._fallback_index = 0
+        self._fallback_active = False
+        
+        # Handoff handler
+        self._handoff_handler: Optional[HandoffHandler] = None
+        self._handoff_result: Optional[HandoffResult] = None
+        if config.handoff_enabled:
+            self._handoff_handler = HandoffHandler(
+                domain_uuid=config.domain_uuid,
+                call_uuid=config.call_uuid,
+                config=HandoffConfig(
+                    enabled=config.handoff_enabled,
+                    timeout_ms=config.handoff_timeout_ms,
+                    keywords=config.handoff_keywords,
+                    max_ai_turns=config.handoff_max_ai_turns,
+                    fallback_queue_id=config.handoff_queue_id,
+                    secretary_uuid=config.secretary_uuid,
+                ),
+                transcript=[],  # Will be updated during session
+                on_transfer=on_transfer,
+                on_message=self._send_text_to_provider,
+            )
     
     @property
     def call_uuid(self) -> str:
@@ -253,21 +288,26 @@ class RealtimeSession:
     
     async def _event_loop(self) -> None:
         """Loop de eventos do provider."""
-        if not self._provider:
-            return
-        
-        try:
-            async for event in self._provider.receive_events():
-                await self._handle_event(event)
-                if self._ended:
-                    break
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Event loop error: {e}")
-            await self.stop("error")
+        while self.is_active:
+            if not self._provider:
+                return
+
+            try:
+                async for event in self._provider.receive_events():
+                    action = await self._handle_event(event)
+                    if action == "fallback":
+                        break
+                    if action == "stop" or self._ended:
+                        return
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.error(f"Event loop error: {e}")
+                if not await self._try_fallback("provider_error"):
+                    await self.stop("error")
+                return
     
-    async def _handle_event(self, event: ProviderEvent) -> None:
+    async def _handle_event(self, event: ProviderEvent) -> str:
         """Processa evento do provider."""
         self._last_activity = time.time()
         
@@ -314,12 +354,30 @@ class RealtimeSession:
                 self._transcript.append(TranscriptEntry(role="user", text=event.transcript))
                 if self._on_transcript:
                     await self._on_transcript("user", event.transcript)
+                
+                # Check for handoff keyword
+                if self._handoff_handler and not self._handoff_result:
+                    self._handoff_handler.increment_turn()
+                    await self._check_handoff_keyword(event.transcript)
+                    
+                    # Check max turns
+                    if self._handoff_handler.should_check_handoff():
+                        logger.info("Max AI turns reached, initiating handoff", extra={
+                            "call_uuid": self.call_uuid,
+                        })
+                        await self._initiate_handoff(reason="max_turns_exceeded")
         
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
             self._speech_start_time = time.time()
             if self._assistant_speaking:
                 await self.interrupt()
+                if self.config.barge_in_enabled and self._on_barge_in:
+                    try:
+                        await self._on_barge_in(self.call_uuid)
+                        self._metrics.record_barge_in(self.call_uuid)
+                    except Exception:
+                        logger.debug("Failed to clear playback on barge-in", extra={"call_uuid": self.call_uuid})
         
         elif event.type == ProviderEventType.SPEECH_STOPPED:
             self._user_speaking = False
@@ -332,8 +390,18 @@ class RealtimeSession:
         elif event.type == ProviderEventType.FUNCTION_CALL:
             await self._handle_function_call(event)
         
-        elif event.type == ProviderEventType.SESSION_ENDED:
-            await self.stop("provider_ended")
+        elif event.type in (ProviderEventType.ERROR, ProviderEventType.RATE_LIMITED, ProviderEventType.SESSION_ENDED):
+            reason = {
+                ProviderEventType.ERROR: "provider_error",
+                ProviderEventType.RATE_LIMITED: "provider_rate_limited",
+                ProviderEventType.SESSION_ENDED: "provider_ended",
+            }[event.type]
+            if await self._try_fallback(reason):
+                return "fallback"
+            await self.stop(reason)
+            return "stop"
+
+        return "continue"
     
     async def _handle_function_call(self, event: ProviderEvent) -> None:
         """Processa function call."""
@@ -361,7 +429,71 @@ class RealtimeSession:
         elif name == "end_call":
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
+        elif name == "request_handoff":
+            # Handoff requested by LLM via function call
+            await self._initiate_handoff(reason="llm_intent")
+            return {"status": "handoff_initiated"}
         return {"error": f"Unknown function: {name}"}
+    
+    async def _send_text_to_provider(self, text: str) -> None:
+        """Envia texto para o provider (TTS)."""
+        if self._provider:
+            await self._provider.send_text(text)
+    
+    async def _check_handoff_keyword(self, user_text: str) -> bool:
+        """Verifica se o texto contém keyword de handoff."""
+        if not self._handoff_handler:
+            return False
+        
+        keyword = self._handoff_handler.detect_handoff_keyword(user_text)
+        if keyword:
+            logger.info("Handoff keyword detected", extra={
+                "call_uuid": self.call_uuid,
+                "keyword": keyword,
+            })
+            await self._initiate_handoff(reason=f"keyword_match:{keyword}")
+            return True
+        return False
+    
+    async def _initiate_handoff(self, reason: str) -> None:
+        """Inicia processo de handoff."""
+        if not self._handoff_handler or self._handoff_result:
+            return
+        
+        # Sincronizar transcript com o handler
+        from .handlers.handoff import TranscriptEntry as HTranscriptEntry
+        self._handoff_handler.transcript = [
+            HTranscriptEntry(role=t.role, text=t.text, timestamp=t.timestamp)
+            for t in self._transcript
+        ]
+        
+        # Calcular métricas
+        duration = 0
+        if self._started_at:
+            duration = int((datetime.now() - self._started_at).total_seconds())
+        
+        avg_latency = self._metrics.get_avg_latency(self.call_uuid)
+        
+        # Iniciar handoff
+        self._handoff_result = await self._handoff_handler.initiate_handoff(
+            reason=reason,
+            caller_number=self.config.caller_id,
+            provider=self.config.provider_name,
+            language="pt-BR",
+            duration_seconds=duration,
+            avg_latency_ms=avg_latency,
+        )
+        
+        logger.info("Handoff completed", extra={
+            "call_uuid": self.call_uuid,
+            "result": self._handoff_result.action,
+            "ticket_id": self._handoff_result.ticket_id,
+        })
+        
+        # Se criou ticket ou transferiu, encerrar após mensagem de despedida
+        if self._handoff_result.action in ("ticket_created", "transferred"):
+            await asyncio.sleep(3.0)  # Aguardar mensagem de despedida
+            await self.stop(f"handoff_{self._handoff_result.action}")
     
     async def _timeout_monitor(self) -> None:
         """Monitora timeouts."""
@@ -378,6 +510,52 @@ class RealtimeSession:
                 if duration > self.config.max_duration_seconds:
                     await self.stop("max_duration")
                     return
+
+    async def _try_fallback(self, reason: str) -> bool:
+        """
+        Tenta alternar para um provider fallback, se configurado.
+        """
+        if self._fallback_active or not self.config.fallback_providers:
+            return False
+
+        self._fallback_active = True
+        try:
+            while self._fallback_index < len(self.config.fallback_providers):
+                next_provider = self.config.fallback_providers[self._fallback_index]
+                self._fallback_index += 1
+
+                if not next_provider or next_provider == self.config.provider_name:
+                    continue
+
+                logger.warning("Attempting fallback provider", extra={
+                    "call_uuid": self.call_uuid,
+                    "from_provider": self.config.provider_name,
+                    "to_provider": next_provider,
+                    "reason": reason,
+                })
+
+                try:
+                    if self._provider:
+                        await self._provider.disconnect()
+                except Exception:
+                    pass
+
+                self.config.provider_name = next_provider
+                await self._create_provider()
+                self._setup_resampler()
+                self._assistant_speaking = False
+                self._user_speaking = False
+                self._metrics.update_provider(self.call_uuid, next_provider)
+
+                logger.info("Fallback provider activated", extra={
+                    "call_uuid": self.call_uuid,
+                    "provider": next_provider,
+                })
+                return True
+
+            return False
+        finally:
+            self._fallback_active = False
     
     async def _delayed_stop(self, delay: float, reason: str) -> None:
         await asyncio.sleep(delay)

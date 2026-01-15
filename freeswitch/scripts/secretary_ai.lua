@@ -12,6 +12,8 @@ local http = require("http")
 local json = require("json")
 local config = require("config")
 local utils = require("utils")
+local presence = require("presence")
+local time_conditions = require("time_conditions")
 
 -- Configurações
 -- Preferir variável de ambiente para compatibilidade com diferentes deploys (docker/systemd)
@@ -162,6 +164,301 @@ local function send_omniplay_webhook(domain_uuid, conversation_data, secretary)
     end
 end
 
+-- ============================================
+-- FALLBACK TICKET CREATION
+-- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (7.4, 9.3, 9.4)
+-- ============================================
+
+local OMNIPLAY_API_URL = os.getenv("OMNIPLAY_API_URL") or "http://host.docker.internal:8080"
+local OMNIPLAY_API_TOKEN = os.getenv("OMNIPLAY_API_TOKEN") or ""
+
+local function create_fallback_ticket(domain_uuid, caller_id, conversation_history, handoff_reason, secretary, recording_url)
+    -- Criar ticket pending no OmniPlay quando transfer falha
+    -- Ref: POST /api/tickets/realtime-handoff
+    -- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (12.5, 12.6)
+    
+    if OMNIPLAY_API_TOKEN == "" then
+        log("WARNING", "OMNIPLAY_API_TOKEN not configured, skipping fallback ticket")
+        return nil
+    end
+    
+    -- Construir transcript no formato esperado
+    local transcript = {}
+    for i, msg in ipairs(conversation_history) do
+        table.insert(transcript, {
+            role = msg.role == "user" and "user" or "assistant",
+            text = msg.content or "",
+            timestamp = os.time() * 1000  -- milliseconds
+        })
+    end
+    
+    -- Gerar resumo simples
+    local last_user_msg = ""
+    for i = #conversation_history, 1, -1 do
+        if conversation_history[i].role == "user" then
+            last_user_msg = conversation_history[i].content or ""
+            break
+        end
+    end
+    local summary = "Conversa via voz (" .. #conversation_history .. " turnos). "
+    if last_user_msg ~= "" then
+        summary = summary .. "Última mensagem: \"" .. string.sub(last_user_msg, 1, 100) .. "\""
+    end
+    
+    -- Obter domain_name para busca de gravação
+    local domain_name = session:getVariable("domain_name") or session:getVariable("domain")
+    
+    -- Buscar URL da gravação do FreeSWITCH (se disponível)
+    -- A gravação pode estar em: /var/lib/freeswitch/recordings/{domain}/{YYYY}/{MM}/{DD}/{uuid}.wav
+    local call_uuid = session:getVariable("uuid")
+    local recording_path = nil
+    
+    -- Verificar se há gravação configurada para esta chamada
+    local record_path = session:getVariable("record_path")
+    if record_path and record_path ~= "" then
+        recording_path = record_path
+    end
+    
+    local payload = json.encode({
+        call_uuid = call_uuid,
+        caller_id = caller_id,
+        transcript = transcript,
+        summary = summary,
+        provider = "freeswitch_lua",
+        language = "pt-BR",
+        duration_seconds = os.time() - (session:getVariable("start_epoch") or os.time()),
+        turns = #conversation_history,
+        handoff_reason = handoff_reason,
+        secretary_uuid = secretary.voice_secretary_uuid,
+        -- Campos para anexar gravação (Seção 12)
+        domain = domain_name,
+        recording_url = recording_url or recording_path,
+        attach_recording = true,
+    })
+    
+    local response = http.post(OMNIPLAY_API_URL .. "/api/tickets/realtime-handoff", payload, {
+        ["Content-Type"] = "application/json",
+        ["Authorization"] = "Bearer " .. OMNIPLAY_API_TOKEN,
+    })
+    
+    if response and (response.status == 200 or response.status == 201) then
+        local data = json.decode(response.body)
+        log("INFO", "Fallback ticket created: " .. (data.ticket_id or "unknown"))
+        return data.ticket_id
+    else
+        log("ERROR", "Failed to create fallback ticket: " .. (response and response.status or "no response"))
+        return nil
+    end
+end
+
+local function attempt_transfer_with_fallback(extension, department, domain_uuid, caller_id, conversation_history, secretary, transfer_message)
+    -- Tenta transferir e cria ticket se falhar
+    -- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (7.3, 7.4)
+    -- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (10.5) - presence check
+    
+    local secretary_id = secretary.voice_secretary_uuid
+    local domain_name = session:getVariable("domain_name") or session:getVariable("domain")
+    
+    -- ==========================================
+    -- 10.5: VERIFICAÇÃO DE PRESENÇA VIA ESL
+    -- Ref: openspec/changes/add-realtime-handoff-omni/design.md (Decision 6)
+    -- ==========================================
+    
+    local presence_check_enabled = secretary.presence_check_enabled
+    if presence_check_enabled == nil then
+        presence_check_enabled = true  -- Default: verificar presença
+    end
+    
+    if presence_check_enabled and domain_name then
+        log("INFO", "Checking presence for extension " .. extension .. "@" .. domain_name)
+        
+        local is_available, dest_type, status = presence.check_destination(extension, domain_uuid, domain_name)
+        
+        log("INFO", string.format("Presence check result: available=%s, type=%s, status=%s", 
+            tostring(is_available), dest_type, status))
+        
+        if not is_available then
+            -- 10.5: Ramal offline - fallback imediato para ticket
+            log("WARNING", "Extension " .. extension .. " is not available (" .. status .. "), creating fallback ticket")
+            
+            -- Mensagem informando indisponibilidade
+            local offline_msg = "O setor de " .. department .. " está indisponível no momento. " ..
+                "Vou registrar sua solicitação e entraremos em contato em breve."
+            play_tts(offline_msg, domain_uuid, secretary_id)
+            
+            -- Criar ticket no OmniPlay
+            local ticket_id = create_fallback_ticket(
+                domain_uuid, 
+                caller_id, 
+                conversation_history, 
+                "extension_offline:" .. status,
+                secretary,
+                nil  -- recording_url - será buscado internamente
+            )
+            
+            -- Salvar conversa com fallback
+            save_conversation(
+                domain_uuid, session:getVariable("uuid"), caller_id, secretary_id,
+                conversation_history, "fallback_ticket:offline", extension
+            )
+            
+            return false  -- Indicar que não transferiu
+        end
+    else
+        if not presence_check_enabled then
+            log("DEBUG", "Presence check disabled for this secretary")
+        end
+        if not domain_name then
+            log("WARNING", "domain_name not available, skipping presence check")
+        end
+    end
+    
+    -- ==========================================
+    -- 11.6: VERIFICAÇÃO DE HORÁRIO DE ATENDIMENTO (TIME CONDITIONS)
+    -- Ref: openspec/changes/add-realtime-handoff-omni/design.md (Decision 7)
+    -- ==========================================
+    
+    if secretary.time_condition_uuid then
+        log("INFO", "Checking time conditions for secretary")
+        
+        local is_available, time_reason = time_conditions.check_availability(secretary)
+        
+        log("INFO", string.format("Time conditions check result: available=%s, reason=%s", 
+            tostring(is_available), time_reason))
+        
+        if not is_available then
+            -- Fora do horário - fallback imediato para ticket
+            log("WARNING", "Outside business hours (" .. time_reason .. "), creating fallback ticket")
+            
+            -- Mensagem informando horário
+            local closed_msg
+            if time_reason:find("holiday") then
+                closed_msg = "Hoje estamos fechados por ser feriado. " ..
+                    "Vou registrar sua solicitação e entraremos em contato no próximo dia útil."
+            else
+                closed_msg = "Nosso horário de atendimento já encerrou. " ..
+                    "Vou registrar sua solicitação e entraremos em contato em breve."
+            end
+            play_tts(closed_msg, domain_uuid, secretary_id)
+            
+            -- Criar ticket no OmniPlay
+            local ticket_id = create_fallback_ticket(
+                domain_uuid, 
+                caller_id, 
+                conversation_history, 
+                time_reason,
+                secretary,
+                nil  -- recording_url - será buscado internamente
+            )
+            
+            -- Salvar conversa com fallback
+            save_conversation(
+                domain_uuid, session:getVariable("uuid"), caller_id, secretary_id,
+                conversation_history, "fallback_ticket:" .. time_reason, extension
+            )
+            
+            return false  -- Indicar que não transferiu
+        end
+    else
+        log("DEBUG", "No time_condition configured, skipping time check")
+    end
+    
+    -- ==========================================
+    -- PROSSEGUIR COM TRANSFER (presença OK, horário OK ou checks desabilitados)
+    -- ==========================================
+    
+    -- 7.3: Usar transfer_message personalizada se fornecida
+    local announce_msg = transfer_message
+    if not announce_msg or announce_msg == "" then
+        announce_msg = "Vou transferir você para " .. department .. ". Um momento."
+    end
+    play_tts(announce_msg, domain_uuid, secretary_id)
+    
+    -- Salvar conversa antes de tentar transfer
+    local conv_uuid = save_conversation(
+        domain_uuid, session:getVariable("uuid"), caller_id, secretary_id,
+        conversation_history, "transfer_attempt", extension
+    )
+    
+    -- Tentar bridge ao invés de transfer para ter controle do resultado
+    -- Timeout de 30 segundos configurável
+    local transfer_timeout = secretary.handoff_timeout or 30
+    
+    -- Configurar variáveis para bridge
+    session:setVariable("call_timeout", tostring(transfer_timeout))
+    session:setVariable("hangup_after_bridge", "false")
+    
+    log("INFO", "Attempting transfer to " .. extension .. " with " .. transfer_timeout .. "s timeout")
+    
+    -- Usar bridge com timeout
+    local bridge_string = "sofia/internal/" .. extension .. "@${domain_name}"
+    session:execute("set", "continue_on_fail=true")
+    session:execute("bridge", bridge_string)
+    
+    -- Verificar resultado do bridge
+    local disposition = session:getVariable("originate_disposition") or "UNKNOWN"
+    local hangup_cause = session:getVariable("hangup_cause") or ""
+    
+    log("INFO", "Transfer result: disposition=" .. disposition .. ", hangup_cause=" .. hangup_cause)
+    
+    -- Se bridge foi bem-sucedido, a chamada já está conectada
+    if disposition == "SUCCESS" or disposition == "ANSWER" then
+        log("INFO", "Transfer successful to " .. extension)
+        -- Atualizar conversa com sucesso
+        save_conversation(
+            domain_uuid, session:getVariable("uuid"), caller_id, secretary_id,
+            conversation_history, "transfer_success", extension
+        )
+        return true
+    end
+    
+    -- Transfer falhou - verificar se sessão ainda está ativa
+    if not session:ready() then
+        log("INFO", "Session ended during transfer attempt")
+        return false
+    end
+    
+    -- 7.4 & 9.3: Fallback para ticket
+    log("WARNING", "Transfer failed with disposition: " .. disposition .. " - creating fallback ticket")
+    
+    -- 9.4: Mensagem de despedida no fallback
+    local fallback_msg = "Não foi possível transferir sua chamada no momento. " ..
+        "Vou registrar sua solicitação e entraremos em contato em breve. " ..
+        "Tenha um bom dia!"
+    play_tts(fallback_msg, domain_uuid, secretary_id)
+    
+    -- Criar ticket no OmniPlay
+    local ticket_id = create_fallback_ticket(
+        domain_uuid, 
+        caller_id, 
+        conversation_history, 
+        "transfer_failed:" .. disposition,
+        secretary,
+        nil  -- recording_url - será buscado internamente
+    )
+    
+    -- Atualizar conversa com fallback
+    save_conversation(
+        domain_uuid, session:getVariable("uuid"), caller_id, secretary_id,
+        conversation_history, "fallback_ticket", extension
+    )
+    
+    -- Enviar webhook para OmniPlay
+    if conv_uuid and secretary.webhook_url then
+        send_omniplay_webhook(domain_uuid, {
+            conversation_uuid = conv_uuid,
+            caller_id = caller_id,
+            final_action = "fallback_ticket",
+            transfer_target = extension,
+            ticket_id = ticket_id,
+            duration_seconds = os.time() - (session:getVariable("start_epoch") or os.time()),
+            messages = conversation_history,
+        }, secretary)
+    end
+    
+    return false
+end
+
 local function record_audio(session_id, turn)
     -- Gravar áudio do cliente
     local recording_path = "/tmp/voice-ai/call_" .. session_id .. "_" .. turn .. ".wav"
@@ -265,29 +562,30 @@ if session:ready() then
         if response.action == "transfer" then
             local extension = response.transfer_extension or secretary.transfer_extension or "200"
             local department = response.transfer_department or "atendimento"
+            local transfer_message = response.transfer_message  -- 7.3: mensagem personalizada
             
             log("INFO", "Transferring to " .. extension .. " (" .. department .. ")")
-            play_tts("Vou transferir você para " .. department .. ". Um momento.", domain_uuid, secretary_id)
             
-            -- Salvar conversa no banco
-            local conv_uuid = save_conversation(
-                domain_uuid, session_id, caller_id_number, secretary_id,
-                conversation_history, "transfer", extension
+            -- Usar função com fallback para ticket
+            -- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (7.3, 7.4)
+            local success = attempt_transfer_with_fallback(
+                extension,
+                department,
+                domain_uuid,
+                caller_id_number,
+                conversation_history,
+                secretary,
+                transfer_message
             )
             
-            -- Enviar webhook para OmniPlay se configurado
-            if conv_uuid then
-                send_omniplay_webhook(domain_uuid, {
-                    conversation_uuid = conv_uuid,
-                    caller_id = caller_id_number,
-                    final_action = "transfer",
-                    transfer_target = extension,
-                    duration_seconds = os.time() - call_start_time,
-                    messages = conversation_history,
-                }, secretary)
+            if success then
+                -- Transfer bem-sucedido, chamada já está conectada
+                log("INFO", "Transfer completed successfully")
+            else
+                -- Fallback já tratado pela função, encerrar
+                log("INFO", "Transfer failed, fallback ticket created")
             end
             
-            session:execute("transfer", extension .. " XML default")
             break
             
         elseif response.action == "hangup" then
@@ -320,19 +618,27 @@ if session:ready() then
     end
     
     -- Se atingiu limite de turnos, transferir para fallback
+    -- Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (7.4)
     if session:ready() then
-        log("INFO", "Max turns reached, transferring to fallback")
-        play_tts("Vou transferir você para um atendente. Um momento.", domain_uuid, secretary_id)
+        log("INFO", "Max turns reached, attempting transfer with fallback")
         
         local fallback_extension = secretary.transfer_extension or "200"
         
-        -- Salvar conversa no banco
-        save_conversation(
-            domain_uuid, session_id, caller_id_number, secretary_id,
-            conversation_history, "max_turns", fallback_extension
+        -- Usar função com fallback para ticket
+        local success = attempt_transfer_with_fallback(
+            fallback_extension,
+            "atendimento",
+            domain_uuid,
+            caller_id_number,
+            conversation_history,
+            secretary,
+            "Vou transferir você para um atendente. Um momento."
         )
         
-        session:execute("transfer", fallback_extension .. " XML default")
+        if not success and session:ready() then
+            -- Se fallback ticket foi criado, encerrar chamada
+            session:hangup("NORMAL_CLEARING")
+        end
     end
     
     log("INFO", "Call ended for " .. caller_id_number)

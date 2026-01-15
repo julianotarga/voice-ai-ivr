@@ -63,7 +63,9 @@
 
 //get transfer rules
 	$database = new database;
-	$sql = "SELECT r.*, s.secretary_name 
+	$sql = "SELECT r.transfer_rule_uuid, r.department_name, r.keywords, r.transfer_extension, 
+			       r.transfer_message, r.priority, r.is_active, r.voice_secretary_uuid,
+			       s.secretary_name 
 			FROM v_voice_transfer_rules r
 			LEFT JOIN v_voice_secretaries s ON s.voice_secretary_uuid = r.voice_secretary_uuid
 			WHERE r.domain_uuid = :domain_uuid 
@@ -110,6 +112,7 @@
 	echo "	<th>".($text['label-department'] ?? 'Department')."</th>\n";
 	echo "	<th>".($text['label-keywords'] ?? 'Keywords')."</th>\n";
 	echo "	<th>".($text['label-extension'] ?? 'Extension')."</th>\n";
+	echo "	<th class='center'>".($text['label-message'] ?? 'Message')."</th>\n";
 	echo "	<th>".($text['label-secretary'] ?? 'Secretary')."</th>\n";
 	echo "	<th>".($text['label-priority'] ?? 'Priority')."</th>\n";
 	echo "	<th class='center'>".($text['label-status'] ?? 'Status')."</th>\n";
@@ -134,6 +137,16 @@
 			echo "	<td>".escape($keywords_display)."</td>\n";
 			
 			echo "	<td>".escape($row['transfer_extension'] ?? '')."</td>\n";
+			
+			// Mostrar ícone se tem mensagem configurada
+			echo "	<td class='center'>\n";
+			if (!empty($row['transfer_message'])) {
+				echo "		<span title='".escape($row['transfer_message'])."' style='cursor:help;'>✓</span>\n";
+			} else {
+				echo "		<span style='color:#999;'>—</span>\n";
+			}
+			echo "	</td>\n";
+			
 			echo "	<td>".escape($row['secretary_name'] ?? '—')."</td>\n";
 			echo "	<td>".intval($row['priority'] ?? 10)."</td>\n";
 			
@@ -148,7 +161,7 @@
 			$x++;
 		}
 	} else {
-		echo "<tr><td colspan='7'>".($text['message-no_rules'] ?? 'No transfer rules found.')."</td></tr>\n";
+		echo "<tr><td colspan='8'>".($text['message-no_rules'] ?? 'No transfer rules found.')."</td></tr>\n";
 	}
 
 	echo "</table>\n";

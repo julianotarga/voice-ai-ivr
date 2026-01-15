@@ -35,6 +35,9 @@ local function query(sql)
     return output
 end
 
+-- Exportar função de query para uso por outras libs
+config.query = query
+
 -- Carregar configuração da secretária
 -- ⚠️ MULTI-TENANT: SEMPRE filtrar por domain_uuid!
 function config.load_secretary(domain_uuid)
@@ -53,7 +56,11 @@ function config.load_secretary(domain_uuid)
             fallback_message,
             transfer_extension,
             max_turns,
-            enabled
+            enabled,
+            COALESCE(presence_check_enabled, true) as presence_check_enabled,
+            COALESCE(handoff_timeout, 30) as handoff_timeout,
+            time_condition_uuid,
+            webhook_url
         FROM v_voice_secretaries
         WHERE domain_uuid = '%s'
           AND enabled = true
@@ -87,6 +94,10 @@ function config.load_secretary(domain_uuid)
         transfer_extension = parts[8],
         max_turns = tonumber(parts[9]) or 20,
         enabled = parts[10] == "t" or parts[10] == "true",
+        presence_check_enabled = parts[11] == "t" or parts[11] == "true",
+        handoff_timeout = tonumber(parts[12]) or 30,
+        time_condition_uuid = parts[13] ~= "" and parts[13] or nil,
+        webhook_url = parts[14] ~= "" and parts[14] or nil,
     }
 end
 

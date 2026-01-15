@@ -85,6 +85,39 @@ class ProviderCredentials(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class TransferRule(BaseModel):
+    """
+    Regra de transferência para handoff baseado em intenção.
+    
+    Ref: openspec/changes/add-realtime-handoff-omni/design.md (Decision 1)
+    Tabela: v_voice_transfer_rules
+    """
+    
+    transfer_rule_uuid: str
+    voice_secretary_uuid: Optional[str] = None
+    domain_uuid: str
+    
+    # Detecção de intenção
+    department_name: str
+    intent_keywords: List[str] = Field(default_factory=list)
+    
+    # Destino - pode ser ramal, ring-group ou fila
+    transfer_extension: str
+    transfer_message: Optional[str] = None
+    
+    # Prioridade (menor = maior prioridade)
+    priority: int = 0
+    
+    is_enabled: bool = True
+    
+    model_config = {"extra": "ignore"}
+    
+    def matches_text(self, text: str) -> bool:
+        """Verifica se texto contém alguma keyword desta regra."""
+        text_lower = text.lower()
+        return any(kw.lower() in text_lower for kw in self.intent_keywords)
+
+
 @dataclass
 class CacheEntry:
     """Entrada de cache com TTL."""
@@ -123,6 +156,7 @@ class ConfigLoader:
         # Caches
         self._secretary_cache: Dict[str, CacheEntry] = {}
         self._provider_cache: Dict[str, CacheEntry] = {}
+        self._transfer_rules_cache: Dict[str, CacheEntry] = {}
         
         # Lock para operações de cache
         self._lock = asyncio.Lock()
@@ -234,6 +268,140 @@ class ConfigLoader:
                 )
         
         return creds
+    
+    async def get_transfer_rules(
+        self,
+        domain_uuid: str,
+        secretary_uuid: Optional[str] = None
+    ) -> List[TransferRule]:
+        """
+        Obtém regras de transferência para uma secretária ou domain.
+        
+        Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (3.1-3.3)
+        
+        Args:
+            domain_uuid: UUID do tenant
+            secretary_uuid: UUID da secretária (opcional, busca regras globais se None)
+        
+        Returns:
+            Lista de TransferRule ordenada por prioridade
+        """
+        cache_key = self._cache_key("transfer_rules", domain_uuid, secretary_uuid or "global")
+        
+        # Verificar cache
+        async with self._lock:
+            if cache_key in self._transfer_rules_cache:
+                entry = self._transfer_rules_cache[cache_key]
+                if not entry.is_expired:
+                    logger.debug(f"Transfer rules cache hit: {cache_key}")
+                    return entry.data
+                else:
+                    del self._transfer_rules_cache[cache_key]
+        
+        # Buscar do banco
+        rules = await self._load_transfer_rules_from_db(domain_uuid, secretary_uuid)
+        
+        # Armazenar em cache (mesmo se lista vazia, para evitar queries repetidas)
+        async with self._lock:
+            self._transfer_rules_cache[cache_key] = CacheEntry(
+                data=rules,
+                ttl_seconds=self.cache_ttl
+            )
+            self._cleanup_cache(self._transfer_rules_cache)
+        
+        logger.info(f"Transfer rules loaded: {len(rules)} rules for domain={domain_uuid}, secretary={secretary_uuid}")
+        return rules
+    
+    async def _load_transfer_rules_from_db(
+        self,
+        domain_uuid: str,
+        secretary_uuid: Optional[str] = None
+    ) -> List[TransferRule]:
+        """
+        Carrega regras de transferência do banco.
+        
+        Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (3.2)
+        Tabela: v_voice_transfer_rules
+        
+        Comportamento:
+        - Se secretary_uuid fornecido: busca regras específicas + globais
+        - Se secretary_uuid None: busca apenas regras globais do domain
+        """
+        rules: List[TransferRule] = []
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Query busca regras específicas da secretária OU regras globais (secretary_uuid IS NULL)
+                if secretary_uuid:
+                    rows = await conn.fetch("""
+                        SELECT 
+                            transfer_rule_uuid,
+                            voice_secretary_uuid,
+                            domain_uuid,
+                            department_name,
+                            intent_keywords,
+                            transfer_extension,
+                            transfer_message,
+                            priority,
+                            is_enabled
+                        FROM v_voice_transfer_rules
+                        WHERE domain_uuid = $1
+                          AND (voice_secretary_uuid = $2 OR voice_secretary_uuid IS NULL)
+                          AND is_enabled = true
+                        ORDER BY priority ASC, department_name ASC
+                    """, domain_uuid, secretary_uuid)
+                else:
+                    # Apenas regras globais do domain
+                    rows = await conn.fetch("""
+                        SELECT 
+                            transfer_rule_uuid,
+                            voice_secretary_uuid,
+                            domain_uuid,
+                            department_name,
+                            intent_keywords,
+                            transfer_extension,
+                            transfer_message,
+                            priority,
+                            is_enabled
+                        FROM v_voice_transfer_rules
+                        WHERE domain_uuid = $1
+                          AND voice_secretary_uuid IS NULL
+                          AND is_enabled = true
+                        ORDER BY priority ASC, department_name ASC
+                    """, domain_uuid)
+                
+                for row in rows:
+                    # intent_keywords pode vir como array do PostgreSQL ou JSON
+                    keywords = row['intent_keywords']
+                    if keywords is None:
+                        keywords = []
+                    elif isinstance(keywords, str):
+                        import json
+                        try:
+                            keywords = json.loads(keywords)
+                        except json.JSONDecodeError:
+                            # Se não for JSON, tratar como string separada por vírgula
+                            keywords = [k.strip() for k in keywords.split(',') if k.strip()]
+                    
+                    rules.append(TransferRule(
+                        transfer_rule_uuid=str(row['transfer_rule_uuid']),
+                        voice_secretary_uuid=str(row['voice_secretary_uuid']) if row['voice_secretary_uuid'] else None,
+                        domain_uuid=str(row['domain_uuid']),
+                        department_name=row['department_name'] or '',
+                        intent_keywords=keywords if isinstance(keywords, list) else list(keywords),
+                        transfer_extension=row['transfer_extension'] or '',
+                        transfer_message=row['transfer_message'],
+                        priority=row['priority'] or 0,
+                        is_enabled=row['is_enabled'],
+                    ))
+                
+        except Exception as e:
+            logger.error(f"Error loading transfer rules: {e}", extra={
+                "domain_uuid": domain_uuid,
+                "secretary_uuid": secretary_uuid
+            })
+        
+        return rules
     
     async def _load_secretary_from_db(
         self,
@@ -454,6 +622,8 @@ class ConfigLoader:
                 caches.append(self._secretary_cache)
             if cache_type in (None, 'provider'):
                 caches.append(self._provider_cache)
+            if cache_type in (None, 'transfer_rules'):
+                caches.append(self._transfer_rules_cache)
             
             for cache in caches:
                 if domain_uuid:
@@ -476,6 +646,7 @@ class ConfigLoader:
         return {
             "secretary_cache_size": len(self._secretary_cache),
             "provider_cache_size": len(self._provider_cache),
+            "transfer_rules_cache_size": len(self._transfer_rules_cache),
             "max_cache_size": self.max_cache_size,
             "cache_ttl_seconds": self.cache_ttl,
         }
@@ -495,3 +666,112 @@ def init_config_loader(db_pool, **kwargs) -> ConfigLoader:
     global _config_loader
     _config_loader = ConfigLoader(db_pool, **kwargs)
     return _config_loader
+
+
+def build_transfer_context(rules: List[TransferRule], language: str = "pt-BR") -> str:
+    """
+    Constrói contexto de transferência para injetar no system prompt do LLM.
+    
+    Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (5.1)
+    Ref: openspec/changes/add-realtime-handoff-omni/design.md (Decision 2)
+    
+    Args:
+        rules: Lista de TransferRule ordenada por prioridade
+        language: Idioma para as instruções
+    
+    Returns:
+        Texto formatado para incluir no system prompt
+    """
+    if not rules:
+        return ""
+    
+    # Textos por idioma
+    texts = {
+        "pt-BR": {
+            "header": "\n\n## Transferência de Chamadas\n\nQuando o cliente quiser falar com alguém específico ou um departamento, use a função `transfer_call` com o destino apropriado.\n\n### Departamentos Disponíveis:\n",
+            "keywords": "Keywords",
+            "extension": "Ramal",
+            "instruction": "\n### Instruções:\n- Identifique a intenção do cliente baseado nas keywords ou contexto\n- Use `transfer_call(destination=\"RAMAL\", department=\"NOME\")` para transferir\n- Sempre confirme a transferência com o cliente antes de executar\n- Exemplo: `transfer_call(destination=\"1000\", department=\"Vendas\")`\n"
+        },
+        "en-US": {
+            "header": "\n\n## Call Transfer\n\nWhen the customer wants to speak with someone specific or a department, use the `transfer_call` function with the appropriate destination.\n\n### Available Departments:\n",
+            "keywords": "Keywords",
+            "extension": "Extension",
+            "instruction": "\n### Instructions:\n- Identify the customer's intent based on keywords or context\n- Use `transfer_call(destination=\"EXT\", department=\"NAME\")` to transfer\n- Always confirm the transfer with the customer before executing\n- Example: `transfer_call(destination=\"1000\", department=\"Sales\")`\n"
+        }
+    }
+    
+    # Usar pt-BR como fallback
+    t = texts.get(language, texts["pt-BR"])
+    
+    lines = [t["header"]]
+    
+    for rule in rules:
+        keywords_str = ", ".join(rule.intent_keywords[:5])  # Limitar para não sobrecarregar
+        if len(rule.intent_keywords) > 5:
+            keywords_str += "..."
+        
+        lines.append(f"- **{rule.department_name}** ({t['extension']} {rule.transfer_extension})")
+        if keywords_str:
+            lines.append(f"  - {t['keywords']}: {keywords_str}")
+        if rule.transfer_message:
+            lines.append(f"  - Mensagem: \"{rule.transfer_message}\"")
+    
+    lines.append(t["instruction"])
+    
+    return "\n".join(lines)
+
+
+def build_transfer_tools_schema() -> List[Dict[str, Any]]:
+    """
+    Retorna schema de tools para function calling do LLM.
+    
+    Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (5.1)
+    
+    Returns:
+        Lista de tool definitions no formato OpenAI/Anthropic
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "transfer_call",
+                "description": "Transfere a chamada para um departamento ou ramal específico. Use quando o cliente quiser falar com uma pessoa ou departamento específico.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "destination": {
+                            "type": "string",
+                            "description": "Número do ramal de destino (ex: '1000', '2000')"
+                        },
+                        "department": {
+                            "type": "string",
+                            "description": "Nome do departamento para informar ao cliente (ex: 'Vendas', 'Suporte')"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Motivo da transferência (ex: 'cliente quer comprar', 'problema técnico')"
+                        }
+                    },
+                    "required": ["destination", "department"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "end_call",
+                "description": "Encerra a chamada após resolver o assunto do cliente.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Motivo do encerramento (ex: 'assunto resolvido', 'cliente desligou')"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        }
+    ]

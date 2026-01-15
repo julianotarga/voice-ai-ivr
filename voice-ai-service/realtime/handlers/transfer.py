@@ -2,11 +2,12 @@
 Transfer Handler - Gerencia transferências de chamadas.
 
 Referências:
-- openspec/changes/voice-ai-realtime/tasks.md (3.3)
-- .context/docs/data-flow.md: Fluxo de transferência
+- openspec/changes/add-realtime-handoff-omni/tasks.md (4.1-4.4)
+- openspec/changes/add-realtime-handoff-omni/design.md (Decision 1, 3)
 
 Funcionalidades:
 - Resolução de destino (ramal, departamento, fila)
+- Carregamento dinâmico de transfer_rules do banco
 - Transferência via ESL (Event Socket Library)
 - Transferência com anúncio
 - Logging de transferências
@@ -17,8 +18,11 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import socket
+
+if TYPE_CHECKING:
+    from ..config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -187,11 +191,22 @@ class TransferHandler:
     Handler para transferências de chamadas.
     
     Multi-tenant: Respeita domain_uuid em todas operações.
+    
+    Ref: openspec/changes/add-realtime-handoff-omni/design.md
     """
     
-    def __init__(self, esl_host: str = "127.0.0.1", esl_port: int = 8021):
+    def __init__(
+        self,
+        esl_host: str = "127.0.0.1",
+        esl_port: int = 8021,
+        config_loader: Optional["ConfigLoader"] = None
+    ):
         self.esl = ESLClient(host=esl_host, port=esl_port)
         self._transfer_log: List[Dict[str, Any]] = []
+        self._config_loader = config_loader
+        
+        # Cache local de department_map por domain (fallback se config_loader não disponível)
+        self._department_map_cache: Dict[str, Dict[str, str]] = {}
     
     async def resolve_destination(
         self,
@@ -269,14 +284,53 @@ class TransferHandler:
         
         return None
     
-    async def _load_department_map(self, domain_uuid: str) -> Dict[str, str]:
+    async def _load_department_map(
+        self,
+        domain_uuid: str,
+        secretary_uuid: Optional[str] = None
+    ) -> Dict[str, str]:
         """
-        Carrega mapeamento de departamentos.
+        Carrega mapeamento de departamentos a partir das transfer_rules.
         
-        Em produção, buscar do banco de dados.
+        Ref: openspec/changes/add-realtime-handoff-omni/tasks.md (4.1-4.4)
+        
+        Args:
+            domain_uuid: UUID do tenant
+            secretary_uuid: UUID da secretária (opcional)
+        
+        Returns:
+            Dict mapeando nome de departamento (lowercase) para extensão
         """
-        # TODO: Carregar do banco
-        # Por enquanto, usar mapeamento estático
+        # Tentar usar ConfigLoader se disponível
+        if self._config_loader:
+            try:
+                rules = await self._config_loader.get_transfer_rules(
+                    domain_uuid=domain_uuid,
+                    secretary_uuid=secretary_uuid
+                )
+                
+                if rules:
+                    dept_map: Dict[str, str] = {}
+                    
+                    for rule in rules:
+                        # Adicionar nome do departamento
+                        dept_map[rule.department_name.lower()] = rule.transfer_extension
+                        
+                        # Adicionar keywords como aliases
+                        for keyword in rule.intent_keywords:
+                            dept_map[keyword.lower()] = rule.transfer_extension
+                    
+                    logger.debug(f"Department map loaded from DB: {len(dept_map)} entries", extra={
+                        "domain_uuid": domain_uuid,
+                        "secretary_uuid": secretary_uuid
+                    })
+                    return dept_map
+                    
+            except Exception as e:
+                logger.warning(f"Failed to load department map from DB, using fallback: {e}")
+        
+        # Fallback para mapeamento estático (compatibilidade)
+        logger.debug("Using fallback department map (no config_loader or no rules)")
         return {
             "vendas": "200",
             "sales": "200",

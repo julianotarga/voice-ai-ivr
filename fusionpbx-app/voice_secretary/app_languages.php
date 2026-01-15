@@ -180,4 +180,120 @@ $text['provider-groq']['pt-br'] = "Groq (Rápido)";
 $text['provider-ollama_local']['en-us'] = "Ollama (Local)";
 $text['provider-ollama_local']['pt-br'] = "Ollama (Local)";
 
+// Transfer Rules
+$text['title-transfer_rules']['en-us'] = "Transfer Rules";
+$text['title-transfer_rules']['pt-br'] = "Regras de Transferência";
+
+$text['title-add_rule']['en-us'] = "Add Transfer Rule";
+$text['title-add_rule']['pt-br'] = "Adicionar Regra de Transferência";
+
+$text['title-edit_rule']['en-us'] = "Edit Transfer Rule";
+$text['title-edit_rule']['pt-br'] = "Editar Regra de Transferência";
+
+$text['description-transfer_rules']['en-us'] = "Configure rules for automatic call transfer based on keywords.";
+$text['description-transfer_rules']['pt-br'] = "Configure regras para transferência automática de chamadas baseadas em palavras-chave.";
+
+$text['description-transfer_rule']['en-us'] = "Define keywords that trigger transfer to a specific extension.";
+$text['description-transfer_rule']['pt-br'] = "Defina palavras-chave que acionam transferência para um ramal específico.";
+
+$text['label-department']['en-us'] = "Department";
+$text['label-department']['pt-br'] = "Departamento";
+
+$text['description-department']['en-us'] = "Name of the department or sector (e.g., Sales, Support).";
+$text['description-department']['pt-br'] = "Nome do departamento ou setor (ex: Vendas, Suporte).";
+
+$text['label-keywords']['en-us'] = "Keywords";
+$text['label-keywords']['pt-br'] = "Palavras-chave";
+
+$text['description-keywords']['en-us'] = "Comma-separated keywords that trigger this transfer (e.g., sales, buy, purchase).";
+$text['description-keywords']['pt-br'] = "Palavras-chave separadas por vírgula que acionam a transferência (ex: vendas, comprar, orçamento).";
+
+$text['label-extension']['en-us'] = "Extension";
+$text['label-extension']['pt-br'] = "Ramal";
+
+$text['description-extension']['en-us'] = "Extension to transfer the call to (digits, * or # only).";
+$text['description-extension']['pt-br'] = "Ramal para transferir a chamada (apenas dígitos, * ou #).";
+
+$text['description-extension_pattern']['en-us'] = "Only digits, * or # (max 20 chars)";
+$text['description-extension_pattern']['pt-br'] = "Apenas dígitos, * ou # (máx 20 caracteres)";
+
+$text['label-transfer_message']['en-us'] = "Transfer Message";
+$text['label-transfer_message']['pt-br'] = "Mensagem de Transferência";
+
+$text['label-message']['en-us'] = "Message";
+$text['label-message']['pt-br'] = "Mensagem";
+
+$text['description-transfer_message']['en-us'] = "Optional message spoken to the caller before transfer (e.g., \"I will transfer you to Sales now.\").";
+$text['description-transfer_message']['pt-br'] = "Mensagem opcional falada para o cliente antes da transferência (ex: \"Vou transferir você para o setor de Vendas agora.\").";
+
+$text['label-secretary']['en-us'] = "Secretary";
+$text['label-secretary']['pt-br'] = "Secretária";
+
+$text['description-secretary']['en-us'] = "Apply rule only to this secretary, or leave blank for all.";
+$text['description-secretary']['pt-br'] = "Aplicar regra apenas a esta secretária, ou deixe em branco para todas.";
+
+$text['label-priority']['en-us'] = "Priority";
+$text['label-priority']['pt-br'] = "Prioridade";
+
+$text['description-priority']['en-us'] = "Lower number = higher priority.";
+$text['description-priority']['pt-br'] = "Número menor = maior prioridade.";
+
+$text['label-status']['en-us'] = "Status";
+$text['label-status']['pt-br'] = "Status";
+
+$text['label-active']['en-us'] = "Active";
+$text['label-active']['pt-br'] = "Ativo";
+
+$text['label-inactive']['en-us'] = "Inactive";
+$text['label-inactive']['pt-br'] = "Inativo";
+
+$text['option-all']['en-us'] = "All";
+$text['option-all']['pt-br'] = "Todas";
+
+$text['message-no_rules']['en-us'] = "No transfer rules found.";
+$text['message-no_rules']['pt-br'] = "Nenhuma regra de transferência encontrada.";
+
+$text['message-invalid_id']['en-us'] = "Invalid ID.";
+$text['message-invalid_id']['pt-br'] = "ID inválido.";
+
+$text['message-invalid_token']['en-us'] = "Invalid token.";
+$text['message-invalid_token']['pt-br'] = "Token inválido.";
+
+$text['message-invalid_extension']['en-us'] = "Invalid extension. Use only digits, * or # (max 20 chars).";
+$text['message-invalid_extension']['pt-br'] = "Ramal inválido. Use apenas dígitos, * ou # (máx 20 caracteres).";
+
+$text['message-extension_warning']['en-us'] = "Warning: Extension not found in the system. It may be external or not configured yet.";
+$text['message-extension_warning']['pt-br'] = "Aviso: Ramal não encontrado no sistema. Pode ser externo ou ainda não configurado.";
+
+$text['confirm-delete']['en-us'] = "Do you really want to delete the selected items?";
+$text['confirm-delete']['pt-br'] = "Deseja realmente excluir os itens selecionados?";
+
+// Transfer Settings
+$text['header-transfer']['en-us'] = "Transfer Settings";
+$text['header-transfer']['pt-br'] = "Configurações de Transferência";
+
+$text['label-handoff_timeout']['en-us'] = "Handoff Timeout (seconds)";
+$text['label-handoff_timeout']['pt-br'] = "Timeout de Transferência (segundos)";
+
+$text['description-handoff_timeout']['en-us'] = "Timeout in seconds before fallback to ticket (default: 30).";
+$text['description-handoff_timeout']['pt-br'] = "Timeout em segundos antes de criar ticket de fallback (padrão: 30).";
+
+$text['label-presence_check']['en-us'] = "Check Extension Presence";
+$text['label-presence_check']['pt-br'] = "Verificar Presença do Ramal";
+
+$text['description-presence_check']['en-us'] = "Check if extension is online before transferring.";
+$text['description-presence_check']['pt-br'] = "Verificar se o ramal está online antes de transferir.";
+
+$text['label-time_condition']['en-us'] = "Business Hours";
+$text['label-time_condition']['pt-br'] = "Horário de Atendimento";
+
+$text['description-time_condition']['en-us'] = "Only transfer during these hours, otherwise create ticket.";
+$text['description-time_condition']['pt-br'] = "Transferir apenas neste horário, senão criar ticket.";
+
+$text['option-no_restriction']['en-us'] = "-- No restriction --";
+$text['option-no_restriction']['pt-br'] = "-- Sem restrição --";
+
+$text['label-enabled']['en-us'] = "Enabled";
+$text['label-enabled']['pt-br'] = "Habilitado";
+
 ?>

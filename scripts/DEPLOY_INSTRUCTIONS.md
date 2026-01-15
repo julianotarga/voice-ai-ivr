@@ -204,6 +204,9 @@ Se o áudio estiver com lag perceptível, ajuste:
 1) **Warmup do bridge** (reduz buffer inicial):
 ```bash
 export FS_WARMUP_CHUNKS=5   # 5 chunks = 100ms
+export FS_WARMUP_CHUNKS_MIN=3
+export FS_WARMUP_CHUNKS_MAX=8
+export FS_ADAPTIVE_WARMUP=true
 ```
 
 2) **Buffer do FreeSWITCH** (reduz buffer de captura):
@@ -213,6 +216,24 @@ session:setVariable("STREAM_BUFFER_SIZE", "100")
 ```
 
 Depois reinicie o container do bridge e recarregue o dialplan.
+
+### Top-10 Realtime (recomendado)
+
+Para performance máxima (baixa latência + estabilidade + barge-in):
+
+**Env vars no voice-ai-realtime:**
+```bash
+export REALTIME_BARGE_IN=true
+export REALTIME_FALLBACK_PROVIDERS="gemini_live,elevenlabs_conversational"
+export FS_WARMUP_CHUNKS=4
+export FS_WARMUP_CHUNKS_MIN=3
+export FS_WARMUP_CHUNKS_MAX=8
+export FS_ADAPTIVE_WARMUP=true
+```
+
+**No FusionPBX (AI Providers):**
+- Use preset `top10` ou `ptbr_top10` (realtime)
+- Ajuste `barge_in_enabled`, `warmup_chunks` e `fallback_providers` por tenant
 
 ### Ajuste de VAD (quando o agente responde sozinho)
 

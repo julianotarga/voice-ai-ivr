@@ -67,34 +67,57 @@
 
 		$keywords = array_filter(array_map('trim', explode(',', $_POST['keywords'] ?? '')));
 		
+		$transfer_extension = trim($_POST['transfer_extension'] ?? '');
+		$transfer_message = trim($_POST['transfer_message'] ?? '');
+		
 		$form_data = [
 			'department_name' => $_POST['department_name'] ?? '',
 			'keywords' => json_encode($keywords),
-			'transfer_extension' => $_POST['transfer_extension'] ?? '',
+			'transfer_extension' => $transfer_extension,
+			'transfer_message' => !empty($transfer_message) ? $transfer_message : null,
 			'voice_secretary_uuid' => !empty($_POST['voice_secretary_uuid']) ? $_POST['voice_secretary_uuid'] : null,
 			'priority' => intval($_POST['priority'] ?? 10),
 			'is_active' => isset($_POST['is_active']) ? 'true' : 'false',
 		];
 		
+		// Validação de campos obrigatórios
 		if (empty($form_data['department_name']) || empty($form_data['transfer_extension'])) {
 			message::add($text['message-required'] ?? 'Required fields missing', 'negative');
+		}
+		// Validação de extensão válida (somente números, *, # e até 20 caracteres)
+		elseif (!preg_match('/^[0-9*#]{1,20}$/', $transfer_extension)) {
+			message::add($text['message-invalid_extension'] ?? 'Invalid extension. Use only digits, * or # (max 20 chars).', 'negative');
 		} else {
+			// Verificar se extensão existe no sistema (aviso, não bloqueia)
+			$sql = "SELECT 1 FROM v_extensions WHERE domain_uuid = :domain_uuid AND extension = :ext AND enabled = 'true'
+					UNION SELECT 1 FROM v_ring_groups WHERE domain_uuid = :domain_uuid AND ring_group_extension = :ext AND ring_group_enabled = 'true'
+					UNION SELECT 1 FROM v_call_center_queues WHERE domain_uuid = :domain_uuid AND queue_extension = :ext AND queue_enabled = 'true'";
+			$parameters['domain_uuid'] = $domain_uuid;
+			$parameters['ext'] = $transfer_extension;
+			$ext_exists = $database->select($sql, $parameters, 'all');
+			unset($parameters);
+			
+			if (empty($ext_exists)) {
+				// Aviso, não erro - permite salvar mesmo assim
+				message::add($text['message-extension_warning'] ?? 'Warning: Extension not found in the system. It may be external or not configured yet.', 'alert');
+			}
 			if ($action === 'add') {
 				$form_data['uuid'] = uuid();
 				$form_data['domain_uuid'] = $domain_uuid;
 				$sql = "INSERT INTO v_voice_transfer_rules (
 					transfer_rule_uuid, domain_uuid, department_name, keywords,
-					transfer_extension, voice_secretary_uuid, priority, is_active, insert_date
+					transfer_extension, transfer_message, voice_secretary_uuid, priority, is_active, insert_date
 				) VALUES (
 					:uuid, :domain_uuid, :department_name, :keywords,
-					:transfer_extension, :voice_secretary_uuid, :priority, :is_active, NOW()
+					:transfer_extension, :transfer_message, :voice_secretary_uuid, :priority, :is_active, NOW()
 				)";
 			} else {
 				$form_data['uuid'] = $rule_uuid;
 				$form_data['domain_uuid'] = $domain_uuid;
 				$sql = "UPDATE v_voice_transfer_rules SET 
 					department_name = :department_name, keywords = :keywords,
-					transfer_extension = :transfer_extension, voice_secretary_uuid = :voice_secretary_uuid,
+					transfer_extension = :transfer_extension, transfer_message = :transfer_message,
+					voice_secretary_uuid = :voice_secretary_uuid,
 					priority = :priority, is_active = :is_active, update_date = NOW()
 					WHERE transfer_rule_uuid = :uuid AND domain_uuid = :domain_uuid";
 			}
@@ -116,6 +139,36 @@
 	$parameters['domain_uuid'] = $domain_uuid;
 	$secretaries = $database->select($sql, $parameters, 'all') ?: [];
 	unset($parameters);
+
+//get extensions, ring groups and call center queues for validation/autocomplete
+	$valid_destinations = [];
+	
+	// Extensions
+	$sql = "SELECT extension FROM v_extensions WHERE domain_uuid = :domain_uuid AND enabled = 'true' ORDER BY extension";
+	$parameters['domain_uuid'] = $domain_uuid;
+	$extensions = $database->select($sql, $parameters, 'all') ?: [];
+	unset($parameters);
+	foreach ($extensions as $ext) {
+		$valid_destinations[] = $ext['extension'];
+	}
+	
+	// Ring Groups
+	$sql = "SELECT ring_group_extension FROM v_ring_groups WHERE domain_uuid = :domain_uuid AND ring_group_enabled = 'true' ORDER BY ring_group_extension";
+	$parameters['domain_uuid'] = $domain_uuid;
+	$ring_groups = $database->select($sql, $parameters, 'all') ?: [];
+	unset($parameters);
+	foreach ($ring_groups as $rg) {
+		$valid_destinations[] = $rg['ring_group_extension'];
+	}
+	
+	// Call Center Queues
+	$sql = "SELECT queue_extension FROM v_call_center_queues WHERE domain_uuid = :domain_uuid AND queue_enabled = 'true' ORDER BY queue_extension";
+	$parameters['domain_uuid'] = $domain_uuid;
+	$queues = $database->select($sql, $parameters, 'all') ?: [];
+	unset($parameters);
+	foreach ($queues as $q) {
+		$valid_destinations[] = $q['queue_extension'];
+	}
 
 //create token
 	$object = new token;
@@ -164,8 +217,21 @@
 	echo "<tr>\n";
 	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-extension'] ?? 'Extension')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '')."' required>\n";
-	echo "		<br />".($text['description-extension'] ?? 'Extension to transfer the call to.')."\n";
+	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '')."' required pattern='[0-9*#]{1,20}' title='".($text['description-extension_pattern'] ?? 'Only digits, * or # (max 20 chars)')."' list='extensions_list' autocomplete='off'>\n";
+	echo "		<datalist id='extensions_list'>\n";
+	foreach ($valid_destinations as $dest) {
+		echo "			<option value='".escape($dest)."'>\n";
+	}
+	echo "		</datalist>\n";
+	echo "		<br />".($text['description-extension'] ?? 'Extension to transfer the call to (digits, * or # only).')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-transfer_message'] ?? 'Transfer Message')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='transfer_message' rows='2' style='width: 100%;' maxlength='500'>".escape($data['transfer_message'] ?? '')."</textarea>\n";
+	echo "		<br />".($text['description-transfer_message'] ?? 'Optional message spoken to the caller before transfer (e.g., "I will transfer you to Sales now.").')."\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

@@ -80,6 +80,9 @@
 			'language' => $_POST['language'] ?? 'pt-BR',
 			'max_turns' => intval($_POST['max_turns'] ?? 20),
 			'transfer_extension' => $_POST['transfer_extension'] ?? '200',
+			'handoff_timeout' => intval($_POST['handoff_timeout'] ?? 30),
+			'presence_check_enabled' => isset($_POST['presence_check_enabled']) ? 'true' : 'false',
+			'time_condition_uuid' => !empty($_POST['time_condition_uuid']) ? $_POST['time_condition_uuid'] : null,
 			'enabled' => $_POST['enabled'] ?? 'true',
 			'webhook_url' => $_POST['webhook_url'] ?? '',
 		];
@@ -112,6 +115,9 @@
 			$array['voice_secretaries'][0]['language'] = $form_data['language'];
 			$array['voice_secretaries'][0]['max_turns'] = $form_data['max_turns'];
 			$array['voice_secretaries'][0]['transfer_extension'] = $form_data['transfer_extension'];
+			$array['voice_secretaries'][0]['handoff_timeout'] = $form_data['handoff_timeout'];
+			$array['voice_secretaries'][0]['presence_check_enabled'] = $form_data['presence_check_enabled'];
+			$array['voice_secretaries'][0]['time_condition_uuid'] = $form_data['time_condition_uuid'];
 			$array['voice_secretaries'][0]['enabled'] = $form_data['enabled'];
 			$array['voice_secretaries'][0]['omniplay_webhook_url'] = $form_data['webhook_url'] ?: null;
 			
@@ -148,6 +154,13 @@
 	$llm_providers = $secretary_obj->get_providers('llm', $domain_uuid) ?: [];
 	$embeddings_providers = $secretary_obj->get_providers('embeddings', $domain_uuid) ?: [];
 	$realtime_providers = $secretary_obj->get_providers('realtime', $domain_uuid) ?: [];
+
+//get time conditions for dropdown
+	$database = new database;
+	$sql = "SELECT time_condition_uuid, time_condition_name FROM v_time_conditions WHERE domain_uuid = :domain_uuid AND time_condition_enabled = 'true' ORDER BY time_condition_name";
+	$parameters['domain_uuid'] = $domain_uuid;
+	$time_conditions = $database->select($sql, $parameters, 'all') ?: [];
+	unset($parameters);
 
 //create token
 	$object = new token;
@@ -381,6 +394,38 @@
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-transfer_extension'] ?? 'Transfer Extension')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
 	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '200')."'>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-handoff_timeout'] ?? 'Handoff Timeout (seconds)')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='handoff_timeout' min='5' max='120' value='".intval($data['handoff_timeout'] ?? 30)."'>\n";
+	echo "		<br />".($text['description-handoff_timeout'] ?? 'Timeout in seconds before fallback to ticket (default: 30)')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-presence_check'] ?? 'Check Extension Presence')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$presence_enabled = (!isset($data['presence_check_enabled']) || $data['presence_check_enabled'] == 'true' || $data['presence_check_enabled'] === true);
+	echo "		<input type='checkbox' name='presence_check_enabled' id='presence_check_enabled' ".($presence_enabled ? 'checked' : '').">\n";
+	echo "		<label for='presence_check_enabled'>".($text['label-enabled'] ?? 'Enabled')."</label>\n";
+	echo "		<br />".($text['description-presence_check'] ?? 'Check if extension is online before transferring')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-time_condition'] ?? 'Business Hours')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<select class='formfld' name='time_condition_uuid'>\n";
+	echo "			<option value=''>".($text['option-no_restriction'] ?? '-- No restriction --')."</option>\n";
+	foreach ($time_conditions as $tc) {
+		$selected = (($data['time_condition_uuid'] ?? '') === $tc['time_condition_uuid']) ? 'selected' : '';
+		echo "			<option value='".escape($tc['time_condition_uuid'])."' ".$selected.">".escape($tc['time_condition_name'])."</option>\n";
+	}
+	echo "		</select>\n";
+	echo "		<br />".($text['description-time_condition'] ?? 'Only transfer during these hours, otherwise create ticket')."\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
