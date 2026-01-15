@@ -440,6 +440,30 @@ class RealtimeServer:
         handoff_keywords_str = row.get("handoff_keywords") or "atendente,humano,pessoa,operador"
         handoff_keywords = [k.strip() for k in handoff_keywords_str.split(",") if k.strip()]
         
+        # Audio Configuration - extrair valores do banco ANTES de criar o config
+        db_warmup_chunks = int(row.get("audio_warmup_chunks") or 15)
+        db_warmup_ms = int(row.get("audio_warmup_ms") or 400)
+        db_adaptive_warmup = row.get("audio_adaptive_warmup")
+        if db_adaptive_warmup is None:
+            db_adaptive_warmup = True
+        elif isinstance(db_adaptive_warmup, str):
+            db_adaptive_warmup = db_adaptive_warmup.lower() in ("true", "1", "yes")
+        else:
+            db_adaptive_warmup = bool(db_adaptive_warmup)
+        db_jitter_min = int(row.get("jitter_buffer_min") or 100)
+        db_jitter_max = int(row.get("jitter_buffer_max") or 300)
+        db_jitter_step = int(row.get("jitter_buffer_step") or 40)
+        db_stream_buffer = int(row.get("stream_buffer_size") or 320)
+        
+        logger.info("Audio config from DB", extra={
+            "call_uuid": call_uuid,
+            "warmup_chunks": db_warmup_chunks,
+            "warmup_ms": db_warmup_ms,
+            "adaptive": db_adaptive_warmup,
+            "jitter": f"{db_jitter_min}:{db_jitter_max}:{db_jitter_step}",
+            "stream_buffer": db_stream_buffer,
+        })
+        
         config = RealtimeSessionConfig(
             domain_uuid=domain_uuid,
             call_uuid=call_uuid,
@@ -500,36 +524,22 @@ class RealtimeServer:
         playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
         allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
         
-        # Audio Configuration - prioridade: banco > provider_config > env
-        # 1. Valores do banco de dados (v_voice_secretaries)
-        db_warmup_chunks = int(row.get("audio_warmup_chunks", 15))
-        db_warmup_ms = int(row.get("audio_warmup_ms", 400))
-        db_adaptive_warmup = bool(row.get("audio_adaptive_warmup", True))
-        db_jitter_min = int(row.get("jitter_buffer_min", 100))
-        db_jitter_max = int(row.get("jitter_buffer_max", 300))
-        db_jitter_step = int(row.get("jitter_buffer_step", 40))
-        db_stream_buffer = int(row.get("stream_buffer_size", 320))
-        
-        # 2. Fallback para env/provider_config se não configurado no banco
-        adaptive_warmup = db_adaptive_warmup if db_adaptive_warmup else os.getenv("FS_ADAPTIVE_WARMUP", "true").lower() in ("1", "true", "yes")
+        # Audio Configuration - usar valores já extraídos do banco (db_warmup_* definidos acima)
+        adaptive_warmup = db_adaptive_warmup
         warmup_min = max(5, db_warmup_chunks - 10)  # min = default - 10 (mas pelo menos 5)
         warmup_max = db_warmup_chunks + 10  # max = default + 10
         warmup_default = db_warmup_chunks
         
+        # Provider config pode sobrescrever
         if isinstance(provider_config, dict):
-            adaptive_warmup = str(provider_config.get("adaptive_warmup", str(adaptive_warmup))).lower() in ("1", "true", "yes")
-            warmup_min = int(provider_config.get("warmup_chunks_min", warmup_min))
-            warmup_max = int(provider_config.get("warmup_chunks_max", warmup_max))
-            warmup_default = int(provider_config.get("warmup_chunks", warmup_default))
-        
-        logger.info("Audio config from DB", extra={
-            "call_uuid": call_uuid,
-            "warmup_chunks": db_warmup_chunks,
-            "warmup_ms": db_warmup_ms,
-            "adaptive": adaptive_warmup,
-            "jitter": f"{db_jitter_min}:{db_jitter_max}:{db_jitter_step}",
-            "stream_buffer": db_stream_buffer,
-        })
+            if "adaptive_warmup" in provider_config:
+                adaptive_warmup = str(provider_config.get("adaptive_warmup")).lower() in ("1", "true", "yes")
+            if "warmup_chunks_min" in provider_config:
+                warmup_min = int(provider_config.get("warmup_chunks_min"))
+            if "warmup_chunks_max" in provider_config:
+                warmup_max = int(provider_config.get("warmup_chunks_max"))
+            if "warmup_chunks" in provider_config:
+                warmup_default = int(provider_config.get("warmup_chunks"))
         if playback_mode not in ("rawaudio", "streamaudio"):
             playback_mode = "rawaudio"
 
