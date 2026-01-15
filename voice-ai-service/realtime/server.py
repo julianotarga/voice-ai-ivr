@@ -304,7 +304,15 @@ class RealtimeServer:
                     COALESCE(s.fallback_ticket_enabled, true) as fallback_ticket_enabled,
                     COALESCE(s.presence_check_enabled, true) as presence_check_enabled,
                     s.omniplay_webhook_url,
-                    s.omniplay_company_id
+                    s.omniplay_company_id,
+                    -- Audio Configuration fields
+                    COALESCE(s.audio_warmup_chunks, 15) as audio_warmup_chunks,
+                    COALESCE(s.audio_warmup_ms, 400) as audio_warmup_ms,
+                    COALESCE(s.audio_adaptive_warmup, true) as audio_adaptive_warmup,
+                    COALESCE(s.jitter_buffer_min, 100) as jitter_buffer_min,
+                    COALESCE(s.jitter_buffer_max, 300) as jitter_buffer_max,
+                    COALESCE(s.jitter_buffer_step, 40) as jitter_buffer_step,
+                    COALESCE(s.stream_buffer_size, 320) as stream_buffer_size
                 FROM v_voice_secretaries s
                 LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
                 WHERE s.domain_uuid = $1
@@ -458,6 +466,14 @@ class RealtimeServer:
             handoff_max_ai_turns=int(row.get("max_turns", 20)),
             handoff_queue_id=row.get("handoff_queue_id"),
             omniplay_company_id=row.get("omniplay_company_id"),
+            # Audio Configuration
+            audio_warmup_chunks=db_warmup_chunks,
+            audio_warmup_ms=db_warmup_ms,
+            audio_adaptive_warmup=db_adaptive_warmup,
+            jitter_buffer_min=db_jitter_min,
+            jitter_buffer_max=db_jitter_max,
+            jitter_buffer_step=db_jitter_step,
+            stream_buffer_size=db_stream_buffer,
         )
         
         logger.debug("Session config created", extra={
@@ -483,17 +499,37 @@ class RealtimeServer:
         playback_lock = asyncio.Lock()
         playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
         allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
-        adaptive_warmup = os.getenv("FS_ADAPTIVE_WARMUP", "true").lower() in ("1", "true", "yes")
-        # Aumentado para evitar audio underruns
-        # Cada chunk = 20ms, então 15 chunks = 300ms de buffer inicial
-        warmup_min = int(os.getenv("FS_WARMUP_CHUNKS_MIN", "10"))
-        warmup_max = int(os.getenv("FS_WARMUP_CHUNKS_MAX", "25"))
-        warmup_default = int(os.getenv("FS_WARMUP_CHUNKS", "15"))
+        
+        # Audio Configuration - prioridade: banco > provider_config > env
+        # 1. Valores do banco de dados (v_voice_secretaries)
+        db_warmup_chunks = int(row.get("audio_warmup_chunks", 15))
+        db_warmup_ms = int(row.get("audio_warmup_ms", 400))
+        db_adaptive_warmup = bool(row.get("audio_adaptive_warmup", True))
+        db_jitter_min = int(row.get("jitter_buffer_min", 100))
+        db_jitter_max = int(row.get("jitter_buffer_max", 300))
+        db_jitter_step = int(row.get("jitter_buffer_step", 40))
+        db_stream_buffer = int(row.get("stream_buffer_size", 320))
+        
+        # 2. Fallback para env/provider_config se não configurado no banco
+        adaptive_warmup = db_adaptive_warmup if db_adaptive_warmup else os.getenv("FS_ADAPTIVE_WARMUP", "true").lower() in ("1", "true", "yes")
+        warmup_min = max(5, db_warmup_chunks - 10)  # min = default - 10 (mas pelo menos 5)
+        warmup_max = db_warmup_chunks + 10  # max = default + 10
+        warmup_default = db_warmup_chunks
+        
         if isinstance(provider_config, dict):
             adaptive_warmup = str(provider_config.get("adaptive_warmup", str(adaptive_warmup))).lower() in ("1", "true", "yes")
             warmup_min = int(provider_config.get("warmup_chunks_min", warmup_min))
             warmup_max = int(provider_config.get("warmup_chunks_max", warmup_max))
             warmup_default = int(provider_config.get("warmup_chunks", warmup_default))
+        
+        logger.info("Audio config from DB", extra={
+            "call_uuid": call_uuid,
+            "warmup_chunks": db_warmup_chunks,
+            "warmup_ms": db_warmup_ms,
+            "adaptive": adaptive_warmup,
+            "jitter": f"{db_jitter_min}:{db_jitter_max}:{db_jitter_step}",
+            "stream_buffer": db_stream_buffer,
+        })
         if playback_mode not in ("rawaudio", "streamaudio"):
             playback_mode = "rawaudio"
 

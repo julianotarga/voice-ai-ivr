@@ -71,6 +71,14 @@ class RealtimeSessionConfig:
     handoff_max_ai_turns: int = 20
     handoff_queue_id: Optional[int] = None
     omniplay_company_id: Optional[int] = None  # OmniPlay companyId para API
+    # Audio Configuration (per-secretary)
+    audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
+    audio_warmup_ms: int = 400  # buffer de warmup em ms
+    audio_adaptive_warmup: bool = True  # ajuste automático de warmup
+    jitter_buffer_min: int = 100  # FreeSWITCH jitter buffer min (ms)
+    jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
+    jitter_buffer_step: int = 40  # FreeSWITCH jitter buffer step (ms)
+    stream_buffer_size: int = 320  # mod_audio_stream buffer (samples)
 
 
 class RealtimeSession:

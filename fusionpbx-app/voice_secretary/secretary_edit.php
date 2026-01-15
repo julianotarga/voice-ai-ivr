@@ -92,6 +92,14 @@
 			'handoff_queue_id' => !empty($_POST['handoff_queue_id']) ? intval($_POST['handoff_queue_id']) : null,
 			// OmniPlay Integration
 			'omniplay_company_id' => !empty($_POST['omniplay_company_id']) ? intval($_POST['omniplay_company_id']) : null,
+			// Audio Configuration
+			'audio_warmup_chunks' => intval($_POST['audio_warmup_chunks'] ?? 15),
+			'audio_warmup_ms' => intval($_POST['audio_warmup_ms'] ?? 400),
+			'audio_adaptive_warmup' => isset($_POST['audio_adaptive_warmup']) ? 'true' : 'false',
+			'jitter_buffer_min' => intval($_POST['jitter_buffer_min'] ?? 100),
+			'jitter_buffer_max' => intval($_POST['jitter_buffer_max'] ?? 300),
+			'jitter_buffer_step' => intval($_POST['jitter_buffer_step'] ?? 40),
+			'stream_buffer_size' => intval($_POST['stream_buffer_size'] ?? 320),
 		];
 		
 		//validate
@@ -133,6 +141,14 @@
 			$array['voice_secretaries'][0]['fallback_ticket_enabled'] = $form_data['fallback_ticket_enabled'];
 			$array['voice_secretaries'][0]['handoff_queue_id'] = $form_data['handoff_queue_id'] ?: null;
 			$array['voice_secretaries'][0]['omniplay_company_id'] = $form_data['omniplay_company_id'] ?: null;
+			// Audio Configuration
+			$array['voice_secretaries'][0]['audio_warmup_chunks'] = $form_data['audio_warmup_chunks'] ?: 15;
+			$array['voice_secretaries'][0]['audio_warmup_ms'] = $form_data['audio_warmup_ms'] ?: 400;
+			$array['voice_secretaries'][0]['audio_adaptive_warmup'] = $form_data['audio_adaptive_warmup'];
+			$array['voice_secretaries'][0]['jitter_buffer_min'] = $form_data['jitter_buffer_min'] ?: 100;
+			$array['voice_secretaries'][0]['jitter_buffer_max'] = $form_data['jitter_buffer_max'] ?: 300;
+			$array['voice_secretaries'][0]['jitter_buffer_step'] = $form_data['jitter_buffer_step'] ?: 40;
+			$array['voice_secretaries'][0]['stream_buffer_size'] = $form_data['stream_buffer_size'] ?: 320;
 			
 			//add permissions
 			$p = permissions::new();
@@ -488,6 +504,75 @@
 	echo "	<td class='vtable' align='left'>\n";
 	echo "		<input class='formfld' type='text' name='handoff_queue_id' maxlength='20' value='".escape($data['handoff_queue_id'] ?? '')."' placeholder='Queue ID from OmniPlay'>\n";
 	echo "		<br />".($text['description-handoff_queue'] ?? 'OmniPlay queue ID to assign tickets created by voice handoff')."\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// =============================
+	// Audio Configuration Section
+	// =============================
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>".($text['header-audio_config'] ?? '🔊 Audio Configuration')."</b>\n";
+	echo "		<span style='font-size: 0.85em; color: #666; margin-left: 10px;'>"
+		. ($text['header-audio_config_desc'] ?? 'Buffer and jitter settings to prevent choppy audio')
+		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Audio Warmup Chunks
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-audio_warmup_chunks'] ?? 'Warmup Chunks')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='audio_warmup_chunks' min='5' max='50' value='".intval($data['audio_warmup_chunks'] ?? 15)."' style='width: 80px;'>\n";
+	echo "		<span style='margin-left: 5px;'>chunks (x20ms = ".intval(($data['audio_warmup_chunks'] ?? 15) * 20)."ms)</span>\n";
+	echo "		<br /><span class='vtable-hint'>".($text['description-audio_warmup_chunks'] ?? 'Number of 20ms audio chunks to buffer before playback. Higher = more stable, but adds latency.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Audio Warmup MS
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-audio_warmup_ms'] ?? 'Warmup Buffer (ms)')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='audio_warmup_ms' min='100' max='1000' step='50' value='".intval($data['audio_warmup_ms'] ?? 400)."' style='width: 80px;'>\n";
+	echo "		<span style='margin-left: 5px;'>ms</span>\n";
+	echo "		<br /><span class='vtable-hint'>".($text['description-audio_warmup_ms'] ?? 'Resampler warmup buffer in milliseconds. Recommended: 300-500ms.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Adaptive Warmup
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-audio_adaptive'] ?? 'Adaptive Warmup')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$adaptive_enabled = (!isset($data['audio_adaptive_warmup']) || $data['audio_adaptive_warmup'] == 'true' || $data['audio_adaptive_warmup'] === true);
+	echo "		<input type='checkbox' name='audio_adaptive_warmup' id='audio_adaptive_warmup' ".($adaptive_enabled ? 'checked' : '').">\n";
+	echo "		<label for='audio_adaptive_warmup'>".($text['label-enabled'] ?? 'Enabled')."</label>\n";
+	echo "		<br /><span class='vtable-hint'>".($text['description-audio_adaptive'] ?? 'Automatically adjust warmup based on network conditions.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Jitter Buffer Settings (FreeSWITCH)
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-jitter_buffer'] ?? 'Jitter Buffer (FS)')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<div style='display: flex; gap: 10px; align-items: center;'>\n";
+	echo "			<label>Min:</label>\n";
+	echo "			<input class='formfld' type='number' name='jitter_buffer_min' min='20' max='500' value='".intval($data['jitter_buffer_min'] ?? 100)."' style='width: 70px;'>ms\n";
+	echo "			<label style='margin-left: 10px;'>Max:</label>\n";
+	echo "			<input class='formfld' type='number' name='jitter_buffer_max' min='100' max='1000' value='".intval($data['jitter_buffer_max'] ?? 300)."' style='width: 70px;'>ms\n";
+	echo "			<label style='margin-left: 10px;'>Step:</label>\n";
+	echo "			<input class='formfld' type='number' name='jitter_buffer_step' min='10' max='100' value='".intval($data['jitter_buffer_step'] ?? 40)."' style='width: 60px;'>ms\n";
+	echo "		</div>\n";
+	echo "		<br /><span class='vtable-hint'>".($text['description-jitter_buffer'] ?? 'FreeSWITCH jitter buffer settings: min:max:step. Default: 100:300:40')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Stream Buffer Size
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-stream_buffer'] ?? 'Stream Buffer Size')."</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='stream_buffer_size' min='160' max='1600' step='160' value='".intval($data['stream_buffer_size'] ?? 320)."' style='width: 80px;'>\n";
+	echo "		<span style='margin-left: 5px;'>samples</span>\n";
+	echo "		<br /><span class='vtable-hint'>".($text['description-stream_buffer'] ?? 'mod_audio_stream buffer size in samples. 320 = 20ms @ 16kHz. Higher = more stable.')."</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

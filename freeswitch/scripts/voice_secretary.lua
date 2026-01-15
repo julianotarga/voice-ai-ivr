@@ -17,7 +17,46 @@ local call_uuid = session:getVariable("uuid") or ""
 -- Log inicial
 freeswitch.consoleLog("INFO", "[VoiceSecretary] Starting - domain: " .. domain_uuid .. ", secretary: " .. secretary_uuid .. ", call: " .. call_uuid .. "\n")
 
--- Configurar variáveis de canal para mod_audio_stream
+-- =============================================================================
+-- BUSCAR CONFIGURAÇÕES DE ÁUDIO DO BANCO DE DADOS
+-- =============================================================================
+local jitter_min = 100
+local jitter_max = 300
+local jitter_step = 40
+local stream_buffer = 320
+
+-- Tentar ler as configurações do banco se secretary_uuid existir
+if secretary_uuid and secretary_uuid ~= "" then
+    local dbh = freeswitch.Dbh("fusionpbx")
+    if dbh:connected() then
+        local sql = string.format(
+            [[SELECT 
+                COALESCE(jitter_buffer_min, 100) as jitter_min,
+                COALESCE(jitter_buffer_max, 300) as jitter_max,
+                COALESCE(jitter_buffer_step, 40) as jitter_step,
+                COALESCE(stream_buffer_size, 320) as stream_buffer
+            FROM v_voice_secretaries 
+            WHERE voice_secretary_uuid = '%s']], 
+            secretary_uuid:gsub("'", "''")  -- escape SQL injection
+        )
+        
+        dbh:query(sql, function(row)
+            jitter_min = tonumber(row.jitter_min) or 100
+            jitter_max = tonumber(row.jitter_max) or 300
+            jitter_step = tonumber(row.jitter_step) or 40
+            stream_buffer = tonumber(row.stream_buffer) or 320
+            freeswitch.consoleLog("INFO", "[VoiceSecretary] Audio config from DB: jitter=" .. jitter_min .. ":" .. jitter_max .. ":" .. jitter_step .. ", buffer=" .. stream_buffer .. "\n")
+        end)
+        
+        dbh:release()
+    else
+        freeswitch.consoleLog("WARNING", "[VoiceSecretary] Could not connect to database, using defaults\n")
+    end
+end
+
+-- =============================================================================
+-- CONFIGURAR VARIÁVEIS DE CANAL
+-- =============================================================================
 -- STREAM_PLAYBACK=true habilita receber áudio de volta do WebSocket
 -- STREAM_SAMPLE_RATE=16000 define a taxa de amostragem
 session:setVariable("STREAM_PLAYBACK", "true")
@@ -26,11 +65,12 @@ session:setVariable("STREAM_SUPPRESS_LOG", "false")  -- Habilitar logs para debu
 
 -- CRÍTICO: Habilitar jitter buffer para evitar áudio picotado
 -- Formato: jitterbuffer_msec=length:max_length:max_drift
--- 100ms inicial, 300ms máximo, 40ms drift - valores conservadores para Voice AI
-session:setVariable("jitterbuffer_msec", "100:300:40")
+local jitter_config = jitter_min .. ":" .. jitter_max .. ":" .. jitter_step
+session:setVariable("jitterbuffer_msec", jitter_config)
+freeswitch.consoleLog("INFO", "[VoiceSecretary] Jitter buffer set: " .. jitter_config .. "\n")
 
 -- Buffer adicional do mod_audio_stream (se suportado)
-session:setVariable("STREAM_BUFFER_SIZE", "320")  -- 320 bytes = 20ms @ 16kHz
+session:setVariable("STREAM_BUFFER_SIZE", tostring(stream_buffer))
 
 -- Atender chamada
 session:answer()
