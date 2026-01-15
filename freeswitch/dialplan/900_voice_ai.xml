@@ -71,10 +71,14 @@
       
       <action application="log" data="INFO [VoiceAI] Using REALTIME mode"/>
       
+      <!-- CRÍTICO: Jitter Buffer para evitar áudio picotado -->
+      <!-- Formato: length:max_length:max_drift (em ms) -->
+      <action application="set" data="jitterbuffer_msec=100:300:40"/>
+      
       <!-- Configurar streaming -->
       <action application="set" data="STREAM_PLAYBACK=true"/>
       <action application="set" data="STREAM_SAMPLE_RATE=16000"/>
-      <action application="set" data="STREAM_BUFFER_SIZE=20"/>
+      <action application="set" data="STREAM_BUFFER_SIZE=320"/>
       
       <!-- Metadata para o bridge -->
       <action application="set" data="STREAM_EXTRA_HEADERS=caller_id:${caller_id_number},extension:${voice_ai_extension},domain:${domain_uuid}"/>

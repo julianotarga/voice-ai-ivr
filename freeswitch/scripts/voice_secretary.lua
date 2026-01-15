@@ -24,6 +24,14 @@ session:setVariable("STREAM_PLAYBACK", "true")
 session:setVariable("STREAM_SAMPLE_RATE", "16000")
 session:setVariable("STREAM_SUPPRESS_LOG", "false")  -- Habilitar logs para debug
 
+-- CRÍTICO: Habilitar jitter buffer para evitar áudio picotado
+-- Formato: jitterbuffer_msec=length:max_length:max_drift
+-- 100ms inicial, 300ms máximo, 40ms drift - valores conservadores para Voice AI
+session:setVariable("jitterbuffer_msec", "100:300:40")
+
+-- Buffer adicional do mod_audio_stream (se suportado)
+session:setVariable("STREAM_BUFFER_SIZE", "320")  -- 320 bytes = 20ms @ 16kHz
+
 -- Atender chamada
 session:answer()
 session:sleep(500)
