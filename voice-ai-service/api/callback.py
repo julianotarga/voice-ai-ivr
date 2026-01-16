@@ -25,6 +25,9 @@ from pydantic import BaseModel, Field
 # ESL Client para comunicação com FreeSWITCH
 from realtime.handlers.esl_client import AsyncESLClient, get_esl_client
 
+# Métricas Prometheus (FASE 6)
+from realtime.utils.metrics import get_metrics
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/callback", tags=["callback"])
@@ -65,14 +68,18 @@ class ExtensionStatus(str, Enum):
 
 class OriginateRequest(BaseModel):
     """Request para originar chamada de callback."""
-    domain_uuid: str = Field(..., description="UUID do tenant")
-    extension: str = Field(..., description="Ramal do atendente (ex: 1001)")
-    client_number: str = Field(..., description="Número do cliente no formato E.164")
-    ticket_id: Optional[int] = Field(None, description="ID do ticket de callback")
-    callback_reason: Optional[str] = Field(None, description="Motivo do callback")
-    caller_id_name: Optional[str] = Field("Callback", description="Nome do caller ID")
-    call_timeout: int = Field(30, description="Timeout para atender (segundos)")
+    domain_uuid: str = Field(..., description="UUID do tenant", min_length=1)
+    extension: str = Field(..., description="Ramal do atendente (ex: 1001)", pattern=r"^\d{2,6}$")
+    client_number: str = Field(..., description="Número do cliente no formato E.164", pattern=r"^55\d{10,11}$")
+    ticket_id: Optional[int] = Field(None, description="ID do ticket de callback", ge=1)
+    callback_reason: Optional[str] = Field(None, description="Motivo do callback", max_length=500)
+    caller_id_name: Optional[str] = Field("Callback", description="Nome do caller ID", max_length=50)
+    call_timeout: int = Field(30, description="Timeout para atender (segundos)", ge=10, le=120)
     record: bool = Field(True, description="Gravar chamada")
+    
+    class Config:
+        """Configuração do modelo Pydantic."""
+        str_strip_whitespace = True  # Remove espaços em branco
 
 
 class OriginateResponse(BaseModel):
@@ -86,8 +93,12 @@ class OriginateResponse(BaseModel):
 
 class CheckAvailabilityRequest(BaseModel):
     """Request para verificar disponibilidade."""
-    domain_uuid: str
-    extension: str
+    domain_uuid: str = Field(..., description="UUID do tenant", min_length=1)
+    extension: str = Field(..., description="Ramal a verificar", pattern=r"^\d{2,6}$")
+    
+    class Config:
+        """Configuração do modelo Pydantic."""
+        str_strip_whitespace = True
 
 
 class CheckAvailabilityResponse(BaseModel):
@@ -238,6 +249,15 @@ async def check_availability(request: CheckAvailabilityRequest):
             )
         
         # Disponível!
+        # Registrar métrica de sucesso
+        metrics = get_metrics()
+        metrics.record_extension_check(
+            domain_uuid=request.domain_uuid,
+            extension=request.extension,
+            status="available",
+            available=True
+        )
+        
         return CheckAvailabilityResponse(
             extension=request.extension,
             status=ExtensionStatus.AVAILABLE,
@@ -369,6 +389,16 @@ async def originate_callback(request: OriginateRequest):
                 }
             )
             
+            # Registrar métrica de click-to-call
+            metrics = get_metrics()
+            metrics.record_click_to_call(
+                domain_uuid=request.domain_uuid,
+                extension=request.extension,
+                client_number=request.client_number,
+                ticket_id=request.ticket_id,
+                status="initiated"
+            )
+            
             return OriginateResponse(
                 success=True,
                 call_uuid=call_uuid,
@@ -393,6 +423,16 @@ async def originate_callback(request: OriginateRequest):
                     error_msg = result[:200]
             
             logger.error(f"Originate failed: {error_msg}")
+            
+            # Registrar métrica de falha
+            metrics = get_metrics()
+            metrics.record_click_to_call(
+                domain_uuid=request.domain_uuid,
+                extension=request.extension,
+                client_number=request.client_number,
+                ticket_id=request.ticket_id,
+                status="failed"
+            )
             
             return OriginateResponse(
                 success=False,
