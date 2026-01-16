@@ -187,8 +187,13 @@ class HandoffHandler:
                     
         except Exception as e:
             logger.error(
-                f"Error checking online agents: {e}",
-                extra={"call_uuid": self.call_uuid}
+                f"Error checking online agents: {type(e).__name__}: {e}",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "url": f"{OMNIPLAY_API_URL}/api/voice/agents/online",
+                    "company_id": self.config.omniplay_company_id,
+                },
+                exc_info=True  # Mostrar traceback completo
             )
             return {"has_online_agents": False, "agents": [], "dial_string": None}
     
@@ -358,8 +363,13 @@ class HandoffHandler:
                     
         except Exception as e:
             logger.error(
-                f"Error creating fallback ticket: {e}",
-                extra={"call_uuid": self.call_uuid}
+                f"Error creating fallback ticket: {type(e).__name__}: {e}",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "url": f"{OMNIPLAY_API_URL}/api/tickets/realtime-handoff",
+                    "company_id": self.config.omniplay_company_id,
+                },
+                exc_info=True  # Mostrar traceback completo
             )
             return HandoffResult(
                 success=False,
@@ -430,7 +440,9 @@ class HandoffHandler:
                 "reason": reason,
                 "turns": self._turn_count,
                 "has_audio": bool(audio_data),
-                "has_recording_url": bool(recording_url)
+                "has_recording_url": bool(recording_url),
+                "omniplay_company_id": self.config.omniplay_company_id,
+                "omniplay_api_url": OMNIPLAY_API_URL,
             }
         )
         
