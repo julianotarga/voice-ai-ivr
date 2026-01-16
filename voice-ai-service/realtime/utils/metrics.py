@@ -58,6 +58,7 @@ class RealtimeMetrics:
             self._init_prometheus()
     
     def _init_prometheus(self):
+        # Métricas de sessão
         self.calls_total = Counter('voice_ai_realtime_calls_total', 'Total calls', ['domain_uuid', 'provider', 'outcome'])
         self.audio_chunks = Counter('voice_ai_realtime_audio_chunks_total', 'Audio chunks', ['domain_uuid', 'direction'])
         self.audio_bytes = Counter('voice_ai_realtime_audio_bytes_total', 'Audio bytes', ['domain_uuid', 'direction'])
@@ -65,6 +66,46 @@ class RealtimeMetrics:
             ['domain_uuid', 'provider'], buckets=[0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 2.0])
         self.active_sessions = Gauge('voice_ai_realtime_active_sessions', 'Active sessions', ['domain_uuid', 'provider'])
         self.health_score = Gauge('voice_ai_realtime_health_score', 'Realtime health score (0-100)', ['domain_uuid', 'provider'])
+        
+        # FASE 6: Métricas de Transfer/Handoff
+        self.transfers_total = Counter(
+            'voice_ai_transfers_total', 
+            'Total transfer attempts', 
+            ['domain_uuid', 'status', 'destination_type']
+        )
+        self.transfers_duration = Histogram(
+            'voice_ai_transfers_duration_seconds', 
+            'Transfer duration (ring to answer/hangup)', 
+            ['domain_uuid', 'status'],
+            buckets=[5, 10, 15, 20, 30, 45, 60, 90, 120]
+        )
+        
+        # FASE 6: Métricas de Callback
+        self.callbacks_total = Counter(
+            'voice_ai_callbacks_total', 
+            'Total callbacks created', 
+            ['domain_uuid', 'status']
+        )
+        self.callbacks_completion_time = Histogram(
+            'voice_ai_callbacks_completion_seconds', 
+            'Time from callback creation to completion', 
+            ['domain_uuid'],
+            buckets=[60, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
+        )
+        
+        # FASE 6: Métricas de Extension Status
+        self.extension_checks_total = Counter(
+            'voice_ai_extension_checks_total', 
+            'Extension availability checks', 
+            ['domain_uuid', 'status']
+        )
+        
+        # FASE 6: Métricas de Click-to-Call
+        self.click_to_call_total = Counter(
+            'voice_ai_click_to_call_total', 
+            'Click-to-call originations', 
+            ['domain_uuid', 'status']
+        )
     
     def session_started(self, domain_uuid: str, call_uuid: str, provider: str) -> SessionMetrics:
         metrics = SessionMetrics(domain_uuid=domain_uuid, call_uuid=call_uuid, provider=provider)
@@ -157,6 +198,192 @@ class RealtimeMetrics:
             yield
         finally:
             self.record_latency(call_uuid, time.time() - start)
+    
+    # =========================================================================
+    # FASE 6: Métodos para Transfer/Callback
+    # =========================================================================
+    
+    def record_transfer(
+        self,
+        call_uuid: str,
+        status: str,
+        destination: Optional[str] = None,
+        destination_type: str = "extension",
+        duration_ms: Optional[int] = None
+    ) -> None:
+        """
+        Registra uma tentativa de transferência.
+        
+        Args:
+            call_uuid: UUID da chamada
+            status: success, no_answer, busy, offline, cancelled, failed
+            destination: Nome do destino (para logging)
+            destination_type: extension, ring_group, queue, external
+            duration_ms: Duração do ring até resposta/desistência
+        """
+        metrics = self._sessions.get(call_uuid)
+        domain_uuid = metrics.domain_uuid if metrics else "unknown"
+        
+        if PROMETHEUS_AVAILABLE:
+            self.transfers_total.labels(
+                domain_uuid=domain_uuid,
+                status=status,
+                destination_type=destination_type
+            ).inc()
+            
+            if duration_ms:
+                self.transfers_duration.labels(
+                    domain_uuid=domain_uuid,
+                    status=status
+                ).observe(duration_ms / 1000.0)
+        
+        logger.info(
+            "Transfer recorded",
+            extra={
+                "call_uuid": call_uuid,
+                "domain_uuid": domain_uuid,
+                "status": status,
+                "destination": destination,
+                "destination_type": destination_type,
+                "duration_ms": duration_ms,
+            }
+        )
+    
+    def record_callback_created(
+        self,
+        domain_uuid: str,
+        ticket_id: int,
+        intended_for: Optional[str] = None,
+        scheduled: bool = False
+    ) -> None:
+        """
+        Registra criação de callback.
+        
+        Args:
+            domain_uuid: UUID do tenant
+            ticket_id: ID do ticket
+            intended_for: Nome do destino pretendido
+            scheduled: Se é agendado ou imediato
+        """
+        if PROMETHEUS_AVAILABLE:
+            self.callbacks_total.labels(
+                domain_uuid=domain_uuid,
+                status="created"
+            ).inc()
+        
+        logger.info(
+            "Callback created",
+            extra={
+                "domain_uuid": domain_uuid,
+                "ticket_id": ticket_id,
+                "intended_for": intended_for,
+                "scheduled": scheduled,
+            }
+        )
+    
+    def record_callback_completed(
+        self,
+        domain_uuid: str,
+        ticket_id: int,
+        status: str,
+        wait_time_seconds: Optional[float] = None
+    ) -> None:
+        """
+        Registra conclusão de callback.
+        
+        Args:
+            domain_uuid: UUID do tenant
+            ticket_id: ID do ticket
+            status: completed, expired, cancelled, failed
+            wait_time_seconds: Tempo entre criação e conclusão
+        """
+        if PROMETHEUS_AVAILABLE:
+            self.callbacks_total.labels(
+                domain_uuid=domain_uuid,
+                status=status
+            ).inc()
+            
+            if wait_time_seconds and status == "completed":
+                self.callbacks_completion_time.labels(
+                    domain_uuid=domain_uuid
+                ).observe(wait_time_seconds)
+        
+        logger.info(
+            "Callback completed",
+            extra={
+                "domain_uuid": domain_uuid,
+                "ticket_id": ticket_id,
+                "status": status,
+                "wait_time_seconds": wait_time_seconds,
+            }
+        )
+    
+    def record_extension_check(
+        self,
+        domain_uuid: str,
+        extension: str,
+        status: str,
+        available: bool
+    ) -> None:
+        """
+        Registra verificação de disponibilidade de ramal.
+        
+        Args:
+            domain_uuid: UUID do tenant
+            extension: Número do ramal
+            status: available, in_call, dnd, offline, unknown
+            available: Se está disponível
+        """
+        if PROMETHEUS_AVAILABLE:
+            self.extension_checks_total.labels(
+                domain_uuid=domain_uuid,
+                status=status
+            ).inc()
+        
+        logger.debug(
+            "Extension check",
+            extra={
+                "domain_uuid": domain_uuid,
+                "extension": extension,
+                "status": status,
+                "available": available,
+            }
+        )
+    
+    def record_click_to_call(
+        self,
+        domain_uuid: str,
+        extension: str,
+        client_number: str,
+        ticket_id: Optional[int],
+        status: str
+    ) -> None:
+        """
+        Registra originação de click-to-call.
+        
+        Args:
+            domain_uuid: UUID do tenant
+            extension: Ramal do atendente
+            client_number: Número do cliente
+            ticket_id: ID do ticket de callback
+            status: initiated, connected, failed, agent_no_answer, client_no_answer
+        """
+        if PROMETHEUS_AVAILABLE:
+            self.click_to_call_total.labels(
+                domain_uuid=domain_uuid,
+                status=status
+            ).inc()
+        
+        logger.info(
+            "Click-to-call recorded",
+            extra={
+                "domain_uuid": domain_uuid,
+                "extension": extension,
+                "client_number": client_number,
+                "ticket_id": ticket_id,
+                "status": status,
+            }
+        )
 
 
 _metrics: Optional[RealtimeMetrics] = None
