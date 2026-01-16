@@ -635,8 +635,13 @@ class RealtimeServer:
                                 extra={"call_uuid": call_uuid},
                             )
 
-                        # Enviar chunks com pacing
+                        # Enviar chunks com pacing PRECISO usando clock absoluto
+                        # FIX: Usar clock absoluto ao invés de sleep relativo para evitar drift
                         if streaming_started:
+                            import time
+                            chunk_interval = PCM16_CHUNK_MS / 1000.0  # 0.02s
+                            next_send_time = time.monotonic()
+                            
                             while buffered_chunks:
                                 buffered_generation, chunk_to_send = buffered_chunks.pop(0)
                                 if buffered_generation != playback_generation:
@@ -647,8 +652,14 @@ class RealtimeServer:
                                         _metrics.record_audio(call_uuid, "out", len(chunk_to_send))
                                     except Exception:
                                         pass
-                                    consecutive_underruns = 0  # Reset ao enviar com sucesso
-                                    await asyncio.sleep(PCM16_CHUNK_MS / 1000.0)
+                                    consecutive_underruns = 0
+                                    
+                                    # Clock absoluto: dormir apenas o tempo restante até próximo slot
+                                    next_send_time += chunk_interval
+                                    sleep_duration = next_send_time - time.monotonic()
+                                    if sleep_duration > 0:
+                                        await asyncio.sleep(sleep_duration)
+                                    # Se sleep_duration <= 0, estamos atrasados - não dormir!
                                 except Exception as e:
                                     if allow_streamaudio_fallback:
                                         playback_mode = "streamaudio"
@@ -665,14 +676,14 @@ class RealtimeServer:
                                 try:
                                     c = await asyncio.wait_for(
                                         audio_out_queue.get(),
-                                        timeout=PCM16_CHUNK_MS / 1000.0,
+                                        timeout=chunk_interval,
                                     )
                                 except asyncio.TimeoutError:
                                     underrun_count += 1
                                     consecutive_underruns += 1
                                     _metrics.record_playback_underrun(call_uuid)
                                     
-                                    # Logar apenas no primeiro, ou a cada 10, ou quando vai resetar
+                                    # Logar apenas no primeiro, ou a cada 50
                                     if underrun_count == 1 or underrun_count % 50 == 0:
                                         logger.warning(
                                             f"Audio underrun #{underrun_count} (consecutive: {consecutive_underruns})",
@@ -691,7 +702,8 @@ class RealtimeServer:
                                         )
                                         break
                                     else:
-                                        # Micro-pausa: continuar no loop sem resetar
+                                        # Atualizar clock mesmo em underrun para manter sincronização
+                                        next_send_time += chunk_interval
                                         continue
 
                                 if c is None:
@@ -700,14 +712,19 @@ class RealtimeServer:
                                 if c_generation != playback_generation:
                                     continue
 
-                                consecutive_underruns = 0  # Reset ao receber novo chunk
+                                consecutive_underruns = 0
                                 try:
                                     await websocket.send(c_bytes)
                                     try:
                                         _metrics.record_audio(call_uuid, "out", len(c_bytes))
                                     except Exception:
                                         pass
-                                    await asyncio.sleep(PCM16_CHUNK_MS / 1000.0)
+                                    
+                                    # Clock absoluto preciso
+                                    next_send_time += chunk_interval
+                                    sleep_duration = next_send_time - time.monotonic()
+                                    if sleep_duration > 0:
+                                        await asyncio.sleep(sleep_duration)
                                 except Exception as e:
                                     if allow_streamaudio_fallback:
                                         playback_mode = "streamaudio"
