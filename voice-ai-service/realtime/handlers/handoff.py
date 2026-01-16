@@ -117,9 +117,19 @@ class HandoffHandler:
             if self.config.omniplay_company_id:
                 headers["X-Company-Id"] = str(self.config.omniplay_company_id)
             
+            # Timeout de 10s para primeira conexão (DNS + TLS handshake)
+            # O handoff agora roda em background, não bloqueia mais o áudio
             self._http_session = aiohttp.ClientSession(
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=3)  # Timeout curto para não bloquear áudio
+                timeout=aiohttp.ClientTimeout(total=10, connect=5)
+            )
+            logger.info(
+                f"HTTP session created for OmniPlay API",
+                extra={
+                    "api_url": OMNIPLAY_API_URL,
+                    "company_id": self.config.omniplay_company_id,
+                    "has_token": bool(OMNIPLAY_SERVICE_TOKEN),
+                }
             )
         return self._http_session
     
