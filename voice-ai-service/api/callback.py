@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 # ESL Client para comunicação com FreeSWITCH
-from realtime.handlers.esl_client import ESLClient, create_esl_client
+from realtime.handlers.esl_client import AsyncESLClient, get_esl_client
 
 logger = logging.getLogger(__name__)
 
@@ -112,29 +112,22 @@ class CallStatusResponse(BaseModel):
 # ESL Commands
 # =============================================================================
 
-async def get_esl_client() -> ESLClient:
+async def get_esl() -> AsyncESLClient:
     """Dependency para obter cliente ESL."""
-    host = os.getenv("ESL_HOST", "127.0.0.1")
-    port = int(os.getenv("ESL_PORT", "8021"))
-    password = os.getenv("ESL_PASSWORD", "ClueCon")
+    client = get_esl_client()
     
-    client = create_esl_client(
-        host=host,
-        port=port,
-        password=password
-    )
-    
-    if not await client.connect():
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to connect to FreeSWITCH ESL"
-        )
+    if not client.is_connected:
+        if not await client.connect():
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to connect to FreeSWITCH ESL"
+            )
     
     return client
 
 
 async def check_extension_registered(
-    esl: ESLClient,
+    esl: AsyncESLClient,
     extension: str,
     domain_uuid: str
 ) -> bool:
@@ -156,7 +149,7 @@ async def check_extension_registered(
 
 
 async def check_extension_in_call(
-    esl: ESLClient,
+    esl: AsyncESLClient,
     extension: str
 ) -> bool:
     """Verifica se ramal está em chamada."""
@@ -207,7 +200,7 @@ async def check_availability(request: CheckAvailabilityRequest):
         raise HTTPException(status_code=400, detail="domain_uuid is required")
     
     try:
-        esl = await get_esl_client()
+        esl = await get_esl()
         
         # 1. Verificar registro
         is_registered = await check_extension_registered(
@@ -292,7 +285,7 @@ async def originate_callback(request: OriginateRequest):
     )
     
     try:
-        esl = await get_esl_client()
+        esl = await get_esl()
         
         # 1. Double-check disponibilidade
         is_registered = await check_extension_registered(
@@ -428,7 +421,7 @@ async def get_call_status(call_uuid: str):
     Consulta o FreeSWITCH para obter estado atual.
     """
     try:
-        esl = await get_esl_client()
+        esl = await get_esl()
         
         # Verificar se a chamada está ativa
         result = await esl.execute_api(f"uuid_exists {call_uuid}")
@@ -471,7 +464,7 @@ async def cancel_callback(call_uuid: str):
     Cancela uma chamada de callback em andamento.
     """
     try:
-        esl = await get_esl_client()
+        esl = await get_esl()
         
         # Verificar se a chamada existe
         exists = await esl.execute_api(f"uuid_exists {call_uuid}")

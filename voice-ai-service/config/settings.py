@@ -117,6 +117,38 @@ class Settings(BaseSettings):
     # ============================================
     RATE_LIMIT_RPM: int = 60  # Requests per minute
     
+    # ============================================
+    # ESL (FREESWITCH EVENT SOCKET)
+    # ============================================
+    ESL_HOST: str = "127.0.0.1"
+    ESL_PORT: int = 8021
+    ESL_PASSWORD: str = "ClueCon"
+    ESL_CONNECT_TIMEOUT: float = 5.0
+    ESL_READ_TIMEOUT: float = 30.0
+    
+    # ============================================
+    # OMNIPLAY INTEGRATION
+    # ============================================
+    OMNIPLAY_API_URL: str = "http://host.docker.internal:8080"
+    OMNIPLAY_API_TIMEOUT_MS: int = 10000
+    VOICE_AI_SERVICE_TOKEN: Optional[str] = None
+    
+    # ============================================
+    # TRANSFER SETTINGS
+    # ============================================
+    TRANSFER_DEFAULT_TIMEOUT: int = 30
+    TRANSFER_ANNOUNCE_ENABLED: bool = True
+    TRANSFER_MUSIC_ON_HOLD: str = "local_stream://moh"
+    TRANSFER_CACHE_TTL_SECONDS: int = 300
+    
+    # ============================================
+    # CALLBACK SETTINGS
+    # ============================================
+    CALLBACK_ENABLED: bool = True
+    CALLBACK_EXPIRATION_HOURS: int = 24
+    CALLBACK_MAX_NOTIFICATIONS: int = 5
+    CALLBACK_MIN_INTERVAL_MINUTES: int = 10
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
