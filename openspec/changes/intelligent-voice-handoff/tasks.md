@@ -1732,6 +1732,29 @@
   - Import: `initCallbackMonitorJob`
   - Inicialização: `initCallbackMonitorJob()`
 
+### 6.4 Implementações Adicionais ✅ 2026-01-16
+
+- [x] **6.4.1** Criar página completa de Callbacks no Frontend
+  - Arquivo: `frontend/src/pages/Callbacks/index.js`
+  - Lista com filtros e paginação
+  - Tabs: Pendentes | Em Andamento | Histórico
+  - Cards de estatísticas
+  - Diálogo de detalhes com transcrição
+
+- [x] **6.4.2** Registrar rota /callbacks no frontend
+  - Arquivo: `frontend/src/routes/index.js`
+  - Lazy loading implementado
+
+- [x] **6.4.3** Integrar handler de respostas WhatsApp no wbotMessageListener
+  - Arquivo: `backend/src/services/WbotServices/wbotMessageListener.ts`
+  - Verificação de resposta curta (SIM/NÃO/DEPOIS)
+  - Ação automática baseada na resposta
+  - Envio de mensagem de confirmação
+
+- [x] **6.4.4** Corrigir ordenação de rotas (stats antes de :id)
+  - Arquivo: `backend/src/routes/callbackRoutes.ts`
+  - GET /stats movido para antes de GET /:id
+
 ---
 
 ## Checklist Final de Entrega
@@ -1742,10 +1765,16 @@
 - [ ] Guia de configuração de destinos de transferência
 - [ ] Guia de configuração de template WhatsApp
 
-### Testes
-- [ ] Testes unitários Voice AI (coverage > 80%)
-- [ ] Testes unitários OmniPlay (coverage > 80%)
-- [ ] Testes de integração end-to-end
+### Testes ✅ 2026-01-16
+- [x] Testes unitários Voice AI (coverage > 80%)
+  - `tests/unit/test_callback_handler.py` - CallbackHandler, PhoneNumberUtils, ResponseAnalyzer
+  - `tests/unit/test_transfer_destination_loader.py` - TransferDestination, loader
+  - `tests/unit/test_callback_api.py` - Models, Enums, Helpers
+- [x] Testes unitários OmniPlay (coverage > 80%)
+  - `__tests__/controllers/CallbackController.spec.ts` - Todos endpoints
+  - `__tests__/services/HandleCallbackWhatsAppResponse.spec.ts` - WhatsApp handler
+- [x] Testes de integração end-to-end
+  - `tests/integration/test_callback_flow.py` - Fluxo completo
 - [ ] Teste de carga (10 transfers simultâneos)
 
 ### Deploy
