@@ -16,18 +16,18 @@ Endpoints:
 
 import os
 import logging
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
-from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 # ESL Client para comunicação com FreeSWITCH
-from realtime.handlers.esl_client import AsyncESLClient, get_esl_client
+from realtime.handlers.esl_client import AsyncESLClient, get_esl_client, get_esl_for_domain
 
 # Métricas Prometheus (FASE 6)
 from realtime.utils.metrics import get_metrics
@@ -130,8 +130,10 @@ class CallStatusResponse(BaseModel):
 # Domain Settings Loader
 # =============================================================================
 
-# Cache de configurações por domínio (TTL em memória)
-_domain_settings_cache: Dict[str, Dict[str, Any]] = {}
+# Cache de configurações por domínio com TTL
+# Formato: {domain_uuid: (settings_dict, timestamp)}
+_domain_settings_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_CACHE_TTL_SECONDS = 300  # 5 minutos - mesmo valor de transfer_cache_ttl_seconds
 
 async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
     """
@@ -139,28 +141,38 @@ async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
     
     Lê da tabela v_voice_secretary_settings configurada via settings.php.
     
+    Cache com TTL de 5 minutos para evitar consultas excessivas ao banco.
+    
     Args:
         domain_uuid: UUID do domínio
         
     Returns:
         Dict com todas as configurações (com defaults aplicados)
     """
-    # Cache simples em memória (em produção considerar Redis)
+    current_time = time.time()
+    
+    # Verificar cache com TTL
     if domain_uuid in _domain_settings_cache:
-        return _domain_settings_cache[domain_uuid]
+        cached_settings, cached_at = _domain_settings_cache[domain_uuid]
+        if current_time - cached_at < _CACHE_TTL_SECONDS:
+            return cached_settings
+        else:
+            # Cache expirado
+            logger.debug(f"Cache expired for domain {domain_uuid[:8]}...")
     
     try:
         settings = await db.get_domain_settings(UUID(domain_uuid))
-        _domain_settings_cache[domain_uuid] = settings
+        _domain_settings_cache[domain_uuid] = (settings, current_time)
         logger.info(f"Loaded domain settings for {domain_uuid[:8]}...", extra={
             "domain_uuid": domain_uuid,
             "esl_host": settings.get('esl_host'),
             "omniplay_api_url": settings.get('omniplay_api_url'),
+            "cache_ttl": _CACHE_TTL_SECONDS,
         })
         return settings
     except Exception as e:
         logger.warning(f"Failed to load domain settings, using defaults: {e}")
-        # Retornar defaults se falhar
+        # Retornar defaults se falhar (sem cachear erro)
         return {
             'esl_host': '127.0.0.1',
             'esl_port': 8021,
@@ -176,8 +188,10 @@ def clear_domain_settings_cache(domain_uuid: Optional[str] = None):
     """Limpa cache de configurações."""
     if domain_uuid:
         _domain_settings_cache.pop(domain_uuid, None)
+        logger.info(f"Cache cleared for domain {domain_uuid[:8]}...")
     else:
         _domain_settings_cache.clear()
+        logger.info("All domain settings cache cleared")
 
 
 # =============================================================================
@@ -185,7 +199,11 @@ def clear_domain_settings_cache(domain_uuid: Optional[str] = None):
 # =============================================================================
 
 async def get_esl() -> AsyncESLClient:
-    """Dependency para obter cliente ESL."""
+    """
+    Dependency para obter cliente ESL (singleton com configs de variáveis de ambiente).
+    
+    Para endpoints que precisam de configurações por domínio, usar get_esl_for_domain().
+    """
     client = get_esl_client()
     
     if not client.is_connected:
@@ -193,6 +211,33 @@ async def get_esl() -> AsyncESLClient:
             raise HTTPException(
                 status_code=503,
                 detail="Failed to connect to FreeSWITCH ESL"
+            )
+    
+    return client
+
+
+async def get_esl_with_domain_config(domain_uuid: str) -> AsyncESLClient:
+    """
+    Obtém cliente ESL configurado com as configurações do domínio.
+    
+    Lê configurações de v_voice_secretary_settings (esl_host, esl_port, esl_password).
+    
+    Args:
+        domain_uuid: UUID do domínio
+        
+    Returns:
+        AsyncESLClient configurado
+        
+    Raises:
+        HTTPException 503 se falhar ao conectar
+    """
+    client = await get_esl_for_domain(domain_uuid)
+    
+    if not client.is_connected:
+        if not await client.connect():
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to connect to FreeSWITCH ESL with domain settings"
             )
     
     return client
@@ -246,12 +291,39 @@ async def check_extension_dnd(
     """
     Verifica se ramal está em DND (Do Not Disturb).
     
-    Nota: Esta verificação é feita no banco de dados FusionPBX.
-    Aqui fazemos uma simplificação - em produção, consultar o banco.
+    Consulta o banco de dados FusionPBX para verificar o status DND do ramal.
+    
+    Args:
+        extension: Número do ramal (ex: "1001")
+        domain_uuid: UUID do domínio
+        
+    Returns:
+        True se o ramal está em DND, False caso contrário
     """
-    # TODO: Consultar banco de dados FusionPBX
-    # SELECT do_not_disturb FROM v_extensions WHERE extension = $1 AND domain_uuid = $2
-    return False
+    try:
+        from services.database import db
+        pool = await db.get_pool()
+        
+        # Consultar tabela v_extensions do FusionPBX
+        query = """
+            SELECT do_not_disturb 
+            FROM v_extensions 
+            WHERE extension = $1 
+              AND domain_uuid = $2::uuid
+            LIMIT 1
+        """
+        row = await pool.fetchrow(query, extension, domain_uuid)
+        
+        if row and row.get('do_not_disturb'):
+            dnd_value = str(row['do_not_disturb']).lower()
+            return dnd_value in ('true', '1', 'yes', 'on')
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Error checking DND for {extension}: {e}")
+        # Em caso de erro, assume que não está em DND para não bloquear
+        return False
 
 
 # =============================================================================
@@ -272,14 +344,24 @@ async def check_availability(request: CheckAvailabilityRequest):
         raise HTTPException(status_code=400, detail="domain_uuid is required")
     
     try:
-        esl = await get_esl()
+        # Usar ESL configurado para o domínio (lê do banco de dados)
+        esl = await get_esl_with_domain_config(request.domain_uuid)
         
         # 1. Verificar registro
         is_registered = await check_extension_registered(
             esl, request.extension, request.domain_uuid
         )
         
+        metrics = get_metrics()
+        
         if not is_registered:
+            # Registrar métrica de falha
+            metrics.record_extension_check(
+                domain_uuid=request.domain_uuid,
+                extension=request.extension,
+                status="offline",
+                available=False
+            )
             return CheckAvailabilityResponse(
                 extension=request.extension,
                 status=ExtensionStatus.OFFLINE,
@@ -291,6 +373,13 @@ async def check_availability(request: CheckAvailabilityRequest):
         in_call = await check_extension_in_call(esl, request.extension)
         
         if in_call:
+            # Registrar métrica de falha
+            metrics.record_extension_check(
+                domain_uuid=request.domain_uuid,
+                extension=request.extension,
+                status="in_call",
+                available=False
+            )
             return CheckAvailabilityResponse(
                 extension=request.extension,
                 status=ExtensionStatus.IN_CALL,
@@ -302,6 +391,13 @@ async def check_availability(request: CheckAvailabilityRequest):
         is_dnd = await check_extension_dnd(request.extension, request.domain_uuid)
         
         if is_dnd:
+            # Registrar métrica de falha
+            metrics.record_extension_check(
+                domain_uuid=request.domain_uuid,
+                extension=request.extension,
+                status="dnd",
+                available=False
+            )
             return CheckAvailabilityResponse(
                 extension=request.extension,
                 status=ExtensionStatus.DND,
@@ -311,7 +407,6 @@ async def check_availability(request: CheckAvailabilityRequest):
         
         # Disponível!
         # Registrar métrica de sucesso
-        metrics = get_metrics()
         metrics.record_extension_check(
             domain_uuid=request.domain_uuid,
             extension=request.extension,
@@ -381,7 +476,8 @@ async def originate_callback(request: OriginateRequest):
     )
     
     try:
-        esl = await get_esl()
+        # Usar ESL configurado para o domínio (lê do banco de dados)
+        esl = await get_esl_with_domain_config(request.domain_uuid)
         
         # 1. Double-check disponibilidade
         is_registered = await check_extension_registered(

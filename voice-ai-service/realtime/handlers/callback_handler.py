@@ -28,9 +28,9 @@ from .transfer_destination_loader import TransferDestination
 
 logger = logging.getLogger(__name__)
 
-# Configurações
-OMNIPLAY_API_URL = os.getenv("OMNIPLAY_API_URL", "http://host.docker.internal:8080")
-VOICE_AI_SERVICE_TOKEN = os.getenv("VOICE_AI_SERVICE_TOKEN", "")
+# Configurações padrão (usadas se não houver config do banco)
+DEFAULT_OMNIPLAY_API_URL = os.getenv("OMNIPLAY_API_URL", "http://host.docker.internal:8080")
+DEFAULT_VOICE_AI_SERVICE_TOKEN = os.getenv("VOICE_AI_SERVICE_TOKEN", "")
 
 
 class CallbackStatus(Enum):
@@ -342,6 +342,7 @@ class CallbackHandler:
         secretary_uuid: Optional[str] = None,
         omniplay_company_id: Optional[int] = None,
         on_say: Optional[Callable[[str], Any]] = None,
+        domain_settings: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -351,6 +352,7 @@ class CallbackHandler:
             secretary_uuid: UUID da secretária
             omniplay_company_id: ID da empresa no OmniPlay
             on_say: Callback para enviar mensagem TTS
+            domain_settings: Configurações do domínio (lidas de v_voice_secretary_settings)
         """
         self.domain_uuid = domain_uuid
         self.call_uuid = call_uuid
@@ -358,6 +360,17 @@ class CallbackHandler:
         self.secretary_uuid = secretary_uuid
         self.omniplay_company_id = omniplay_company_id
         self._on_say = on_say
+        
+        # Configurações do domínio (do banco de dados)
+        self._domain_settings = domain_settings or {}
+        
+        # URLs e tokens (priorizar configurações do banco)
+        self._omniplay_api_url = self._domain_settings.get(
+            'omniplay_api_url', DEFAULT_OMNIPLAY_API_URL
+        )
+        self._voice_ai_service_token = self._domain_settings.get(
+            'omniplay_api_key', DEFAULT_VOICE_AI_SERVICE_TOKEN
+        )
         
         # Dados do callback
         self._callback_data = CallbackData(callback_number="")
@@ -372,20 +385,25 @@ class CallbackHandler:
         return self._callback_data
     
     async def _get_http_session(self) -> aiohttp.ClientSession:
-        """Obtém sessão HTTP."""
+        """Obtém sessão HTTP com configurações do domínio."""
         if self._http_session is None or self._http_session.closed:
             headers = {
                 "Content-Type": "application/json",
                 "X-Service-Name": "voice-ai-realtime",
             }
-            if VOICE_AI_SERVICE_TOKEN:
-                headers["Authorization"] = f"Bearer {VOICE_AI_SERVICE_TOKEN}"
+            # Usar token das configurações do domínio
+            if self._voice_ai_service_token:
+                headers["Authorization"] = f"Bearer {self._voice_ai_service_token}"
             if self.omniplay_company_id:
                 headers["X-Company-Id"] = str(self.omniplay_company_id)
             
+            # Timeout das configurações
+            timeout_ms = self._domain_settings.get('omniplay_api_timeout_ms', 10000)
+            timeout_seconds = timeout_ms / 1000.0
+            
             self._http_session = aiohttp.ClientSession(
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds)
             )
         return self._http_session
     
@@ -537,7 +555,7 @@ class CallbackHandler:
         
         try:
             session = await self._get_http_session()
-            url = f"{OMNIPLAY_API_URL}/api/callbacks"
+            url = f"{self._omniplay_api_url}/api/callbacks"
             
             logger.info(
                 "Creating callback ticket",

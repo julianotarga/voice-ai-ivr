@@ -22,7 +22,7 @@ import uuid as uuid_module
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 import re
 
 logger = logging.getLogger(__name__)
@@ -792,3 +792,63 @@ def get_esl_client() -> AsyncESLClient:
     if _esl_client is None:
         _esl_client = AsyncESLClient()
     return _esl_client
+
+
+def create_esl_client_from_settings(settings: Dict[str, Any]) -> AsyncESLClient:
+    """
+    Cria cliente ESL com configurações específicas.
+    
+    Útil quando precisamos usar configurações do banco de dados ao invés de
+    variáveis de ambiente.
+    
+    Args:
+        settings: Dict com configurações (esl_host, esl_port, esl_password)
+        
+    Returns:
+        Novo AsyncESLClient configurado
+    """
+    return AsyncESLClient(
+        host=settings.get('esl_host', ESL_HOST),
+        port=int(settings.get('esl_port', ESL_PORT)),
+        password=settings.get('esl_password', ESL_PASSWORD)
+    )
+
+
+async def get_esl_for_domain(domain_uuid: str) -> AsyncESLClient:
+    """
+    Retorna ESL client configurado para o domínio.
+    
+    Busca configurações do banco de dados e cria cliente apropriado.
+    Se falhar, retorna singleton com configurações padrão.
+    
+    NOTA: Para melhor performance em produção, considerar cache de clientes por domínio.
+    
+    Args:
+        domain_uuid: UUID do domínio
+        
+    Returns:
+        AsyncESLClient configurado
+    """
+    try:
+        from services.database import db
+        from uuid import UUID
+        
+        settings = await db.get_domain_settings(UUID(domain_uuid))
+        
+        # Se configurações são diferentes do singleton, criar novo cliente
+        singleton = get_esl_client()
+        
+        db_host = settings.get('esl_host', ESL_HOST)
+        db_port = int(settings.get('esl_port', ESL_PORT))
+        
+        if singleton.host != db_host or singleton.port != db_port:
+            # Configurações diferentes - criar cliente específico
+            client = create_esl_client_from_settings(settings)
+            return client
+        
+        # Mesmas configurações - usar singleton
+        return singleton
+        
+    except Exception as e:
+        logger.warning(f"Failed to load ESL settings for domain {domain_uuid}, using defaults: {e}")
+        return get_esl_client()

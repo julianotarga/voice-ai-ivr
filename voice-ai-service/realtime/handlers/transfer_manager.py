@@ -39,10 +39,10 @@ from .transfer_destination_loader import (
 
 logger = logging.getLogger(__name__)
 
-# Configurações
-TRANSFER_DEFAULT_TIMEOUT = int(os.getenv("TRANSFER_DEFAULT_TIMEOUT", "30"))
-TRANSFER_ANNOUNCE_ENABLED = os.getenv("TRANSFER_ANNOUNCE_ENABLED", "true").lower() == "true"
-TRANSFER_MUSIC_ON_HOLD = os.getenv("TRANSFER_MUSIC_ON_HOLD", "local_stream://moh")
+# Configurações padrão (usadas se não houver config do banco)
+DEFAULT_TRANSFER_TIMEOUT = int(os.getenv("TRANSFER_DEFAULT_TIMEOUT", "30"))
+DEFAULT_TRANSFER_ANNOUNCE_ENABLED = os.getenv("TRANSFER_ANNOUNCE_ENABLED", "true").lower() == "true"
+DEFAULT_TRANSFER_MUSIC_ON_HOLD = os.getenv("TRANSFER_MUSIC_ON_HOLD", "local_stream://moh")
 
 
 class TransferStatus(Enum):
@@ -204,6 +204,7 @@ class TransferManager:
         destination_loader: Optional[TransferDestinationLoader] = None,
         on_resume: Optional[Callable[[], Any]] = None,
         on_transfer_complete: Optional[Callable[[TransferResult], Any]] = None,
+        domain_settings: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -215,6 +216,7 @@ class TransferManager:
             destination_loader: Loader de destinos (opcional, usa singleton)
             on_resume: Callback quando retomar Voice AI
             on_transfer_complete: Callback quando transferência completar
+            domain_settings: Configurações do domínio (lidas de v_voice_secretary_settings)
         """
         self.domain_uuid = domain_uuid
         self.call_uuid = call_uuid
@@ -226,6 +228,20 @@ class TransferManager:
         
         self._on_resume = on_resume
         self._on_transfer_complete = on_transfer_complete
+        
+        # Configurações do domínio (do banco de dados)
+        self._domain_settings = domain_settings or {}
+        
+        # Configurações de transferência (priorizar do banco)
+        self._transfer_default_timeout = self._domain_settings.get(
+            'transfer_default_timeout', DEFAULT_TRANSFER_TIMEOUT
+        )
+        self._transfer_announce_enabled = self._domain_settings.get(
+            'transfer_announce_enabled', DEFAULT_TRANSFER_ANNOUNCE_ENABLED
+        )
+        self._transfer_music_on_hold = self._domain_settings.get(
+            'transfer_music_on_hold', DEFAULT_TRANSFER_MUSIC_ON_HOLD
+        )
         
         # Estado da transferência atual
         self._current_transfer: Optional[TransferResult] = None
@@ -325,7 +341,7 @@ class TransferManager:
             TransferResult com status da transferência
         """
         start_time = datetime.utcnow()
-        timeout = timeout or destination.ring_timeout_seconds or TRANSFER_DEFAULT_TIMEOUT
+        timeout = timeout or destination.ring_timeout_seconds or self._transfer_default_timeout
         retries = 0
         max_retries = destination.max_retries if retry_on_busy else 1
         
@@ -582,7 +598,7 @@ class TransferManager:
         if not self._moh_active:
             success = await self._esl.uuid_broadcast(
                 self.call_uuid,
-                TRANSFER_MUSIC_ON_HOLD,
+                self._transfer_music_on_hold,
                 leg="aleg"
             )
             if success:
@@ -686,19 +702,41 @@ async def create_transfer_manager(
     secretary_uuid: Optional[str] = None,
     on_resume: Optional[Callable[[], Any]] = None,
     on_transfer_complete: Optional[Callable[[TransferResult], Any]] = None,
+    domain_settings: Optional[Dict[str, Any]] = None,
 ) -> TransferManager:
     """
     Cria e inicializa TransferManager.
     
     Esta função garante que ESL e loader estão conectados.
+    Carrega domain_settings do banco de dados se não fornecido.
+    
+    Args:
+        domain_uuid: UUID do tenant
+        call_uuid: UUID da chamada
+        caller_id: Número do chamador
+        secretary_uuid: UUID da secretária (opcional)
+        on_resume: Callback quando retomar Voice AI
+        on_transfer_complete: Callback quando transferência completar
+        domain_settings: Configurações do domínio (opcional, carrega do banco se None)
     """
+    # Carregar configurações do banco se não fornecidas
+    if domain_settings is None:
+        try:
+            from services.database import db
+            from uuid import UUID
+            domain_settings = await db.get_domain_settings(UUID(domain_uuid))
+        except Exception as e:
+            logger.warning(f"Failed to load domain settings: {e}")
+            domain_settings = {}
+    
     manager = TransferManager(
         domain_uuid=domain_uuid,
         call_uuid=call_uuid,
         caller_id=caller_id,
         secretary_uuid=secretary_uuid,
         on_resume=on_resume,
-        on_transfer_complete=on_transfer_complete
+        on_transfer_complete=on_transfer_complete,
+        domain_settings=domain_settings,
     )
     
     # Pré-carregar destinos
