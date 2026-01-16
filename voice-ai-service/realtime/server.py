@@ -585,6 +585,10 @@ class RealtimeServer:
             """
             Envia áudio para o FreeSWITCH usando protocolo rawAudio + binário.
             Fallback para streamAudio quando rawAudio falhar (opcional).
+            
+            FIX: Não resetar streaming_started após cada micro-pausa.
+            Problema anterior: cada pausa de 20ms forçava re-warmup de 300ms.
+            Solução: usar contador de underruns consecutivos para decidir reset.
             """
             nonlocal playback_mode
             try:
@@ -593,6 +597,8 @@ class RealtimeServer:
                 streamaudio_buffer = bytearray()
                 warmup_chunks = max(warmup_min, min(warmup_default, warmup_max))
                 underrun_count = 0
+                consecutive_underruns = 0  # NEW: contador de underruns consecutivos
+                max_consecutive_underruns = 5  # NEW: permitir até 5 underruns (100ms) antes de resetar
                 last_health_update = 0.0
 
                 while True:
@@ -623,6 +629,7 @@ class RealtimeServer:
                         # Iniciar streaming após warmup
                         if not streaming_started and len(buffered_chunks) >= warmup_chunks:
                             streaming_started = True
+                            consecutive_underruns = 0  # Reset ao iniciar
                             logger.debug(
                                 f"Warmup complete ({warmup_chunks} chunks), starting playback",
                                 extra={"call_uuid": call_uuid},
@@ -640,6 +647,7 @@ class RealtimeServer:
                                         _metrics.record_audio(call_uuid, "out", len(chunk_to_send))
                                     except Exception:
                                         pass
+                                    consecutive_underruns = 0  # Reset ao enviar com sucesso
                                     await asyncio.sleep(PCM16_CHUNK_MS / 1000.0)
                                 except Exception as e:
                                     if allow_streamaudio_fallback:
@@ -661,17 +669,30 @@ class RealtimeServer:
                                     )
                                 except asyncio.TimeoutError:
                                     underrun_count += 1
+                                    consecutive_underruns += 1
                                     _metrics.record_playback_underrun(call_uuid)
-                                    if underrun_count == 1 or underrun_count % 10 == 0:
+                                    
+                                    # Logar apenas no primeiro, ou a cada 10, ou quando vai resetar
+                                    if underrun_count == 1 or underrun_count % 50 == 0:
                                         logger.warning(
-                                            f"Audio underrun #{underrun_count} - queue empty for {PCM16_CHUNK_MS}ms",
+                                            f"Audio underrun #{underrun_count} (consecutive: {consecutive_underruns})",
                                             extra={"call_uuid": call_uuid, "underrun_count": underrun_count}
                                         )
-                                    if adaptive_warmup and warmup_chunks < warmup_max:
-                                        warmup_chunks += 1
-                                    # Sem mais áudio, resetar streaming e sair para aguardar novo burst
-                                    streaming_started = False
-                                    break
+                                    
+                                    # Só resetar streaming após múltiplos underruns consecutivos
+                                    if consecutive_underruns >= max_consecutive_underruns:
+                                        if adaptive_warmup and warmup_chunks < warmup_max:
+                                            warmup_chunks += 1
+                                        streaming_started = False
+                                        consecutive_underruns = 0
+                                        logger.debug(
+                                            f"Stream paused after {max_consecutive_underruns} underruns, waiting for new audio",
+                                            extra={"call_uuid": call_uuid}
+                                        )
+                                        break
+                                    else:
+                                        # Micro-pausa: continuar no loop sem resetar
+                                        continue
 
                                 if c is None:
                                     return
@@ -679,6 +700,7 @@ class RealtimeServer:
                                 if c_generation != playback_generation:
                                     continue
 
+                                consecutive_underruns = 0  # Reset ao receber novo chunk
                                 try:
                                     await websocket.send(c_bytes)
                                     try:
@@ -697,9 +719,11 @@ class RealtimeServer:
                                         break
                                     raise
 
-                            # Reset para próximo burst de áudio
-                            streaming_started = False
-                            if adaptive_warmup and underrun_count == 0 and warmup_chunks > warmup_min:
+                            # Só resetar streaming se saiu por underruns consecutivos
+                            # (Não resetar se saiu por outro motivo)
+                            if consecutive_underruns >= max_consecutive_underruns:
+                                streaming_started = False
+                            elif adaptive_warmup and underrun_count == 0 and warmup_chunks > warmup_min:
                                 warmup_chunks -= 1
 
                     if playback_mode == "streamaudio":
