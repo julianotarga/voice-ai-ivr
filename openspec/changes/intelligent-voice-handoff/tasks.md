@@ -32,7 +32,8 @@
 -- Arquivo: voice-ai-ivr/migrations/001_create_voice_transfer_destinations.sql
 ```
 
-- [ ] **0.1.1.1** Criar migration SQL idempotente
+- [x] **0.1.1.1** Criar migration SQL idempotente ✅ 2026-01-16
+  - Arquivo: `database/migrations/012_create_voice_transfer_destinations.sql`
   - Campos obrigatórios: `transfer_destination_uuid`, `domain_uuid`, `name`, `destination_type`, `destination_number`
   - Campos de aliases: `aliases JSONB DEFAULT '[]'`
   - Campos de timeout: `ring_timeout_seconds`, `max_retries`, `retry_delay_seconds`
@@ -40,7 +41,8 @@
   - Campos de horário: `working_hours JSONB`
   - Índices: `domain_uuid`, `secretary_uuid`, `is_enabled`
 
-- [ ] **0.1.1.2** Criar migration de dados iniciais (seed)
+- [x] **0.1.1.2** Criar migration de dados iniciais (seed) ✅ 2026-01-16
+  - Arquivo: `database/seeds/001_seed_transfer_destinations.sql`
   - Destino "Atendimento" (default, ring_group 9000)
   - Destino de exemplo "Suporte" (queue 5001)
   
@@ -50,7 +52,8 @@
   - Verificar seed data
 
 #### 0.1.2 Alterar tabela v_voice_secretaries (se necessário)
-- [ ] **0.1.2.1** Adicionar campos de configuração de transfer
+- [x] **0.1.2.1** Adicionar campos de configuração de transfer ✅ 2026-01-16
+  - Arquivo: `database/migrations/013_add_transfer_fields_to_secretaries.sql`
   ```sql
   ALTER TABLE v_voice_secretaries ADD COLUMN IF NOT EXISTS transfer_enabled BOOLEAN DEFAULT true;
   ALTER TABLE v_voice_secretaries ADD COLUMN IF NOT EXISTS transfer_default_timeout INT DEFAULT 30;
@@ -64,9 +67,10 @@
 -- Arquivo: backend/src/database/migrations/XXXXXX-add-callback-fields-to-tickets.ts
 ```
 
-- [ ] **0.2.1.1** Criar migration Sequelize
+- [x] **0.2.1.1** Criar migration Sequelize ✅ 2026-01-16
+  - Arquivo: `backend/src/database/migrations/20260116200000-add-callback-fields-to-tickets.ts`
   ```typescript
-  // Campos a adicionar:
+  // Campos adicionados:
   ticketType: ENUM('normal', 'callback', 'voicemail') DEFAULT 'normal'
   callbackNumber: VARCHAR(20)
   callbackExtension: VARCHAR(10)
@@ -86,7 +90,8 @@
   callbackNotifyViaWhatsApp: BOOLEAN DEFAULT false
   ```
 
-- [ ] **0.2.1.2** Adicionar campos de referência de voz
+- [x] **0.2.1.2** Adicionar campos de referência de voz ✅ 2026-01-16
+  - Incluído na mesma migration
   ```typescript
   voiceCallUuid: VARCHAR(50)
   voiceCallDate: TIMESTAMP
@@ -94,24 +99,31 @@
   voiceRecordingPath: VARCHAR(500)
   voiceTranscript: TEXT
   voiceSummary: TEXT
+  voiceDomainUuid: VARCHAR(50)  // Adicionado para integração FusionPBX
   ```
 
-- [ ] **0.2.1.3** Criar índices para callback
+- [x] **0.2.1.3** Criar índices para callback ✅ 2026-01-16
+  - Incluído na migration
   ```sql
   CREATE INDEX idx_tickets_callback_status ON "Tickets"("ticketType", "callbackStatus") 
     WHERE "ticketType" = 'callback';
   CREATE INDEX idx_tickets_callback_extension ON "Tickets"("callbackExtension") 
     WHERE "ticketType" = 'callback';
+  CREATE INDEX idx_tickets_callback_expires ON "Tickets"("callbackExpiresAt")
+    WHERE "ticketType" = 'callback' AND "callbackStatus" IN ('pending', 'notified');
+  CREATE INDEX idx_tickets_voice_call_uuid ON "Tickets"("voiceCallUuid")
+    WHERE "voiceCallUuid" IS NOT NULL;
   ```
 
-- [ ] **0.2.1.4** Atualizar model Ticket.ts com novos campos
+- [x] **0.2.1.4** Atualizar model Ticket.ts com novos campos ✅ 2026-01-16
+  - Arquivo: `backend/src/models/Ticket.ts`
 
 - [ ] **0.2.1.5** Testar migration em ambiente de dev
 
 #### 0.2.2 Criar tabela CallbackSettings (configurações por empresa)
-- [ ] **0.2.2.1** Criar migration
+- [x] **0.2.2.1** Criar migration ✅ 2026-01-16
+  - Arquivo: `backend/src/database/migrations/20260116200001-create-callback-settings.ts`
   ```typescript
-  // backend/src/database/migrations/XXXXXX-create-callback-settings.ts
   companyId: INT (FK)
   callbackTemplateId: INT (FK para QuickMessages, template WhatsApp)
   callbackExpirationHours: INT DEFAULT 24
@@ -122,11 +134,14 @@
   callbackAutoRetryMaxAttempts: INT DEFAULT 3
   ```
 
-- [ ] **0.2.2.2** Criar model CallbackSettings.ts
+- [x] **0.2.2.2** Criar model CallbackSettings.ts ✅ 2026-01-16
+  - Arquivo: `backend/src/models/CallbackSettings.ts`
+  - Registrado em: `backend/src/database/index.ts`
 
 ### 0.3 Configuração de Ambiente
 
-- [ ] **0.3.1** Adicionar variáveis de ambiente ao Voice AI
+- [x] **0.3.1** Adicionar variáveis de ambiente ao Voice AI ✅ 2026-01-16
+  - Arquivos: `docker-compose.yml`, `env.docker.example`
   ```bash
   # docker-compose.yml / .env
   ESL_HOST=host.docker.internal
@@ -134,18 +149,26 @@
   ESL_PASSWORD=ClueCon
   TRANSFER_DEFAULT_TIMEOUT=30
   TRANSFER_ANNOUNCE_ENABLED=true
+  TRANSFER_MUSIC_ON_HOLD=local_stream://moh
   OMNIPLAY_API_URL=http://host.docker.internal:8080
   VOICE_AI_SERVICE_TOKEN=xxx
+  CALLBACK_ENABLED=true
+  CALLBACK_EXPIRATION_HOURS=24
+  CALLBACK_MAX_NOTIFICATIONS=5
+  CALLBACK_MIN_INTERVAL_MINUTES=10
   ```
 
-- [ ] **0.3.2** Adicionar variáveis de ambiente ao OmniPlay
+- [x] **0.3.2** Adicionar variáveis de ambiente ao OmniPlay ✅ 2026-01-16
+  - Arquivo: `env.dev.template`
   ```bash
   VOICE_AI_API_URL=http://localhost:8085
   VOICE_AI_TIMEOUT_MS=3000
   CALLBACK_CHECK_INTERVAL_MS=30000
+  VOICE_AI_SERVICE_TOKEN=xxx
   ```
 
-- [ ] **0.3.3** Configurar rede Docker para comunicação entre containers
+- [x] **0.3.3** Configurar rede Docker para comunicação entre containers ✅ 2026-01-16
+  - Já configurado via `host.docker.internal` e network bridge
 
 ---
 

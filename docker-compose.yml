@@ -328,6 +328,25 @@ services:
       # Número de teste para handoff quando caller_id for ramal (desenvolvimento)
       # Em produção, deixar vazio para bloquear handoff de ramais
       - DEV_TEST_NUMBER=${DEV_TEST_NUMBER:-5518999999999}
+      
+      # =========================================================
+      # ESL (Event Socket Layer) - Transfer/Handoff System
+      # =========================================================
+      # Host do FreeSWITCH (para comandos ESL via socket)
+      - ESL_HOST=${ESL_HOST:-host.docker.internal}
+      - ESL_PORT=${ESL_PORT:-8021}
+      - ESL_PASSWORD=${ESL_PASSWORD:-ClueCon}
+      
+      # Transfer Configuration
+      - TRANSFER_DEFAULT_TIMEOUT=${TRANSFER_DEFAULT_TIMEOUT:-30}
+      - TRANSFER_ANNOUNCE_ENABLED=${TRANSFER_ANNOUNCE_ENABLED:-true}
+      - TRANSFER_MUSIC_ON_HOLD=${TRANSFER_MUSIC_ON_HOLD:-local_stream://moh}
+      
+      # Callback System
+      - CALLBACK_ENABLED=${CALLBACK_ENABLED:-true}
+      - CALLBACK_EXPIRATION_HOURS=${CALLBACK_EXPIRATION_HOURS:-24}
+      - CALLBACK_MAX_NOTIFICATIONS=${CALLBACK_MAX_NOTIFICATIONS:-5}
+      - CALLBACK_MIN_INTERVAL_MINUTES=${CALLBACK_MIN_INTERVAL_MINUTES:-10}
     
     volumes:
       - voice-ai-logs:/app/logs
