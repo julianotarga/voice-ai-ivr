@@ -779,3 +779,228 @@ class RealtimeSession:
                         )
         except Exception as e:
             logger.error(f"Error saving conversation: {e}")
+    
+    # =========================================================================
+    # FASE 1: Intelligent Handoff Methods
+    # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/
+    # =========================================================================
+    
+    async def _execute_intelligent_handoff(
+        self,
+        destination_text: str,
+        reason: str
+    ) -> None:
+        """
+        Executa handoff inteligente com attended transfer.
+        
+        Fluxo:
+        1. Encontra destino pelo texto do usuário
+        2. Anuncia transferência
+        3. Executa attended transfer com monitoramento
+        4. Se atendeu: bridge e encerra sessão
+        5. Se não atendeu: retorna ao cliente com mensagem contextual
+        
+        Args:
+            destination_text: Texto do destino (ex: "Jeni", "financeiro")
+            reason: Motivo do handoff
+        """
+        if not self._transfer_manager or self._transfer_in_progress:
+            return
+        
+        self._transfer_in_progress = True
+        
+        try:
+            # 1. Encontrar destino
+            destination, error = await self._transfer_manager.find_and_validate_destination(
+                destination_text
+            )
+            
+            if error:
+                # Destino não encontrado - informar usuário e retomar
+                await self._send_text_to_provider(error)
+                self._transfer_in_progress = False
+                return
+            
+            if not destination:
+                await self._send_text_to_provider(
+                    "Não consegui identificar para quem você quer falar. "
+                    "Pode repetir o nome ou departamento?"
+                )
+                self._transfer_in_progress = False
+                return
+            
+            # 2. Anunciar transferência (se habilitado)
+            if self.config.transfer_announce_enabled:
+                await self._send_text_to_provider(
+                    f"Um momento, vou transferir para {destination.name}..."
+                )
+                # Aguardar TTS terminar (aproximadamente)
+                await asyncio.sleep(2.0)
+            
+            logger.info(
+                "Executing intelligent handoff",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "destination": destination.name,
+                    "destination_number": destination.destination_number,
+                    "reason": reason,
+                }
+            )
+            
+            # 3. Executar attended transfer
+            result = await self._transfer_manager.execute_attended_transfer(
+                destination=destination,
+                timeout=self.config.transfer_default_timeout,
+            )
+            
+            self._current_transfer = result
+            
+            # 4. Processar resultado
+            await self._handle_transfer_result(result, reason)
+            
+        except Exception as e:
+            logger.exception(f"Intelligent handoff error: {e}")
+            await self._send_text_to_provider(
+                "Desculpe, não foi possível completar a transferência. "
+                "Posso ajudar de outra forma?"
+            )
+            self._transfer_in_progress = False
+    
+    async def _handle_transfer_result(
+        self,
+        result: TransferResult,
+        original_reason: str
+    ) -> None:
+        """
+        Processa resultado da transferência.
+        
+        Args:
+            result: Resultado da transferência
+            original_reason: Motivo original do handoff
+        """
+        if result.status == TransferStatus.SUCCESS:
+            # Bridge estabelecido com sucesso
+            logger.info(
+                "Transfer successful - bridge established",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "destination": result.destination.name if result.destination else None,
+                }
+            )
+            # Encerrar sessão Voice AI (cliente agora está com humano)
+            await self.stop("transfer_success")
+            
+        elif result.status == TransferStatus.CANCELLED:
+            # Cliente desligou durante a transferência
+            logger.info(
+                "Transfer cancelled - caller hangup",
+                extra={"call_uuid": self.call_uuid}
+            )
+            await self.stop("caller_hangup")
+            
+        else:
+            # Transferência não concluída - retomar Voice AI
+            self._transfer_in_progress = False
+            
+            # Enviar mensagem contextual
+            message = result.message
+            await self._send_text_to_provider(message)
+            
+            # Aguardar TTS
+            await asyncio.sleep(2.0)
+            
+            # Oferecer callback/recado se aplicável
+            if result.should_offer_callback and result.destination:
+                await self._offer_callback_or_message(result, original_reason)
+    
+    async def _offer_callback_or_message(
+        self,
+        transfer_result: TransferResult,
+        reason: str
+    ) -> None:
+        """
+        Oferece callback ou recado após transfer falhar.
+        
+        Args:
+            transfer_result: Resultado da transferência
+            reason: Motivo original
+        """
+        dest_name = transfer_result.destination.name if transfer_result.destination else "o ramal"
+        
+        # A IA vai continuar a conversa naturalmente
+        # Ela já tem contexto do que aconteceu
+        await self._send_text_to_provider(
+            f"Quer que eu peça para {dest_name} retornar sua ligação, "
+            "ou prefere deixar uma mensagem?"
+        )
+        
+        # O fluxo continua naturalmente com o LLM
+        # Se cliente aceitar, LLM chamará função apropriada
+        # (será implementado na FASE 2 - Callback System)
+    
+    async def _on_transfer_resume(self) -> None:
+        """
+        Callback: Retomar Voice AI após transfer falhar.
+        
+        Chamado pelo TransferManager quando música de espera para
+        e precisamos retomar a conversa.
+        """
+        self._transfer_in_progress = False
+        
+        logger.info(
+            "Resuming Voice AI after transfer",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
+        # A mensagem contextual já foi enviada em _handle_transfer_result
+        # Aqui só sinalizamos que podemos receber áudio novamente
+    
+    async def _on_transfer_complete(self, result: TransferResult) -> None:
+        """
+        Callback: Transferência completada (sucesso ou falha).
+        
+        Args:
+            result: Resultado da transferência
+        """
+        self._current_transfer = result
+        
+        self._metrics.record_transfer(
+            call_uuid=self.call_uuid,
+            status=result.status.value,
+            destination=result.destination.name if result.destination else None,
+            duration_ms=result.duration_ms,
+        )
+        
+        logger.info(
+            "Transfer completed",
+            extra={
+                "call_uuid": self.call_uuid,
+                "status": result.status.value,
+                "destination": result.destination.name if result.destination else None,
+                "hangup_cause": result.hangup_cause,
+                "duration_ms": result.duration_ms,
+            }
+        )
+    
+    async def request_transfer(self, user_text: str) -> Optional[TransferResult]:
+        """
+        API pública para solicitar transferência.
+        
+        Pode ser chamado diretamente ou via function call.
+        
+        Args:
+            user_text: Texto com destino (ex: "Jeni", "financeiro")
+        
+        Returns:
+            TransferResult ou None se não há TransferManager
+        """
+        if not self._transfer_manager:
+            logger.warning("Transfer requested but TransferManager not available")
+            return None
+        
+        if self._transfer_in_progress:
+            logger.warning("Transfer already in progress")
+            return None
+        
+        await self._execute_intelligent_handoff(user_text, "user_request")
+        return self._current_transfer

@@ -29,6 +29,18 @@ from .transfer_manager import (
     STATUS_MESSAGES,
 )
 
+# FASE 2: Callback Handler
+# Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/
+from .callback_handler import (
+    CallbackHandler,
+    CallbackData,
+    CallbackResult,
+    CallbackStatus,
+    PhoneNumberUtils,
+    ResponseAnalyzer,
+    CALLBACK_FUNCTION_DEFINITIONS,
+)
+
 __all__ = [
     # Legacy handlers
     "FreeSwitchHandler",
@@ -55,4 +67,12 @@ __all__ = [
     "create_transfer_manager",
     "HANGUP_CAUSE_MAP",
     "STATUS_MESSAGES",
+    # Callback Handler (FASE 2)
+    "CallbackHandler",
+    "CallbackData",
+    "CallbackResult",
+    "CallbackStatus",
+    "PhoneNumberUtils",
+    "ResponseAnalyzer",
+    "CALLBACK_FUNCTION_DEFINITIONS",
 ]
