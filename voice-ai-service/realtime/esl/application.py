@@ -24,7 +24,7 @@ from datetime import datetime
 from queue import Queue, Empty
 
 import gevent
-from greenswitch import OutboundSession
+from greenswitch.esl import OutboundSession
 
 from ..rtp import RTPBridge, RTPBridgeConfig, PayloadType
 from ..session import RealtimeSession, RealtimeSessionConfig
