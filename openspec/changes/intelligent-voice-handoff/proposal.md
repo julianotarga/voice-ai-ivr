@@ -1753,45 +1753,82 @@ callbackDepartment: "Financeiro",    // Departamento (opcional)
 
 ---
 
-### 🔴 PROBLEMA 5: Definição de "Disponível"
+### ✅ PROBLEMA 5: Definição de "Disponível" → DECIDIDO
 
 **PERGUNTA CRÍTICA:** O que significa ramal disponível?
 
-| Fonte | Informação | Confiabilidade |
-|-------|------------|----------------|
-| FreeSWITCH sofia status | Ramal registrado | ✅ Alta |
-| FreeSWITCH show channels | Em chamada ativa | ✅ Alta |
-| FusionPBX device status | DND, forwarding | ✅ Média |
-| OmniPlay User.online | Agente logado | ✅ Alta |
-| OmniPlay User.status | available/away/busy | ✅ Alta |
+**✅ DECISÃO: FOCO APENAS NO FREESWITCH**
 
-**PROBLEMA:**
-- Ramal pode estar registrado mas agente "Away" no OmniPlay
-- Agente pode estar "Online" mas telefone desligado
-- Precisamos CRUZAR informações
+> Se o ramal está **online** e **pronto para receber chamadas** no FreeSWITCH, então está **disponível**.
+> O status do OmniPlay (away, busy) é secundário - se não atender, vira recado.
 
-**ALTERNATIVA - Verificação em Camadas:**
-```typescript
-async function isAgentAvailable(userId: number, extension: string): Promise<boolean> {
-    // 1. Verificar status OmniPlay
-    const user = await User.findByPk(userId);
-    if (!user?.online || user.status !== 'available') {
-        return false;
-    }
+| Verificação | Fonte | Obrigatório |
+|-------------|-------|-------------|
+| Ramal registrado | FreeSWITCH `sofia status` | ✅ SIM |
+| Não em chamada | FreeSWITCH `show channels` | ✅ SIM |
+| Sem DND | FreeSWITCH/FusionPBX | ✅ SIM |
+| Status OmniPlay | OmniPlay User.status | ❌ NÃO (secundário) |
+
+**LÓGICA SIMPLIFICADA:**
+```python
+async def is_extension_available(extension: str, domain_uuid: str) -> bool:
+    """
+    Verifica APENAS no FreeSWITCH se ramal está disponível.
+    Se não atender, o fluxo normal de recado/callback trata.
+    """
+    # 1. Registrado?
+    if not await is_registered(extension, domain_uuid):
+        return False  # OFFLINE
     
-    // 2. Verificar FreeSWITCH via Voice AI API
-    const fsStatus = await voiceAiApi.get(`/extension/status/${extension}`);
-    if (!fsStatus.data.registered || fsStatus.data.in_call) {
-        return false;
-    }
+    # 2. Em chamada?
+    if await is_in_call(extension):
+        return False  # BUSY
     
-    return true;
-}
+    # 3. DND ativado?
+    if await has_dnd(extension, domain_uuid):
+        return False  # DND
+    
+    # 4. Disponível! (o resto é problema do atendente)
+    return True
 ```
+
+**FLUXO:**
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  VERIFICAÇÃO DE DISPONIBILIDADE (APENAS FREESWITCH)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Ramal 1004                                                                 │
+│     │                                                                       │
+│     ▼                                                                       │
+│  ┌─────────────────┐                                                        │
+│  │ Registrado?     │───► NÃO ───► OFFLINE (não tenta transferir)            │
+│  └────────┬────────┘                                                        │
+│           │ SIM                                                             │
+│           ▼                                                                 │
+│  ┌─────────────────┐                                                        │
+│  │ Em chamada?     │───► SIM ───► BUSY (oferece callback)                   │
+│  └────────┬────────┘                                                        │
+│           │ NÃO                                                             │
+│           ▼                                                                 │
+│  ┌─────────────────┐                                                        │
+│  │ DND ativado?    │───► SIM ───► DND (oferece callback)                    │
+│  └────────┬────────┘                                                        │
+│           │ NÃO                                                             │
+│           ▼                                                                 │
+│  ✅ DISPONÍVEL → TENTA TRANSFERIR                                           │
+│     │                                                                       │
+│     ├─► Atendeu? → Bridge OK                                                │
+│     └─► Não atendeu (timeout)? → Oferece callback/recado                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**VANTAGEM:** Simplicidade - não precisa sincronizar status entre sistemas.
 
 ---
 
-### 🔴 PROBLEMA 6: WhatsApp Botões Interativos (Janela 24h)
+### ✅ PROBLEMA 6: WhatsApp Botões Interativos (Janela 24h) → DECIDIDO
 
 **Proposta Original:**
 > Enviar mensagem com botões: [Sim, podem ligar] [Depois] [Não precisa]
@@ -1801,37 +1838,142 @@ async function isAgentAvailable(userId: number, extension: string): Promise<bool
 - Se cliente ligou há mais de 24h, precisamos de **template aprovado**
 - Templates não suportam botões dinâmicos da mesma forma
 
-**ALTERNATIVA:**
+**✅ DECISÃO: TEMPLATE PRÉ-DEFINIDO NO OMNIPLAY**
 
+> O ticket chega com `ticketType = "callback"`. 
+> O OmniPlay deve ter **pelo menos 1 template** configurado para ser usado em situações de callback.
+
+**CONFIGURAÇÃO NO OMNIPLAY:**
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CONFIGURAÇÕES > TEMPLATES > CALLBACK                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  📋 Template para Callback de Voz                                           │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                             │
+│  Nome do Template: callback_retorno_ligacao                                 │
+│  Status: ✅ Aprovado pela Meta                                              │
+│                                                                             │
+│  Texto do Template:                                                         │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Olá! Aqui é da {{1}}.                                               │   │
+│  │                                                                      │   │
+│  │  {{2}} está disponível para retornar sua ligação sobre "{{3}}".      │   │
+│  │                                                                      │   │
+│  │  Responda:                                                           │   │
+│  │  ✅ SIM - para ligarmos agora                                        │   │
+│  │  ⏰ DEPOIS - para agendar outro horário                              │   │
+│  │  ❌ NÃO - se não precisar mais                                       │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  Variáveis:                                                                 │
+│  {{1}} = Nome da empresa                                                    │
+│  {{2}} = Nome do atendente                                                  │
+│  {{3}} = Assunto/motivo                                                     │
+│                                                                             │
+│  [💾 Salvar como Template de Callback Padrão]                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**FLUXO DE ENVIO:**
 ```typescript
-async function sendCallbackNotification(phoneNumber: string, options: any) {
-    // Verificar se há conversa ativa (janela 24h)
-    const ticket = await Ticket.findOne({
+async function sendCallbackNotification(ticket: Ticket) {
+    // 1. Buscar template de callback configurado
+    const callbackTemplate = await QuickMessage.findOne({
         where: { 
-            contactNumber: phoneNumber, 
-            status: { [Op.in]: ['open', 'pending'] },
-            updatedAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+            companyId: ticket.companyId,
+            isCallbackTemplate: true  // Flag especial
         }
     });
     
-    if (ticket) {
-        // DENTRO da janela: pode usar botões interativos
-        return await sendInteractiveButtons(phoneNumber, options);
-    } else {
-        // FORA da janela: usar template ou texto simples
-        return await sendTemplateMessage(phoneNumber, "callback_notification", {
-            agent_name: options.agentName,
-            reason: options.reason
+    if (!callbackTemplate) {
+        logger.warn("Template de callback não configurado");
+        return;
+    }
+    
+    // 2. Verificar conexão WABA ativa
+    const wabaConnection = await Whatsapp.findOne({
+        where: { companyId: ticket.companyId, channel: 'waba', status: 'CONNECTED' }
+    });
+    
+    if (!wabaConnection) {
+        logger.warn("Sem conexão WABA ativa para enviar callback");
+        return;
+    }
+    
+    // 3. Enviar template (funciona dentro e fora da janela 24h)
+    await SendWABATemplateService({
+        whatsappId: wabaConnection.id,
+        number: ticket.callbackNumber,
+        templateName: callbackTemplate.templateName,
+        templateNamespace: callbackTemplate.templateNamespace,
+        components: [
+            { type: "body", parameters: [
+                { type: "text", text: ticket.company.name },           // {{1}}
+                { type: "text", text: ticket.callbackIntendedForName }, // {{2}}
+                { type: "text", text: ticket.callbackReason || "seu atendimento" } // {{3}}
+            ]}
+        ]
+    });
+    
+    // 4. Marcar que notificação foi enviada
+    await ticket.update({ 
+        callbackWhatsAppSentAt: new Date(),
+        callbackStatus: 'notified'
+    });
+}
+```
+
+**PROCESSAMENTO DE RESPOSTA:**
+```typescript
+// No webhook de mensagens recebidas
+async function handleIncomingMessage(message: any) {
+    const body = message.body?.toLowerCase().trim();
+    
+    // Verificar se é resposta a callback
+    const pendingCallback = await Ticket.findOne({
+        where: {
+            callbackNumber: message.from,
+            ticketType: 'callback',
+            callbackStatus: 'notified'
+        }
+    });
+    
+    if (!pendingCallback) return;
+    
+    if (body === 'sim' || body === '1' || body === 'yes') {
+        // Cliente quer receber ligação agora
+        await pendingCallback.update({ callbackStatus: 'ready_to_call' });
+        // Trigger: iniciar callback imediatamente
+        
+    } else if (body === 'depois' || body === '2' || body === 'later') {
+        // Cliente quer adiar
+        await pendingCallback.update({ 
+            callbackScheduledAt: new Date(Date.now() + 30 * 60 * 1000) // +30min
         });
-        // Template: "Olá! {{1}} está pronto para retornar sua ligação sobre {{2}}. 
-        //           Responda SIM para ligarmos agora, DEPOIS para adiar, ou NÃO se não precisar mais."
+        // Responder: "Ok! Vamos entrar em contato em 30 minutos."
+        
+    } else if (body === 'não' || body === 'nao' || body === '3' || body === 'no') {
+        // Cliente não quer mais
+        await pendingCallback.update({ 
+            callbackStatus: 'canceled',
+            status: 'closed'
+        });
+        // Responder: "Tudo bem! Ticket cancelado. Qualquer coisa, estamos à disposição."
     }
 }
 ```
 
+**VANTAGEM:**
+- ✅ Template aprovado funciona SEMPRE (dentro e fora da janela 24h)
+- ✅ Configurável por empresa (multi-tenant)
+- ✅ Reutiliza estrutura existente de templates do OmniPlay
+
 ---
 
-### 🔴 PROBLEMA 7: Race Condition no Click-to-Call
+### ✅ PROBLEMA 7: Race Condition no Click-to-Call → DECIDIDO
 
 **CENÁRIO:**
 1. Worker detecta ramal disponível (t=0)
@@ -1841,39 +1983,152 @@ async function sendCallbackNotification(phoneNumber: string, options: any) {
 5. Atendente clica "Ligar Agora" (t=10s)
 6. Sistema tenta originar → **FALHA** (ramal ocupado)
 
-**ALTERNATIVA - Double-Check + Retry:**
+**✅ DECISÃO: DOUBLE-CHECK + AUTO-RETRY**
+
 ```typescript
-async function initiateCallback(ticketId: number, userId: number) {
+// backend/src/services/VoiceServices/InitiateCallbackService.ts
+
+interface CallbackResult {
+    success: boolean;
+    callUuid?: string;
+    error?: string;
+    shouldRetry?: boolean;
+    retryAfterSeconds?: number;
+}
+
+async function initiateCallback(
+    ticketId: number, 
+    userId: number
+): Promise<CallbackResult> {
     const ticket = await Ticket.findByPk(ticketId);
+    if (!ticket || ticket.ticketType !== 'callback') {
+        return { success: false, error: "Ticket inválido" };
+    }
     
-    // 1. Re-verificar disponibilidade NO MOMENTO DO CLIQUE
-    const isAvailable = await isAgentAvailable(userId, ticket.callbackExtension);
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 1: DOUBLE-CHECK - Verificar disponibilidade NO MOMENTO DO CLIQUE
+    // ══════════════════════════════════════════════════════════════════════
+    const extensionStatus = await voiceAiApi.get(
+        `/extension/status/${ticket.callbackExtension}`,
+        { params: { domain_uuid: ticket.domainUuid } }
+    );
     
-    if (!isAvailable) {
+    if (!extensionStatus.data.available) {
         // Ramal ficou ocupado entre notificação e clique
+        const reason = extensionStatus.data.reason;
+        
         return { 
             success: false, 
-            error: "Ramal ocupado. Tente novamente em alguns segundos.",
-            suggestSnooze: true
+            error: `Ramal ${extensionStatus.data.status}: ${reason}`,
+            shouldRetry: true,
+            retryAfterSeconds: 30
         };
     }
     
-    // 2. Tentar originar
-    const result = await originateCallback(ticket);
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 2: TENTAR ORIGINAR CHAMADA
+    // ══════════════════════════════════════════════════════════════════════
+    const originateResult = await voiceAiApi.post('/callback/originate', {
+        extension: ticket.callbackExtension,
+        clientNumber: ticket.callbackNumber,
+        ticketId: ticket.id,
+        reason: ticket.callbackReason,
+        domainUuid: ticket.domainUuid
+    });
     
-    if (!result.success && result.error === "BUSY") {
-        // Race condition: ficou ocupado entre verificação e originate
-        return { 
-            success: false, 
-            error: "Ramal ficou ocupado. Tentando novamente...",
-            retrying: true
-        };
-        // Auto-retry em 30 segundos
+    if (!originateResult.data.success) {
+        // ══════════════════════════════════════════════════════════════════
+        // PASSO 3: TRATAR RACE CONDITION
+        // ══════════════════════════════════════════════════════════════════
+        if (originateResult.data.error === 'BUSY' || 
+            originateResult.data.error === 'NO_ROUTE') {
+            
+            // Race condition: ficou ocupado entre verificação e originate
+            logger.warn("Race condition no callback", { 
+                ticketId, 
+                extension: ticket.callbackExtension 
+            });
+            
+            // Incrementar tentativas
+            await ticket.increment('callbackAttempts');
+            
+            if (ticket.callbackAttempts < ticket.callbackMaxAttempts) {
+                // Auto-agendar retry
+                await ticket.update({
+                    callbackScheduledAt: new Date(Date.now() + 30 * 1000), // +30s
+                    callbackStatus: 'scheduled'
+                });
+                
+                return { 
+                    success: false, 
+                    error: "Ramal ficou ocupado. Tentando novamente em 30 segundos...",
+                    shouldRetry: true,
+                    retryAfterSeconds: 30
+                };
+            } else {
+                // Máximo de tentativas atingido
+                await ticket.update({ callbackStatus: 'failed' });
+                return { 
+                    success: false, 
+                    error: `Máximo de ${ticket.callbackMaxAttempts} tentativas atingido.`
+                };
+            }
+        }
+        
+        return { success: false, error: originateResult.data.error };
     }
     
-    return result;
+    // ══════════════════════════════════════════════════════════════════════
+    // PASSO 4: SUCESSO - Chamada em andamento
+    // ══════════════════════════════════════════════════════════════════════
+    await ticket.update({
+        callbackStatus: 'in_progress',
+        callbackLastAttemptAt: new Date()
+    });
+    
+    return { 
+        success: true, 
+        callUuid: originateResult.data.callUuid 
+    };
 }
 ```
+
+**UI - Feedback ao Atendente:**
+```jsx
+const handleInitiateCallback = async (ticketId) => {
+    setLoading(true);
+    try {
+        const result = await api.post("/voice/callback/initiate", { ticketId });
+        
+        if (result.data.success) {
+            toast.success("📞 Conectando chamada...");
+            // Remover da lista de pendentes
+            setCallbacks(prev => prev.filter(c => c.id !== ticketId));
+            
+        } else if (result.data.shouldRetry) {
+            // Mostrar mensagem com countdown
+            toast.warning(
+                `⏳ ${result.data.error} Retentando em ${result.data.retryAfterSeconds}s...`,
+                { autoClose: result.data.retryAfterSeconds * 1000 }
+            );
+            // Manter na lista, vai ser atualizado pelo próximo polling
+            
+        } else {
+            toast.error(`❌ ${result.data.error}`);
+        }
+    } catch (error) {
+        toast.error("Erro ao iniciar callback");
+    } finally {
+        setLoading(false);
+    }
+};
+```
+
+**VANTAGEM:**
+- ✅ Nunca falha silenciosamente
+- ✅ Auto-retry transparente para o atendente
+- ✅ Limite máximo de tentativas evita loops infinitos
+- ✅ Feedback claro na UI sobre o que está acontecendo
 
 ---
 
@@ -1988,7 +2243,7 @@ router.post("/callback/initiate", authMiddleware, async (req, res) => {
 
 ---
 
-## ✅ RESUMO DAS DECISÕES TOMADAS
+## ✅ RESUMO DAS DECISÕES TOMADAS (TODAS CONSOLIDADAS)
 
 | # | Problema | Solução Original | ✅ Decisão Final |
 |---|----------|------------------|------------------|
@@ -1996,11 +2251,35 @@ router.post("/callback/initiate", authMiddleware, async (req, res) => {
 | 2 | Attended Transfer | FreeSWITCH nativo | **Hold + Polling + Reconnect** |
 | 3 | TTS Dinâmico | Google TTS no FreeSWITCH | **Tela do OmniPlay (já aberta)** |
 | 4 | user_id ↔ extension | Mapeamento automático | **1 pessoa = 1 ramal, armazenar extension** |
-| 5 | Disponibilidade | FreeSWITCH só | OmniPlay + FreeSWITCH combinados |
-| 6 | WhatsApp botões | Sempre interativo | Template fora da janela 24h |
-| 7 | Race condition | Sem tratamento | Double-check + auto-retry |
+| 5 | Disponibilidade | OmniPlay + FreeSWITCH | **APENAS FreeSWITCH (online = disponível)** |
+| 6 | WhatsApp botões | Sempre interativo | **Template pré-definido no OmniPlay** |
+| 7 | Race condition | Sem tratamento | **Double-check + auto-retry (30s)** |
 | 8 | Gravação | Anexar ao ticket | **NÃO anexar, apenas informar no ticket** |
-| 9 | Multi-tenant | Assumido OK | Validação explícita em todas camadas |
+| 9 | Multi-tenant | Assumido OK | **Validação explícita em todas camadas** |
+
+### 📌 Destaques das Decisões
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  DECISÕES CHAVE                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  #5 DISPONIBILIDADE: Foco APENAS no FreeSWITCH                              │
+│      └─► Registrado + Não em chamada + Sem DND = DISPONÍVEL                 │
+│      └─► Status OmniPlay é secundário (se não atender, vira recado)         │
+│                                                                             │
+│  #6 WHATSAPP: Template pré-definido no OmniPlay                             │
+│      └─► Ticket chega com ticketType = "callback"                           │
+│      └─► Admin configura 1 template aprovado para callbacks                 │
+│      └─► Funciona dentro e fora da janela 24h                               │
+│                                                                             │
+│  #7 RACE CONDITION: Double-check + Auto-retry                               │
+│      └─► Verificar disponibilidade NO MOMENTO DO CLIQUE                     │
+│      └─► Se falhar, auto-retry em 30 segundos                               │
+│      └─► Máximo de 3 tentativas antes de desistir                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
