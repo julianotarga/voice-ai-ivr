@@ -321,7 +321,9 @@ services:
       - SESSION_IDLE_TIMEOUT_SECONDS=${SESSION_IDLE_TIMEOUT_SECONDS:-30}
       - SESSION_MAX_DURATION_SECONDS=${SESSION_MAX_DURATION_SECONDS:-600}
       
-      # OmniPlay Integration (optional)
+      # OmniPlay Integration
+      - OMNIPLAY_API_URL=${OMNIPLAY_API_URL:-}
+      - VOICE_AI_SERVICE_TOKEN=${VOICE_AI_SERVICE_TOKEN:-}
       - OMNIPLAY_WEBHOOK_URL=${OMNIPLAY_WEBHOOK_URL:-}
     
     volumes:
