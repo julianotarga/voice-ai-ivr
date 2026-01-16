@@ -1691,7 +1691,8 @@
   - `voice_callbacks_total{status}`
   - `voice_extension_status_requests_total`
 
-- [ ] **6.1.2** Adicionar logs estruturados
+- [x] **6.1.2** Adicionar logs estruturados ✅ 2026-01-16
+  - Já implementado em `realtime/utils/metrics.py`
   - Transfer initiated
   - Transfer result (success/failure + cause)
   - Callback created
@@ -1699,16 +1700,37 @@
 
 ### 6.2 OmniPlay - Dashboard
 
-- [ ] **6.2.1** Adicionar widget de callbacks no dashboard
+- [x] **6.2.1** Adicionar widget de callbacks no dashboard ✅ 2026-01-16
+  - Arquivo: `frontend/src/components/Dashboard/CallbackStatsCard.js`
   - Total pendentes
   - Média de tempo de espera
   - Taxa de conclusão
-  - Top destinos
+  - Por status
 
 - [ ] **6.2.2** Adicionar relatório de callbacks
   - Filtro por período
   - Filtro por destino
   - Exportação CSV
+
+### 6.3 Revisão e Correção de Bugs ✅ 2026-01-16
+
+- [x] **6.3.1** Corrigir imports do ESL Client em callback.py
+  - `ESLClient` → `AsyncESLClient`
+  - `create_esl_client` → `get_esl_client`
+  - `get_esl_client()` → `get_esl()`
+
+- [x] **6.3.2** Adicionar variáveis de ambiente faltantes em settings.py
+  - ESL: `ESL_HOST`, `ESL_PORT`, `ESL_PASSWORD`
+  - OmniPlay: `OMNIPLAY_API_URL`, `OMNIPLAY_API_TIMEOUT_MS`, `VOICE_AI_SERVICE_TOKEN`
+  - Transfer: `TRANSFER_DEFAULT_TIMEOUT`, `TRANSFER_ANNOUNCE_ENABLED`, `TRANSFER_MUSIC_ON_HOLD`
+  - Callback: `CALLBACK_ENABLED`, `CALLBACK_EXPIRATION_HOURS`, `CALLBACK_MAX_NOTIFICATIONS`
+
+- [x] **6.3.3** Corrigir ordenação de rotas em callbackRoutes.ts
+  - `/stats` deve vir ANTES de `/:id` para evitar conflito
+
+- [x] **6.3.4** Adicionar inicialização do CallbackMonitorJob em server.ts
+  - Import: `initCallbackMonitorJob`
+  - Inicialização: `initCallbackMonitorJob()`
 
 ---
 
