@@ -137,7 +137,44 @@ Tarefas para implementar o sistema de handoff inteligente com transferência de 
 - **Prioridade:** Alta
 - **Estimativa:** 1h
 
-### 3.4 System Prompt com Destinos
+### 3.4 Máquina de Estados para Fluxo de Recado
+- **Arquivo:** `voice-ai-service/realtime/session.py`
+- **Novos estados:**
+  - `AWAITING_MESSAGE_CONFIRM` - Perguntou "quer deixar recado?"
+  - `RECORDING_MESSAGE` - Cliente está falando o recado
+  - `AWAITING_FINAL` - Perguntou "mais alguma coisa?"
+  - `ENDING` - Encerrando chamada
+- **Métodos:**
+  - `_handle_ticket_confirmation(response)` - Processa "sim/não" do recado
+  - `_handle_message_recording_complete()` - Detecta fim do recado
+  - `_handle_final_confirmation(response)` - Processa "mais alguma coisa?"
+  - `_hangup_call()` - Encerra chamada via ESL
+- **Prioridade:** Alta
+- **Estimativa:** 3h
+
+### 3.5 Detecção de Fim de Recado
+- **Arquivo:** `voice-ai-service/realtime/session.py`
+- **Funcionalidade:**
+  - Detectar silêncio prolongado (VAD) após cliente falar
+  - Detectar frases de término: "é isso", "só isso", "terminei"
+  - Trigger para `_handle_message_recording_complete()`
+- **Prioridade:** Alta
+- **Estimativa:** 2h
+
+### 3.6 Fluxo de Terminação
+- **Arquivo:** `voice-ai-service/realtime/session.py`
+- **Cenários:**
+  1. **Não quer recado:**
+     - Agradecer e desligar (sem criar ticket)
+  2. **Deixou recado:**
+     - Criar ticket com gravação
+     - Agradecer e desligar
+  3. **Quer mais ajuda:**
+     - Voltar para conversa normal
+- **Prioridade:** Alta
+- **Estimativa:** 2h
+
+### 3.7 System Prompt com Destinos
 - **Arquivo:** `voice-ai-service/realtime/config_loader.py`
 - **Novo método:** `build_transfer_destinations_context(destinations)`
 - **Formato:** Tabela markdown com nome, departamento, função
@@ -299,11 +336,11 @@ Tarefas para implementar o sistema de handoff inteligente com transferência de 
 |------|-----------|------------|
 | 1 | Banco de Dados | 3.5h |
 | 2 | TransferManager | 13h |
-| 3 | Integração Session | 6h |
+| 3 | Integração Session + Máquina de Estados | 13h |
 | 4 | Gravação | 6h |
 | 5 | Interface FusionPBX | 7h |
 | 6 | Testes e Docs | 6h |
-| **Total** | | **41.5h** (~5-6 dias) |
+| **Total** | | **48.5h** (~6-7 dias) |
 
 ---
 

@@ -494,6 +494,145 @@ class RealtimeSession:
         
         elif destination.fallback_action == "voicemail":
             await self._transfer_to_voicemail(destination)
+
+    async def _handle_ticket_confirmation(self, user_response: str) -> None:
+        """
+        Processa resposta do cliente sobre deixar recado.
+        
+        Fluxo:
+        - "Sim" → Entrar em modo de gravação de recado
+        - "Não" → Agradecer e desligar (sem criar ticket)
+        """
+        if not self._awaiting_ticket_confirmation:
+            return
+        
+        self._awaiting_ticket_confirmation = False
+        response_lower = user_response.lower().strip()
+        
+        # Detectar resposta negativa
+        negative_keywords = ["não", "nao", "negativo", "deixa pra lá", "esquece"]
+        if any(kw in response_lower for kw in negative_keywords):
+            # Cliente não quer deixar recado
+            await self._send_to_provider(
+                "Tudo bem! Obrigada pela ligação. Tenha um ótimo dia! Tchau!"
+            )
+            await asyncio.sleep(3.0)  # Aguardar TTS terminar
+            await self._hangup_call()
+            return
+        
+        # Cliente quer deixar recado - entrar em modo de escuta
+        await self._send_to_provider(
+            "Pode falar que eu vou anotar e encaminhar assim que possível."
+        )
+        self._recording_message_mode = True
+        self._pending_ticket_destination = self._pending_ticket_destination
+    
+    async def _handle_message_recording_complete(self) -> None:
+        """
+        Chamado quando o cliente termina de falar o recado.
+        
+        Detectado por:
+        - Silêncio prolongado (VAD)
+        - Cliente diz "é isso" / "só isso" / "terminei"
+        """
+        if not self._recording_message_mode:
+            return
+        
+        # Perguntar se precisa de mais algo
+        await self._send_to_provider(
+            "Anotado! Posso ajudar em mais alguma coisa?"
+        )
+        self._awaiting_final_confirmation = True
+    
+    async def _handle_final_confirmation(self, user_response: str) -> None:
+        """
+        Processa resposta final do cliente.
+        
+        - "Não" / "Era só isso" → Criar ticket, agradecer e desligar
+        - "Sim" → Voltar para conversa normal
+        """
+        if not self._awaiting_final_confirmation:
+            return
+        
+        self._awaiting_final_confirmation = False
+        response_lower = user_response.lower().strip()
+        
+        # Detectar resposta negativa (cliente terminou)
+        negative_keywords = [
+            "não", "nao", "só isso", "era isso", "era só", 
+            "terminei", "é isso", "nada mais", "obrigado"
+        ]
+        
+        if any(kw in response_lower for kw in negative_keywords):
+            # Cliente terminou - criar ticket e desligar
+            await self._send_to_provider(
+                "Perfeito! Seu recado foi registrado e vamos retornar em breve. "
+                "Obrigada pela ligação! Tchau!"
+            )
+            
+            # Criar ticket com gravação
+            await self._initiate_handoff(
+                reason="message_recorded",
+                intended_destination=self._pending_ticket_destination.name if self._pending_ticket_destination else None
+            )
+            
+            await asyncio.sleep(4.0)  # Aguardar TTS terminar
+            await self._hangup_call()
+            return
+        
+        # Cliente quer mais ajuda - voltar ao modo normal
+        self._recording_message_mode = False
+        self._pending_ticket_destination = None
+        # LLM continua a conversa normalmente
+    
+    async def _hangup_call(self) -> None:
+        """
+        Encerra a chamada via FreeSWITCH.
+        
+        Comando ESL: uuid_kill <uuid>
+        """
+        logger.info("Hanging up call", extra={"call_uuid": self.call_uuid})
+        
+        if self._esl_client:
+            try:
+                await self._esl_client.execute("uuid_kill", self.call_uuid)
+            except Exception as e:
+                logger.error(f"Failed to hangup call: {e}")
+        
+        await self.stop("hangup")
+```
+
+### 3.1 Estados de Máquina para Fluxo de Recado
+
+```python
+# Estados possíveis durante o fluxo de handoff/recado
+
+class HandoffState(Enum):
+    """Estados do fluxo de handoff."""
+    NORMAL = "normal"                          # Conversa normal
+    TRANSFERRING = "transferring"              # Tentando transferir
+    AWAITING_MESSAGE_CONFIRM = "awaiting_msg"  # Perguntou "quer deixar recado?"
+    RECORDING_MESSAGE = "recording"            # Cliente está falando o recado
+    AWAITING_FINAL = "awaiting_final"          # Perguntou "mais alguma coisa?"
+    ENDING = "ending"                          # Encerrando chamada
+
+
+# Transições de estado:
+#
+# NORMAL ──[cliente pede atendente]──► TRANSFERRING
+#
+# TRANSFERRING ──[transfer OK]──► (call ends, bridge to human)
+# TRANSFERRING ──[transfer failed]──► AWAITING_MESSAGE_CONFIRM
+#
+# AWAITING_MESSAGE_CONFIRM ──["sim"]──► RECORDING_MESSAGE
+# AWAITING_MESSAGE_CONFIRM ──["não"]──► ENDING (sem ticket)
+#
+# RECORDING_MESSAGE ──[silêncio/fim]──► AWAITING_FINAL
+#
+# AWAITING_FINAL ──["não"/"era isso"]──► ENDING (com ticket)
+# AWAITING_FINAL ──["sim"/outro]──► NORMAL (continua conversa)
+#
+# ENDING ──► (call ends)
 ```
 
 ### 4. Gravação de Chamada
