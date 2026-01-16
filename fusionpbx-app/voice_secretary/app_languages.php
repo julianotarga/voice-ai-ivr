@@ -296,4 +296,101 @@ $text['option-no_restriction']['pt-br'] = "-- Sem restrição --";
 $text['label-enabled']['en-us'] = "Enabled";
 $text['label-enabled']['pt-br'] = "Habilitado";
 
+// ============================================
+// Transfer Destinations (Handoff)
+// ============================================
+
+$text['title-transfer_destinations']['en-us'] = "Transfer Destinations";
+$text['title-transfer_destinations']['pt-br'] = "Destinos de Transferência";
+
+$text['label-transfer_destinations']['en-us'] = "📞 Handoff";
+$text['label-transfer_destinations']['pt-br'] = "📞 Handoff";
+
+$text['description-transfer_destinations']['en-us'] = "Configure transfer destinations (handoff) for when the customer asks to speak with a human. Supports extensions, ring groups, call center queues and external numbers.";
+$text['description-transfer_destinations']['pt-br'] = "Configure destinos de transferência (handoff) para quando o cliente solicitar falar com um atendente humano. Suporta ramais, ring groups, filas de call center e números externos.";
+
+$text['title-add_destination']['en-us'] = "Add Transfer Destination";
+$text['title-add_destination']['pt-br'] = "Adicionar Destino de Transferência";
+
+$text['title-edit_destination']['en-us'] = "Edit Transfer Destination";
+$text['title-edit_destination']['pt-br'] = "Editar Destino de Transferência";
+
+$text['description-transfer_destination']['en-us'] = "Configure a transfer destination for intelligent handoff.";
+$text['description-transfer_destination']['pt-br'] = "Configure um destino de transferência para handoff inteligente.";
+
+$text['message-no_destinations']['en-us'] = "No transfer destinations configured.";
+$text['message-no_destinations']['pt-br'] = "Nenhum destino de transferência configurado.";
+
+$text['message-destinations_hint']['en-us'] = "Add destinations like \"Finance\", \"Support\", \"Sales\" to enable smart transfers.";
+$text['message-destinations_hint']['pt-br'] = "Adicione destinos como \"Financeiro\", \"Atendimento\", \"SAC\" para permitir transferências inteligentes.";
+
+$text['label-destination_type']['en-us'] = "Destination Type";
+$text['label-destination_type']['pt-br'] = "Tipo de Destino";
+
+$text['label-destination_number']['en-us'] = "Extension/Number";
+$text['label-destination_number']['pt-br'] = "Ramal/Número";
+
+$text['label-ring_timeout']['en-us'] = "Ring Timeout";
+$text['label-ring_timeout']['pt-br'] = "Timeout de Toque";
+
+$text['label-max_retries']['en-us'] = "Retries";
+$text['label-max_retries']['pt-br'] = "Retentativas";
+
+$text['label-retry_delay']['en-us'] = "Retry Delay";
+$text['label-retry_delay']['pt-br'] = "Delay entre Tentativas";
+
+$text['label-fallback_action']['en-us'] = "If Not Answered";
+$text['label-fallback_action']['pt-br'] = "Se Não Atender";
+
+$text['label-aliases']['en-us'] = "Aliases/Keywords";
+$text['label-aliases']['pt-br'] = "Aliases/Palavras-chave";
+
+$text['description-aliases']['en-us'] = "Comma-separated keywords for identification (e.g., \"invoice, payment, billing\").";
+$text['description-aliases']['pt-br'] = "Palavras-chave separadas por vírgula para identificação (ex: \"boleto, pagamento, segunda via, cobrança\").";
+
+$text['label-working_hours_enabled']['en-us'] = "Restrict Hours";
+$text['label-working_hours_enabled']['pt-br'] = "Restringir Horário";
+
+$text['label-enable_working_hours']['en-us'] = "Enable time restriction";
+$text['label-enable_working_hours']['pt-br'] = "Habilitar restrição de horário";
+
+$text['description-working_hours']['en-us'] = "If enabled, transfer only works during configured hours.";
+$text['description-working_hours']['pt-br'] = "Se habilitado, transferência só funciona no horário configurado.";
+
+$text['label-schedule']['en-us'] = "Schedule";
+$text['label-schedule']['pt-br'] = "Horário";
+
+$text['label-role']['en-us'] = "Role/Position";
+$text['label-role']['pt-br'] = "Função/Cargo";
+
+$text['description-role']['en-us'] = "Role of the person or sector (e.g., \"Manager\", \"Agent\").";
+$text['description-role']['pt-br'] = "Função da pessoa ou setor (ex: \"Gerente\", \"Atendente\").";
+
+$text['label-context']['en-us'] = "Context";
+$text['label-context']['pt-br'] = "Contexto";
+
+$text['description-context']['en-us'] = "Dialplan context (usually \"default\"). Only change if you know what you are doing.";
+$text['description-context']['pt-br'] = "Contexto do dialplan (normalmente \"default\"). Altere apenas se souber o que está fazendo.";
+
+$text['label-default']['en-us'] = "Default Destination";
+$text['label-default']['pt-br'] = "Destino Padrão";
+
+$text['label-set_as_default']['en-us'] = "Set as default destination";
+$text['label-set_as_default']['pt-br'] = "Definir como destino padrão";
+
+$text['description-default']['en-us'] = "Used when customer asks for human without specifying department.";
+$text['description-default']['pt-br'] = "Usado quando cliente pede atendente humano sem especificar setor.";
+
+$text['description-secretary_dest']['en-us'] = "If specified, destination only appears for this secretary.";
+$text['description-secretary_dest']['pt-br'] = "Se especificada, destino só aparece para esta secretária.";
+
+$text['label-timeout']['en-us'] = "Timeout";
+$text['label-timeout']['pt-br'] = "Timeout";
+
+$text['label-fallback']['en-us'] = "Fallback";
+$text['label-fallback']['pt-br'] = "Fallback";
+
+$text['label-transfer_rules']['en-us'] = "Rules";
+$text['label-transfer_rules']['pt-br'] = "Regras";
+
 ?>

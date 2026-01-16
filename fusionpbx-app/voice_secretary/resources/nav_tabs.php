@@ -20,6 +20,16 @@
 			'path' => 'secretary.php',
 			'permission' => 'voice_secretary_view'
 		],
+		'transfer_destinations' => [
+			'title' => $text['label-transfer_destinations'] ?? '📞 Handoff',
+			'path' => 'transfer_destinations.php',
+			'permission' => 'voice_secretary_view'
+		],
+		'transfer_rules' => [
+			'title' => $text['label-transfer_rules'] ?? 'Regras',
+			'path' => 'transfer_rules.php',
+			'permission' => 'voice_secretary_view'
+		],
 		'providers' => [
 			'title' => $text['label-ai_providers'] ?? 'AI Providers',
 			'path' => 'providers.php',
