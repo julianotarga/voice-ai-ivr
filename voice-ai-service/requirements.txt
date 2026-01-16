@@ -114,6 +114,7 @@ aiofiles>=23.2.1
 python-dotenv>=1.0.0
 tenacity>=8.2.3
 structlog>=24.1.0
+pytz>=2024.1
 
 # ============================================
 # STORAGE (MinIO/S3)

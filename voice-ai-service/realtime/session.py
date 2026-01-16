@@ -123,6 +123,11 @@ class RealtimeSessionConfig:
     intelligent_handoff_enabled: bool = True  # Usar TransferManager ao invés de handoff simples
     transfer_announce_enabled: bool = True  # Anunciar antes de transferir
     transfer_default_timeout: int = 30  # Timeout padrão de ring em segundos
+    
+    # Business Hours (Time Condition)
+    # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
+    is_outside_business_hours: bool = False  # True se chamada recebida fora do horário
+    outside_hours_message: str = "Estamos fora do horário de atendimento."  # Mensagem para caller
 
 
 class RealtimeSession:
@@ -199,6 +204,10 @@ class RealtimeSession:
         self._transfer_manager: Optional[TransferManager] = None
         self._current_transfer: Optional[TransferResult] = None
         self._transfer_in_progress = False
+        
+        # Business Hours / Callback Handler
+        self._outside_hours_task: Optional[asyncio.Task] = None
+        self._callback_handler: Optional[Any] = None  # Type hint genérico para evitar import circular
     
     @property
     def call_uuid(self) -> str:
@@ -229,6 +238,23 @@ class RealtimeSession:
             call_uuid=self.call_uuid,
             provider=self.config.provider_name,
         )
+        
+        # ========================================
+        # Business Hours Check - Fluxo especial para fora do horário
+        # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
+        # ========================================
+        if self.config.is_outside_business_hours:
+            logger.info("Starting outside business hours flow", extra={
+                "call_uuid": self.call_uuid,
+                "domain_uuid": self.domain_uuid,
+                "message": self.config.outside_hours_message,
+            })
+            
+            # Executar fluxo de fora do horário em background
+            self._outside_hours_task = asyncio.create_task(
+                self._handle_outside_business_hours()
+            )
+            return
         
         try:
             await self._create_provider()
@@ -276,6 +302,112 @@ class RealtimeSession:
             logger.warning(f"Failed to initialize TransferManager: {e}")
             # Continuar sem TransferManager - usará handoff legacy
             self._transfer_manager = None
+    
+    async def _handle_outside_business_hours(self) -> None:
+        """
+        Fluxo especial para chamadas recebidas fora do horário comercial.
+        
+        Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
+        
+        Comportamento:
+        1. Criar provider e conectar (para poder falar com o cliente)
+        2. Informar ao cliente que está fora do horário
+        3. Oferecer opções: deixar recado ou agendar callback
+        4. Capturar informações e criar ticket no OmniPlay
+        5. Encerrar chamada educadamente
+        
+        Usa CallbackHandler para capturar número e criar ticket.
+        """
+        try:
+            logger.info("Starting outside business hours handler", extra={
+                "call_uuid": self.call_uuid,
+                "domain_uuid": self.domain_uuid,
+            })
+            
+            # Inicializar provider para poder falar com o cliente
+            await self._create_provider()
+            self._setup_resampler()
+            
+            # Inicializar CallbackHandler para captura de dados
+            from .handlers.callback_handler import CallbackHandler
+            
+            self._callback_handler = CallbackHandler(
+                domain_uuid=self.config.domain_uuid,
+                call_uuid=self.config.call_uuid,
+                caller_id=self.config.caller_id,
+                secretary_uuid=self.config.secretary_uuid,
+                omniplay_company_id=self.config.omniplay_company_id,
+            )
+            
+            # Construir mensagem inicial para fora do horário
+            outside_hours_prompt = self._build_outside_hours_prompt()
+            
+            # Sobrescrever system prompt para fluxo de fora do horário
+            if hasattr(self._provider, 'update_instructions'):
+                await self._provider.update_instructions(outside_hours_prompt)
+            
+            # Iniciar event loop para processar conversa
+            self._event_task = asyncio.create_task(self._event_loop())
+            self._timeout_task = asyncio.create_task(self._timeout_monitor())
+            
+            logger.info("Outside business hours session started", extra={
+                "call_uuid": self.call_uuid,
+                "provider": self.config.provider_name,
+            })
+            
+        except Exception as e:
+            logger.error(
+                f"Error in outside business hours handler: {e}",
+                extra={"call_uuid": self.call_uuid},
+                exc_info=True
+            )
+            # Tentar encerrar graciosamente
+            await self.stop("error_outside_hours")
+    
+    def _build_outside_hours_prompt(self) -> str:
+        """
+        Constrói prompt para atendimento fora do horário.
+        
+        Returns:
+            System prompt configurado para fluxo de callback/recado
+        """
+        base_message = self.config.outside_hours_message
+        secretary_name = self.config.secretary_name or "Secretária Virtual"
+        
+        prompt = f"""Você é {secretary_name}, uma assistente virtual.
+
+CONTEXTO IMPORTANTE: A chamada foi recebida FORA DO HORÁRIO DE ATENDIMENTO.
+
+{base_message}
+
+Seu objetivo nesta conversa é:
+1. Informar educadamente que estamos fora do horário
+2. Oferecer duas opções ao cliente:
+   a) Deixar um recado/mensagem
+   b) Solicitar que um atendente retorne a ligação (callback)
+
+3. Se o cliente quiser callback:
+   - Confirmar o número de telefone para retorno
+   - Perguntar o melhor horário para retorno (opcional)
+   - Perguntar brevemente o motivo da ligação
+   - Use a função `schedule_callback` para registrar
+
+4. Se o cliente quiser deixar recado:
+   - Ouvir atentamente a mensagem
+   - Confirmar que o recado foi registrado
+   - Use a função `leave_message` para registrar
+
+5. Após capturar as informações, agradecer e encerrar educadamente
+
+REGRAS:
+- Seja breve e objetivo
+- Não prometa horários específicos de retorno
+- Sempre confirme o número de telefone antes de registrar callback
+- Se o cliente não quiser nenhuma das opções, agradecer e encerrar
+
+Comece cumprimentando e informando sobre o horário de atendimento."""
+
+        return prompt
     
     async def _create_provider(self) -> None:
         """Cria e conecta ao provider."""

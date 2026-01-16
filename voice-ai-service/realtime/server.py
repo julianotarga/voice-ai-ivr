@@ -27,6 +27,10 @@ from .config_loader import (
     build_transfer_context,
     build_transfer_tools_schema,
 )
+from .handlers.time_condition_checker import (
+    get_time_condition_checker,
+    TimeConditionStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +319,9 @@ class RealtimeServer:
                     COALESCE(s.jitter_buffer_min, 100) as jitter_buffer_min,
                     COALESCE(s.jitter_buffer_max, 300) as jitter_buffer_max,
                     COALESCE(s.jitter_buffer_step, 40) as jitter_buffer_step,
-                    COALESCE(s.stream_buffer_size, 20) as stream_buffer_size  -- 20ms default (NOT samples!)
+                    COALESCE(s.stream_buffer_size, 20) as stream_buffer_size,  -- 20ms default (NOT samples!)
+                    -- Business Hours (Time Condition)
+                    s.time_condition_uuid
                 FROM v_voice_secretaries s
                 LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
                 WHERE s.voice_secretary_uuid = $1::uuid
@@ -338,6 +344,62 @@ class RealtimeServer:
                 "extension": row["extension"],
                 "provider": row["provider_name"],
             })
+        
+        # ========================================
+        # Business Hours Check (Time Condition)
+        # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
+        # ========================================
+        time_condition_uuid = row.get("time_condition_uuid")
+        
+        if time_condition_uuid:
+            try:
+                time_checker = get_time_condition_checker()
+                time_result = await time_checker.check(
+                    domain_uuid=domain_uuid,
+                    time_condition_uuid=str(time_condition_uuid)
+                )
+                
+                logger.info("Business hours check", extra={
+                    "call_uuid": call_uuid,
+                    "domain_uuid": domain_uuid,
+                    "time_condition_uuid": str(time_condition_uuid),
+                    "is_open": time_result.is_open,
+                    "status": time_result.status.value,
+                    "message": time_result.message,
+                })
+                
+                if not time_result.is_open:
+                    # Fora do horário comercial
+                    # Retornar None para sinalizar que deve criar ticket/callback
+                    # O caller deve tratar isso apropriadamente
+                    logger.warning(
+                        "Call received outside business hours",
+                        extra={
+                            "call_uuid": call_uuid,
+                            "domain_uuid": domain_uuid,
+                            "secretary_name": row["name"],
+                            "status": time_result.status.value,
+                            "message": time_result.message,
+                        }
+                    )
+                    
+                    # Retornar configuração especial indicando fora do horário
+                    # A sessão será criada mas com flag para executar fluxo de fora-do-horário
+                    # Isso permite que o Voice AI informe o cliente e crie ticket
+                    # ao invés de simplesmente recusar a chamada
+                    
+            except Exception as e:
+                # Fail-open: em caso de erro, prosseguir normalmente
+                logger.warning(
+                    f"Error checking business hours, proceeding: {e}",
+                    extra={
+                        "call_uuid": call_uuid,
+                        "domain_uuid": domain_uuid,
+                    }
+                )
+                time_result = None
+        else:
+            time_result = None  # Sem restrição de horário
         
         # Configurar sessão (com overrides por provider/tenant)
         vad_threshold = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.65"))
@@ -500,6 +562,14 @@ class RealtimeServer:
             jitter_buffer_max=db_jitter_max,
             jitter_buffer_step=db_jitter_step,
             stream_buffer_size=db_stream_buffer,
+            # Business Hours
+            is_outside_business_hours=(
+                time_result is not None and not time_result.is_open
+            ),
+            outside_hours_message=(
+                time_result.message if time_result and not time_result.is_open
+                else "Estamos fora do horário de atendimento."
+            ),
         )
         
         logger.debug("Session config created", extra={
