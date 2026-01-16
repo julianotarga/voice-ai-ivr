@@ -69,6 +69,12 @@ class VoiceAIApplication:
         self._domain_uuid: Optional[str] = None
         self._secretary_uuid: Optional[str] = None
         
+        # Informações de mídia RTP
+        self._remote_media_ip: Optional[str] = None
+        self._remote_media_port: Optional[str] = None
+        self._local_media_ip: Optional[str] = None
+        self._local_media_port: Optional[str] = None
+        
         # RTP Bridge
         self._rtp_bridge: Optional[RTPBridge] = None
         
@@ -127,9 +133,13 @@ class VoiceAIApplication:
             self.session.connect()
             self.session.myevents()
             
+            # CRÍTICO: linger() mantém a sessão ESL ativa
+            # Ref: greenswitch/examples/outbound_socket_example.py
+            self.session.linger()
+            
             self._uuid = self.session.uuid
             
-            logger.debug(f"[{self._uuid}] ESL connected")
+            logger.debug(f"[{self._uuid}] ESL connected with linger")
             
         except Exception as e:
             logger.error(f"Failed to connect ESL session: {e}")
@@ -143,6 +153,17 @@ class VoiceAIApplication:
         self._domain_uuid = data.get("variable_domain_uuid")
         self._secretary_uuid = data.get("variable_secretary_uuid")
         
+        # Extrair info de mídia para RTP
+        self._remote_media_ip = data.get("variable_remote_media_ip")
+        self._remote_media_port = data.get("variable_remote_media_port")
+        self._local_media_ip = data.get("variable_local_media_ip")
+        self._local_media_port = data.get("variable_local_media_port")
+        
+        logger.info(
+            f"[{self._uuid}] Media info: remote={self._remote_media_ip}:{self._remote_media_port}, "
+            f"local={self._local_media_ip}:{self._local_media_port}"
+        )
+        
         # Log todas as variáveis em debug
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"[{self._uuid}] Channel vars: {data}")
@@ -153,11 +174,27 @@ class VoiceAIApplication:
         logger.debug(f"[{self._uuid}] Answer result: {result}")
     
     def _start_rtp_bridge(self) -> None:
-        """Inicializa RTP Bridge para áudio."""
+        """
+        Inicializa RTP Bridge para áudio.
+        
+        IMPORTANTE: Para RTP direto funcionar, precisamos:
+        1. Criar nosso socket UDP
+        2. Obter o endereço do FreeSWITCH (remote_media_ip:remote_media_port)
+        3. Configurar o bridge para enviar/receber desse endereço
+        
+        O FreeSWITCH já envia RTP para o endpoint configurado no SDP.
+        Para interceptar, usamos uuid_media ou proxy_media.
+        """
         logger.info(f"[{self._uuid}] Starting RTP Bridge...")
+        
+        # Obter endereço do FreeSWITCH para envio
+        remote_ip = self._remote_media_ip or os.getenv("FREESWITCH_RTP_IP", "127.0.0.1")
+        remote_port = int(self._remote_media_port or 0)
         
         config = RTPBridgeConfig(
             local_address=os.getenv("RTP_BIND_ADDRESS", "0.0.0.0"),
+            remote_address=remote_ip,
+            remote_rtp_port=remote_port,
             payload_type=PayloadType.PCMU,
             sample_rate=8000,
             jitter_min_ms=int(os.getenv("RTP_JITTER_MIN_MS", "60")),
@@ -175,7 +212,63 @@ class VoiceAIApplication:
         self._rtp_bridge.start()
         
         logger.info(
-            f"[{self._uuid}] RTP Bridge started on port {self._rtp_bridge.local_rtp_port}"
+            f"[{self._uuid}] RTP Bridge started on port {self._rtp_bridge.local_rtp_port}, "
+            f"remote={remote_ip}:{remote_port}"
+        )
+        
+        # Redirecionar áudio do FreeSWITCH para nosso bridge
+        # usando uuid_media (se disponível)
+        self._redirect_rtp_to_bridge()
+    
+    def _redirect_rtp_to_bridge(self) -> None:
+        """
+        Redireciona RTP do FreeSWITCH para nosso bridge.
+        
+        NOTA IMPORTANTE:
+        O FreeSWITCH envia RTP para o endpoint definido no SDP da chamada.
+        Para interceptar/redirecionar, temos opções:
+        
+        1. uuid_media_reneg - Renegocia SDP (complexo)
+        2. Usar mod_audio_fork junto com ESL (híbrido)
+        3. Configurar proxy_media antes do answer
+        
+        ABORDAGEM ATUAL:
+        Capturamos o IP/porta remota do FreeSWITCH e configuramos 
+        nosso bridge para responder nesse endereço. O FreeSWITCH
+        auto-detecta o endereço de retorno quando recebe nossos pacotes.
+        
+        Ref: https://freeswitch.org/confluence/display/FREESWITCH/mod_sofia
+        """
+        if not self._rtp_bridge:
+            return
+            
+        # O RTP bridge já foi configurado com remote_address/port
+        # Agora enviamos um pacote inicial para que FreeSWITCH
+        # detecte nosso endereço (NAT traversal)
+        
+        rtp_port = self._rtp_bridge.local_rtp_port
+        
+        logger.info(
+            f"[{self._uuid}] RTP Bridge configured, waiting for incoming packets..."
+        )
+        
+        # Se temos o endereço remoto, podemos tentar enviar um pacote
+        # de "keep-alive" para iniciar o fluxo
+        if self._remote_media_ip and self._remote_media_port:
+            try:
+                # Enviar um pacote de silêncio para iniciar fluxo
+                silence = bytes(160)  # 20ms de PCMU silence = 160 bytes
+                self._rtp_bridge.send_audio(silence, marker=True)
+                logger.info(f"[{self._uuid}] Initial RTP packet sent")
+            except Exception as e:
+                logger.warning(f"[{self._uuid}] Failed to send initial RTP: {e}")
+        
+        # Log variáveis de mídia para debug
+        logger.info(
+            f"[{self._uuid}] Media config: "
+            f"remote={self._remote_media_ip}:{self._remote_media_port}, "
+            f"local={self._local_media_ip}:{self._local_media_port}, "
+            f"bridge_port={rtp_port}"
         )
     
     def _start_ai_session(self) -> None:
