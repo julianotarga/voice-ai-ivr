@@ -280,7 +280,8 @@ class DatabaseService:
         # Default values - must match settings.php $defaults
         defaults = {
             # Service Configuration
-            'service_url': 'http://127.0.0.1:8100/api/v1',
+            # NOTA: URL base SEM /api/v1 - o prefixo é adicionado pelos endpoints
+            'service_url': 'http://127.0.0.1:8100',
             'max_concurrent_calls': 10,
             'default_max_turns': 20,
             'rate_limit_rpm': 60,

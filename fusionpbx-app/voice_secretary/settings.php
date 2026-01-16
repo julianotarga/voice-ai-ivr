@@ -51,7 +51,8 @@
 //====================================================================
 $defaults = [
 	// Service Configuration
-	'service_url' => 'http://127.0.0.1:8100/api/v1',
+	// NOTA: URL base SEM /api/v1 - o prefixo é adicionado pelos endpoints
+	'service_url' => 'http://127.0.0.1:8100',
 	'max_concurrent_calls' => 10,
 	'default_max_turns' => 20,
 	'rate_limit_rpm' => 60,
@@ -173,7 +174,8 @@ $defaults = [
 		
 		// 🔄 CRITICAL: Notify Voice AI Service to reload settings cache
 		$service_url = $new_settings['service_url'] ?? $defaults['service_url'];
-		$reload_url = rtrim($service_url, '/') . '/callback/settings/reload';
+		// Endpoint: /api/v1/callback/settings/reload
+		$reload_url = rtrim($service_url, '/') . '/api/v1/callback/settings/reload';
 		
 		$ch = curl_init();
 		curl_setopt($ch, CURLOPT_URL, $reload_url);
@@ -313,7 +315,7 @@ function is_checked($value) {
 	echo "			<input class='formfld' type='url' name='service_url' value='".escape($merged['service_url'])."' style='flex: 1;' placeholder='".$defaults['service_url']."'>\n";
 	echo button::create(['type'=>'submit','name'=>'test_service','label'=>'Testar','icon'=>'fa-plug','style'=>'padding: 5px 10px;']);
 	echo "		</div>\n";
-	echo "		<br /><span class='vtable-hint'>URL base do serviço Voice AI (ex: http://127.0.0.1:8100/api/v1). <b>Padrão:</b> ".$defaults['service_url']."</span>\n";
+	echo "		<br /><span class='vtable-hint'>URL base do serviço Voice AI, SEM /api/v1 (ex: http://127.0.0.1:8100). <b>Padrão:</b> ".$defaults['service_url']."</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
