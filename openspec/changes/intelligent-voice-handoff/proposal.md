@@ -4,10 +4,11 @@
 - **Author:** Claude AI + Juliano Targa
 - **Created:** 2026-01-16
 - **Updated:** 2026-01-16
-- **Status:** PROPOSED
+- **Status:** PROPOSED (Revisão Técnica Completa)
 - **Priority:** HIGH
-- **Estimated Effort:** 9-14 dias (5 fases)
+- **Estimated Effort:** 12-18 dias (5 fases + correções)
 - **Multi-tenant:** ✅ Sim (domain_uuid obrigatório)
+- **Revisão Técnica:** ✅ 3 erros de lógica corrigidos, 7 melhorias adicionadas
 
 ## Resumo Executivo
 
@@ -2283,6 +2284,949 @@ router.post("/callback/initiate", authMiddleware, async (req, res) => {
 
 ---
 
+---
+
+## 🔍 REVISÃO TÉCNICA (Correções Pós-Análise)
+
+Esta seção documenta correções de lógica e melhorias identificadas na revisão técnica da proposta.
+
+### 🔴 ERRO DE LÓGICA 1: Hold + Transfer são incompatíveis
+
+**PROBLEMA ORIGINAL:**
+```
+Voice AI envia comando ESL: uuid_hold {uuid} + uuid_transfer
+```
+
+**POR QUE ESTÁ ERRADO:**
+- `uuid_hold` coloca o canal em espera (cliente ouve música)
+- `uuid_transfer` move o canal para OUTRO destino no dialplan
+- Ao fazer `uuid_transfer`, o Voice AI **PERDE** a conexão WebSocket
+- O `mod_audio_stream` é desconectado quando a chamada sai do contexto
+
+**CORREÇÃO - USAR ORIGINATE + BRIDGE:**
+
+```python
+# voice-ai-service/realtime/handlers/transfer_manager.py
+
+async def execute_attended_transfer(
+    self,
+    call_uuid: str,
+    destination: str,
+    timeout_seconds: int = 30
+) -> TransferResult:
+    """
+    Executa transferência attended CORRETAMENTE.
+    
+    Fluxo:
+    1. Tocar música de espera para o cliente (NÃO uuid_hold!)
+    2. Originar NOVA leg para o destino
+    3. Monitorar resultado da nova leg
+    4. Se atendeu: bridge as duas legs
+    5. Se não atendeu: parar música, retomar Voice AI
+    """
+    
+    # ══════════════════════════════════════════════════════════════
+    # PASSO 1: Tocar música de espera (mantém mod_audio_stream ativo!)
+    # ══════════════════════════════════════════════════════════════
+    # IMPORTANTE: Usar uuid_broadcast ao invés de uuid_hold
+    # uuid_broadcast NÃO desconecta o mod_audio_stream
+    moh_command = f"uuid_broadcast {call_uuid} local_stream://moh aleg"
+    await self.esl.execute_api(moh_command)
+    
+    self._transfer_in_progress = True
+    
+    try:
+        # ══════════════════════════════════════════════════════════
+        # PASSO 2: Originar NOVA chamada para o destino
+        # ══════════════════════════════════════════════════════════
+        # Criar UUID para a nova leg
+        b_leg_uuid = str(uuid.uuid4())
+        
+        # Construir dial string
+        dial_string = (
+            f"{{origination_uuid={b_leg_uuid},"
+            f"origination_caller_id_number={self.caller_id},"
+            f"origination_caller_id_name=Transferencia IA,"
+            f"call_timeout={timeout_seconds},"
+            f"hangup_after_bridge=true}}"
+            f"user/{destination}@{self.domain}"
+        )
+        
+        # Originar com callback (não bloqueia)
+        originate_cmd = f"originate {dial_string} &park()"
+        result = await self.esl.execute_bgapi(originate_cmd)
+        
+        if "+OK" not in result:
+            return TransferResult(
+                status=TransferStatus.FAILED,
+                reason="Originate failed",
+                sip_code=None
+            )
+        
+        # ══════════════════════════════════════════════════════════
+        # PASSO 3: Monitorar eventos da nova leg
+        # ══════════════════════════════════════════════════════════
+        result = await self._monitor_transfer_leg(
+            b_leg_uuid=b_leg_uuid,
+            timeout=timeout_seconds + 5  # margem de segurança
+        )
+        
+        # ══════════════════════════════════════════════════════════
+        # PASSO 4: Processar resultado
+        # ══════════════════════════════════════════════════════════
+        if result.status == TransferStatus.ANSWERED:
+            # Destino atendeu! Fazer bridge
+            bridge_cmd = f"uuid_bridge {call_uuid} {b_leg_uuid}"
+            await self.esl.execute_api(bridge_cmd)
+            
+            # Voice AI se desconecta - transferência completa
+            return TransferResult(
+                status=TransferStatus.SUCCESS,
+                reason="Bridge established",
+                transferred_to=destination
+            )
+        else:
+            # Não atendeu - parar música e retornar ao Voice AI
+            await self._stop_moh_and_resume(call_uuid)
+            return result
+    
+    except Exception as e:
+        logger.error(f"Transfer error: {e}")
+        await self._stop_moh_and_resume(call_uuid)
+        return TransferResult(
+            status=TransferStatus.FAILED,
+            reason=str(e)
+        )
+    
+    finally:
+        self._transfer_in_progress = False
+
+async def _stop_moh_and_resume(self, call_uuid: str):
+    """Para música de espera e retoma Voice AI."""
+    # Parar o broadcast de música
+    stop_cmd = f"uuid_break {call_uuid}"
+    await self.esl.execute_api(stop_cmd)
+    
+    # O mod_audio_stream AINDA está ativo!
+    # O Voice AI pode retomar a conversa imediatamente
+    logger.info(f"MOH stopped, Voice AI resuming for {call_uuid}")
+```
+
+**DIAGRAMA CORRIGIDO:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLUXO ATTENDED TRANSFER CORRIGIDO                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────┐     mod_audio_stream     ┌─────────────────┐               │
+│  │   Cliente   │◄────────────────────────►│   Voice AI      │               │
+│  │             │     (SEMPRE CONECTADO)   │                 │               │
+│  └──────┬──────┘                          └────────┬────────┘               │
+│         │                                          │                        │
+│         │ 1. Cliente pede: "falar com Jeni"        │                        │
+│         ▼                                          ▼                        │
+│  ┌─────────────────────────────────────────────────────────────┐            │
+│  │ Voice AI: "Um momento, vou transferir..."                   │            │
+│  └─────────────────────────────────────────────────────────────┘            │
+│         │                                          │                        │
+│         │ 2. uuid_broadcast → música de espera     │                        │
+│         │    (mod_audio_stream CONTINUA ativo)     │                        │
+│         ▼                                          │                        │
+│  ┌─────────────┐                                   │                        │
+│  │  🎵 Música  │                                   │                        │
+│  │  de espera  │                                   │                        │
+│  └──────┬──────┘                                   │                        │
+│         │                                          │                        │
+│         │ 3. Voice AI executa: originate user/1004 │                        │
+│         │                                          │                        │
+│         │        ┌────────────────────────────────┐│                        │
+│         │        │   Nova leg (B-leg)             ││                        │
+│         │        │   📞 Ramal 1004 (Jeni)         ││                        │
+│         │        └───────────┬────────────────────┘│                        │
+│         │                    │                     │                        │
+│         │              ┌─────┴─────┐               │                        │
+│         │              ▼           ▼               │                        │
+│         │          ANSWERED    NO_ANSWER/BUSY      │                        │
+│         │              │           │               │                        │
+│         │              ▼           ▼               │                        │
+│         │        uuid_bridge   uuid_break          │                        │
+│         │        (conectar)    (parar música)      │                        │
+│         │              │           │               │                        │
+│         │              ▼           ▼               │                        │
+│         │        ┌─────────┐  ┌─────────────────┐  │                        │
+│         └───────►│ Bridge  │  │ Voice AI retoma │◄─┘                        │
+│                  │Cliente↔ │  │ "Jeni não está  │                           │
+│                  │ Jeni    │  │  disponível..." │                           │
+│                  └─────────┘  └─────────────────┘                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🔴 ERRO DE LÓGICA 2: Confirmação de que mod_audio_stream permanece ativo
+
+**PROBLEMA:** A proposta não deixava claro se a conexão WebSocket sobrevive durante o hold/música.
+
+**CONFIRMAÇÃO TÉCNICA:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  COMPORTAMENTO DO mod_audio_stream DURANTE OPERAÇÕES                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Operação                │ WebSocket    │ Áudio Recebido    │ Pode Resumir │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  uuid_broadcast (música) │ ✅ ATIVO     │ Música (não user) │ ✅ SIM       │
+│  uuid_hold               │ ✅ ATIVO     │ Silêncio          │ ✅ SIM       │
+│  uuid_break              │ ✅ ATIVO     │ Volta ao user     │ ✅ SIM       │
+│  uuid_transfer           │ ❌ DESCONECTA│ N/A               │ ❌ NÃO       │
+│  uuid_bridge (outro leg) │ ❌ DESCONECTA│ N/A               │ ❌ NÃO       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**REGRA:** Usar `uuid_broadcast` + `uuid_break` para manter controle. Evitar `uuid_transfer` até o momento do bridge final.
+
+---
+
+### 🔴 ERRO DE LÓGICA 3: Falta timeout no loop do worker
+
+**PROBLEMA ORIGINAL:**
+```
+WHILE (ticket.callbackStatus == 'pending') {
+   verificar disponibilidade do ramal
+   IF (disponível) → notificar atendente
+}
+// Loop infinito! Sem condição de saída
+```
+
+**CORREÇÃO - Adicionar campos de controle:**
+
+```sql
+-- Adicionar à tabela Tickets (migration OmniPlay)
+ALTER TABLE "Tickets" ADD COLUMN IF NOT EXISTS "callbackExpiresAt" TIMESTAMP;
+ALTER TABLE "Tickets" ADD COLUMN IF NOT EXISTS "callbackMaxNotifications" INT DEFAULT 5;
+ALTER TABLE "Tickets" ADD COLUMN IF NOT EXISTS "callbackNotificationCount" INT DEFAULT 0;
+ALTER TABLE "Tickets" ADD COLUMN IF NOT EXISTS "callbackLastNotifiedAt" TIMESTAMP;
+ALTER TABLE "Tickets" ADD COLUMN IF NOT EXISTS "callbackMinIntervalMinutes" INT DEFAULT 10;
+```
+
+**LÓGICA CORRIGIDA:**
+
+```typescript
+// backend/src/jobs/CallbackMonitorJob.ts
+
+async function processCallbackTicket(ticket: Ticket): Promise<void> {
+    // ══════════════════════════════════════════════════════════════
+    // VALIDAÇÃO 1: Expiração do callback (default: 24h)
+    // ══════════════════════════════════════════════════════════════
+    if (ticket.callbackExpiresAt && ticket.callbackExpiresAt < new Date()) {
+        logger.info(`Callback expired for ticket ${ticket.id}`);
+        await ticket.update({ 
+            callbackStatus: 'expired',
+            // NÃO fechar ticket - deixar para revisão manual
+        });
+        return;
+    }
+    
+    // ══════════════════════════════════════════════════════════════
+    // VALIDAÇÃO 2: Máximo de notificações atingido
+    // ══════════════════════════════════════════════════════════════
+    const maxNotifications = ticket.callbackMaxNotifications || 5;
+    if (ticket.callbackNotificationCount >= maxNotifications) {
+        logger.info(`Max notifications reached for ticket ${ticket.id}`);
+        await ticket.update({ callbackStatus: 'needs_review' });
+        return;
+    }
+    
+    // ══════════════════════════════════════════════════════════════
+    // VALIDAÇÃO 3: Intervalo mínimo entre notificações
+    // ══════════════════════════════════════════════════════════════
+    const minInterval = ticket.callbackMinIntervalMinutes || 10;
+    if (ticket.callbackLastNotifiedAt) {
+        const minutesSinceLastNotification = 
+            (Date.now() - ticket.callbackLastNotifiedAt.getTime()) / 60000;
+        
+        if (minutesSinceLastNotification < minInterval) {
+            // Aguardar mais tempo antes de verificar novamente
+            return;
+        }
+    }
+    
+    // ══════════════════════════════════════════════════════════════
+    // VERIFICAR DISPONIBILIDADE E NOTIFICAR
+    // ══════════════════════════════════════════════════════════════
+    const isAvailable = await checkExtensionAvailable(ticket.callbackExtension);
+    
+    if (isAvailable) {
+        await notifyAgent(ticket);
+        await ticket.update({ 
+            callbackNotificationCount: ticket.callbackNotificationCount + 1,
+            callbackLastNotifiedAt: new Date()
+        });
+    }
+}
+```
+
+---
+
+### 🟡 MELHORIA 1: Especificação de eventos ESL a monitorar
+
+**EVENTOS FREESWITCH NECESSÁRIOS:**
+
+```python
+# voice-ai-service/realtime/handlers/transfer_manager.py
+
+class FreeSwitchEvents:
+    """Eventos ESL que o TransferManager precisa monitorar."""
+    
+    # ══════════════════════════════════════════════════════════════
+    # EVENTOS DE TRANSFERÊNCIA
+    # ══════════════════════════════════════════════════════════════
+    TRANSFER_EVENTS = [
+        "CHANNEL_ANSWER",       # Destino atendeu
+        "CHANNEL_HANGUP",       # Chamada encerrada (verificar cause)
+        "CHANNEL_BRIDGE",       # Bridge estabelecido
+        "CHANNEL_UNBRIDGE",     # Bridge encerrado
+        "CHANNEL_PROGRESS",     # Ringback (tocando)
+        "CHANNEL_PROGRESS_MEDIA", # Early media
+    ]
+    
+    # ══════════════════════════════════════════════════════════════
+    # MAPEAMENTO DE HANGUP CAUSES
+    # ══════════════════════════════════════════════════════════════
+    HANGUP_CAUSE_MAP = {
+        # Sucesso
+        "NORMAL_CLEARING": TransferStatus.SUCCESS,
+        "ORIGINATOR_CANCEL": TransferStatus.CANCELLED,
+        
+        # Ocupado
+        "USER_BUSY": TransferStatus.BUSY,
+        "NORMAL_CIRCUIT_CONGESTION": TransferStatus.BUSY,
+        
+        # Não atendeu
+        "NO_ANSWER": TransferStatus.NO_ANSWER,
+        "NO_USER_RESPONSE": TransferStatus.NO_ANSWER,
+        "ALLOTTED_TIMEOUT": TransferStatus.NO_ANSWER,
+        
+        # Rejeitado
+        "CALL_REJECTED": TransferStatus.REJECTED,
+        "USER_REJECT": TransferStatus.REJECTED,
+        
+        # Indisponível / Offline
+        "SUBSCRIBER_ABSENT": TransferStatus.OFFLINE,
+        "USER_NOT_REGISTERED": TransferStatus.OFFLINE,
+        "UNALLOCATED_NUMBER": TransferStatus.UNAVAILABLE,
+        "NO_ROUTE_DESTINATION": TransferStatus.UNAVAILABLE,
+        
+        # DND
+        "DO_NOT_DISTURB": TransferStatus.DND,
+        
+        # Erro
+        "NORMAL_TEMPORARY_FAILURE": TransferStatus.FAILED,
+        "DESTINATION_OUT_OF_ORDER": TransferStatus.FAILED,
+    }
+
+
+async def _monitor_transfer_leg(
+    self,
+    b_leg_uuid: str,
+    timeout: int
+) -> TransferResult:
+    """
+    Monitora eventos da leg de destino.
+    
+    Retorna assim que detectar resultado definitivo.
+    """
+    start_time = time.monotonic()
+    
+    # Subscrever eventos para o UUID específico
+    await self.esl.subscribe_events(
+        FreeSwitchEvents.TRANSFER_EVENTS,
+        uuid=b_leg_uuid
+    )
+    
+    try:
+        while (time.monotonic() - start_time) < timeout:
+            event = await asyncio.wait_for(
+                self.esl.recv_event(),
+                timeout=1.0
+            )
+            
+            if not event:
+                continue
+            
+            event_uuid = event.get("Unique-ID")
+            if event_uuid != b_leg_uuid:
+                continue
+            
+            event_name = event.get("Event-Name")
+            
+            # ═══════════════════════════════════════════════════════
+            # CHANNEL_ANSWER: Destino atendeu!
+            # ═══════════════════════════════════════════════════════
+            if event_name == "CHANNEL_ANSWER":
+                logger.info(f"Transfer answered: {b_leg_uuid}")
+                return TransferResult(
+                    status=TransferStatus.ANSWERED,
+                    reason="Destination answered",
+                    sip_code=200
+                )
+            
+            # ═══════════════════════════════════════════════════════
+            # CHANNEL_HANGUP: Chamada encerrada - verificar causa
+            # ═══════════════════════════════════════════════════════
+            if event_name == "CHANNEL_HANGUP":
+                hangup_cause = event.get("Hangup-Cause", "UNKNOWN")
+                sip_code = event.get("variable_sip_term_status")
+                
+                status = FreeSwitchEvents.HANGUP_CAUSE_MAP.get(
+                    hangup_cause,
+                    TransferStatus.FAILED
+                )
+                
+                logger.info(f"Transfer hangup: {hangup_cause} → {status}")
+                return TransferResult(
+                    status=status,
+                    reason=hangup_cause,
+                    sip_code=int(sip_code) if sip_code else None
+                )
+            
+            # ═══════════════════════════════════════════════════════
+            # CHANNEL_PROGRESS: Tocando (informativo)
+            # ═══════════════════════════════════════════════════════
+            if event_name == "CHANNEL_PROGRESS":
+                logger.debug(f"Transfer ringing: {b_leg_uuid}")
+                self._transfer_status = TransferStatus.RINGING
+        
+        # Timeout atingido
+        logger.warning(f"Transfer timeout for {b_leg_uuid}")
+        # Matar a leg pendente
+        await self.esl.execute_api(f"uuid_kill {b_leg_uuid}")
+        return TransferResult(
+            status=TransferStatus.NO_ANSWER,
+            reason="Timeout",
+            sip_code=None
+        )
+    
+    finally:
+        await self.esl.unsubscribe_events(uuid=b_leg_uuid)
+```
+
+---
+
+### 🟡 MELHORIA 2: Adicionar estado RINGING
+
+**ESTADOS ATUALIZADOS:**
+
+```python
+class TransferStatus(Enum):
+    """Estados possíveis de uma transferência."""
+    
+    # Estados finais
+    SUCCESS = "success"         # Bridge estabelecido
+    ANSWERED = "answered"       # Destino atendeu (antes do bridge)
+    BUSY = "busy"               # Ramal ocupado
+    NO_ANSWER = "no_answer"     # Timeout - não atendeu
+    DND = "dnd"                 # Do Not Disturb
+    OFFLINE = "offline"         # Ramal não registrado
+    REJECTED = "rejected"       # Recusou a chamada
+    UNAVAILABLE = "unavailable" # Ramal inexistente
+    FAILED = "failed"           # Erro técnico
+    CANCELLED = "cancelled"     # Cliente desligou durante espera
+    
+    # Estados intermediários (em progresso)
+    RINGING = "ringing"         # 🆕 Tocando, aguardando atendimento
+    PENDING = "pending"         # Aguardando início
+```
+
+**USO NO AGENTE IA:**
+
+```python
+# Quando cliente perguntar "e aí, vai demorar?"
+if self._transfer_status == TransferStatus.RINGING:
+    await self.say("O ramal está tocando, aguarde mais um momento...")
+elif self._transfer_status == TransferStatus.PENDING:
+    await self.say("Estou tentando conectar, um momento...")
+```
+
+---
+
+### 🟡 MELHORIA 3: Tratamento para cliente desliga durante hold
+
+**NOVO HANDLER:**
+
+```python
+# voice-ai-service/realtime/handlers/transfer_manager.py
+
+class TransferManager:
+    def __init__(self, ...):
+        # ...
+        self._caller_hangup_handler = None
+    
+    async def start_transfer(self, destination: str):
+        """Inicia transferência com monitoramento de hangup do caller."""
+        
+        # Registrar handler para hangup do caller
+        self._caller_hangup_handler = self.esl.on_event(
+            "CHANNEL_HANGUP",
+            uuid=self.call_uuid,
+            callback=self._on_caller_hangup
+        )
+        
+        try:
+            result = await self.execute_attended_transfer(
+                self.call_uuid,
+                destination
+            )
+            return result
+        finally:
+            # Remover handler
+            if self._caller_hangup_handler:
+                self.esl.off_event(self._caller_hangup_handler)
+    
+    async def _on_caller_hangup(self, event: dict):
+        """
+        Chamado quando o cliente desliga durante a espera.
+        
+        Ações:
+        1. Cancelar a tentativa de transferência
+        2. Matar a B-leg se existir
+        3. NÃO criar ticket (cliente abandonou)
+        """
+        logger.info(f"Caller hung up during transfer: {self.call_uuid}")
+        
+        # Cancelar transferência em progresso
+        if self._transfer_in_progress and self._b_leg_uuid:
+            await self.esl.execute_api(f"uuid_kill {self._b_leg_uuid}")
+            logger.info(f"B-leg killed due to caller hangup: {self._b_leg_uuid}")
+        
+        # Marcar como cancelado pelo cliente
+        self._transfer_result = TransferResult(
+            status=TransferStatus.CANCELLED,
+            reason="Caller hung up during transfer"
+        )
+```
+
+**FLUXO ATUALIZADO:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TRATAMENTO: CLIENTE DESLIGA DURANTE ESPERA                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Cliente em espera (música)                                                 │
+│        │                                                                    │
+│        ▼                                                                    │
+│  ┌─────────────┐                                                            │
+│  │ Cliente     │                                                            │
+│  │ DESLIGA     │                                                            │
+│  └──────┬──────┘                                                            │
+│         │                                                                   │
+│         ▼                                                                   │
+│  CHANNEL_HANGUP (call_uuid = cliente)                                       │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────┐                                    │
+│  │ TransferManager detecta:            │                                    │
+│  │ 1. uuid_kill na B-leg (Jeni)        │                                    │
+│  │ 2. Status = CANCELLED               │                                    │
+│  │ 3. NÃO criar ticket                 │                                    │
+│  └─────────────────────────────────────┘                                    │
+│                                                                             │
+│  Resultado: Jeni NÃO atende chamada fantasma                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🟡 MELHORIA 4: Wrap-up após transferência concluída
+
+**PROBLEMA:** Após Jeni atender e conversar, como marcar o ticket como concluído?
+
+**SOLUÇÃO - Monitorar CHANNEL_UNBRIDGE:**
+
+```python
+async def execute_attended_transfer(self, ...):
+    # ... código anterior ...
+    
+    if result.status == TransferStatus.ANSWERED:
+        # Destino atendeu! Fazer bridge
+        bridge_cmd = f"uuid_bridge {call_uuid} {b_leg_uuid}"
+        await self.esl.execute_api(bridge_cmd)
+        
+        # ══════════════════════════════════════════════════════════
+        # NOVO: Monitorar fim da conversa para wrap-up
+        # ══════════════════════════════════════════════════════════
+        asyncio.create_task(
+            self._monitor_bridge_completion(call_uuid, b_leg_uuid)
+        )
+        
+        return TransferResult(status=TransferStatus.SUCCESS, ...)
+
+async def _monitor_bridge_completion(
+    self, 
+    a_leg_uuid: str, 
+    b_leg_uuid: str
+):
+    """
+    Monitora o fim da conversa bridgeada para atualizar o ticket.
+    Executa em background após o Voice AI se desconectar.
+    """
+    try:
+        # Aguardar evento de unbridge ou hangup
+        event = await self.esl.wait_for_event(
+            ["CHANNEL_UNBRIDGE", "CHANNEL_HANGUP"],
+            uuid=a_leg_uuid,
+            timeout=3600  # 1 hora máximo
+        )
+        
+        # Calcular duração da conversa
+        answer_time = event.get("variable_answer_epoch")
+        hangup_time = event.get("variable_end_epoch")
+        duration = int(hangup_time) - int(answer_time) if answer_time and hangup_time else 0
+        
+        # Notificar OmniPlay para fechar o ticket
+        await self._notify_transfer_completed(
+            call_uuid=a_leg_uuid,
+            duration_seconds=duration,
+            hangup_cause=event.get("Hangup-Cause", "NORMAL_CLEARING")
+        )
+        
+    except asyncio.TimeoutError:
+        logger.warning(f"Bridge monitor timeout for {a_leg_uuid}")
+    except Exception as e:
+        logger.error(f"Bridge monitor error: {e}")
+
+async def _notify_transfer_completed(
+    self,
+    call_uuid: str,
+    duration_seconds: int,
+    hangup_cause: str
+):
+    """Notifica OmniPlay que a transferência foi concluída."""
+    async with aiohttp.ClientSession() as session:
+        await session.post(
+            f"{OMNIPLAY_API_URL}/api/voice/transfer/completed",
+            json={
+                "callUuid": call_uuid,
+                "status": "completed",
+                "durationSeconds": duration_seconds,
+                "hangupCause": hangup_cause
+            },
+            headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+```
+
+**ENDPOINT OMNIPLAY:**
+
+```typescript
+// backend/src/routes/voiceRoutes.ts
+
+router.post("/voice/transfer/completed", serviceAuthMiddleware, async (req, res) => {
+    const { callUuid, status, durationSeconds, hangupCause } = req.body;
+    
+    // Encontrar ticket pelo callUuid
+    const ticket = await Ticket.findOne({
+        where: { voiceCallUuid: callUuid }
+    });
+    
+    if (!ticket) {
+        return res.status(404).json({ error: "Ticket not found" });
+    }
+    
+    // Atualizar ticket
+    await ticket.update({
+        status: "closed",
+        callbackStatus: "completed",
+        callbackCompletedAt: new Date(),
+        voiceCallDuration: durationSeconds
+    });
+    
+    // Emitir evento Socket.IO
+    io.of(String(ticket.companyId)).emit(`company-${ticket.companyId}-ticket`, {
+        action: "update",
+        ticket: await ShowTicketService(ticket.id, ticket.companyId)
+    });
+    
+    res.json({ success: true });
+});
+```
+
+---
+
+### 🟡 MELHORIA 5: Integração com horário comercial
+
+**LÓGICA DE VERIFICAÇÃO:**
+
+```python
+# voice-ai-service/realtime/handlers/transfer_manager.py
+
+from datetime import datetime, time as dtime
+from typing import Dict, List
+
+def is_within_working_hours(working_hours: Dict) -> tuple[bool, str]:
+    """
+    Verifica se o destino está dentro do horário de funcionamento.
+    
+    Args:
+        working_hours: {"start": "08:00", "end": "18:00", "days": [1,2,3,4,5]}
+    
+    Returns:
+        (is_available, message)
+    """
+    if not working_hours:
+        return True, ""
+    
+    now = datetime.now()
+    
+    # Verificar dia da semana (0=segunda, 6=domingo)
+    allowed_days = working_hours.get("days", [0, 1, 2, 3, 4, 5, 6])
+    if now.weekday() not in allowed_days:
+        day_names = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+        allowed_day_names = [day_names[d] for d in sorted(allowed_days)]
+        return False, f"Disponível apenas {', '.join(allowed_day_names)}"
+    
+    # Verificar horário
+    start_str = working_hours.get("start", "00:00")
+    end_str = working_hours.get("end", "23:59")
+    
+    start = dtime(*map(int, start_str.split(":")))
+    end = dtime(*map(int, end_str.split(":")))
+    current = now.time()
+    
+    if not (start <= current <= end):
+        return False, f"Disponível das {start_str} às {end_str}"
+    
+    return True, ""
+
+
+# Uso no TransferManager
+async def find_and_validate_destination(self, user_text: str) -> tuple[TransferDestination, str]:
+    """Encontra destino e valida disponibilidade."""
+    
+    destination = self.find_destination(user_text)
+    if not destination:
+        return None, "Não encontrei esse destino."
+    
+    # Verificar horário comercial
+    within_hours, hours_message = is_within_working_hours(destination.working_hours)
+    if not within_hours:
+        return destination, f"{destination.name} não está disponível agora. {hours_message}. Quer deixar um recado?"
+    
+    return destination, None
+```
+
+**FLUXO ATUALIZADO:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  VERIFICAÇÃO DE HORÁRIO COMERCIAL                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Cliente: "Quero falar com o financeiro"                                    │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────┐                                    │
+│  │ find_destination("financeiro")      │                                    │
+│  │ → Jeni, ramal 1004                  │                                    │
+│  │ → working_hours: 08:00-18:00        │                                    │
+│  └─────────────────────────────────────┘                                    │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────┐                                    │
+│  │ is_within_working_hours()           │                                    │
+│  └───────────┬───────────┬─────────────┘                                    │
+│              │           │                                                  │
+│         DENTRO       FORA                                                   │
+│              │           │                                                  │
+│              ▼           ▼                                                  │
+│        Tentar      Agente: "O financeiro                                    │
+│        transfer    atende das 08h às 18h.                                   │
+│                    Quer deixar um recado?"                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🟡 MELHORIA 6: Tratamento para caller_id inválido
+
+**VALIDAÇÃO APRIMORADA:**
+
+```python
+# voice-ai-service/realtime/handlers/handoff.py
+
+INVALID_CALLER_IDS = [
+    "Anonymous",
+    "Restricted", 
+    "Unavailable",
+    "Unknown",
+    "Private",
+    "0",
+    "",
+    None
+]
+
+def normalize_and_validate_caller_id(caller_id: str) -> tuple[str, bool]:
+    """
+    Normaliza caller_id e indica se é válido para callback.
+    
+    Returns:
+        (normalized_number, is_valid_for_callback)
+    """
+    # Caller ID inválido ou anônimo
+    if not caller_id or caller_id in INVALID_CALLER_IDS:
+        return None, False
+    
+    # Remover caracteres não numéricos
+    digits = re.sub(r'\D', '', caller_id)
+    
+    # Ramal interno (2-4 dígitos) - usar número de teste em dev
+    if 2 <= len(digits) <= 4:
+        dev_number = os.getenv("DEV_TEST_NUMBER")
+        if dev_number:
+            return dev_number, True
+        return digits, False  # Não é válido para callback externo
+    
+    # Número muito curto
+    if len(digits) < 8:
+        return None, False
+    
+    # Adicionar código do país se necessário
+    if len(digits) == 10 or len(digits) == 11:
+        # Assumir Brasil
+        return "55" + digits, True
+    
+    if len(digits) >= 12 and digits.startswith("55"):
+        return digits, True
+    
+    # Número internacional - manter como está
+    if len(digits) >= 10:
+        return digits, True
+    
+    return None, False
+
+
+# Uso no agente IA
+async def handle_callback_request(self, caller_id: str):
+    """Processa pedido de callback do cliente."""
+    
+    normalized, is_valid = normalize_and_validate_caller_id(caller_id)
+    
+    if not is_valid:
+        # Precisa perguntar o número ao cliente
+        await self.say(
+            "Para retornarmos sua ligação, preciso do número de telefone. "
+            "Pode me informar o número com DDD?"
+        )
+        # Aguardar resposta e capturar número
+        user_response = await self.wait_for_response()
+        
+        # Tentar extrair número da resposta
+        extracted = self._extract_phone_number(user_response)
+        if extracted:
+            normalized, is_valid = normalize_and_validate_caller_id(extracted)
+    
+    if is_valid:
+        # Confirmar número
+        formatted = self._format_for_speech(normalized)
+        await self.say(f"Vou anotar para retornar no número {formatted}. Está correto?")
+        
+        confirmation = await self.wait_for_response()
+        if self._is_affirmative(confirmation):
+            self._callback_number = normalized
+            return True
+        else:
+            # Pedir número novamente
+            return await self.handle_callback_request(None)
+    
+    return False
+```
+
+---
+
+### 🟡 MELHORIA 7: Fallback se Voice AI HTTP estiver offline
+
+**TRATAMENTO NO WORKER OMNIPLAY:**
+
+```typescript
+// backend/src/jobs/CallbackMonitorJob.ts
+
+const VOICE_AI_API_URL = process.env.VOICE_AI_API_URL || "http://localhost:8085";
+const VOICE_AI_TIMEOUT_MS = 3000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+let consecutiveFailures = 0;
+
+async function checkExtensionAvailable(
+    extension: string,
+    domainUuid: string
+): Promise<{ available: boolean; cached: boolean }> {
+    try {
+        const response = await axios.get(
+            `${VOICE_AI_API_URL}/api/extension/status/${extension}`,
+            {
+                params: { domain_uuid: domainUuid },
+                timeout: VOICE_AI_TIMEOUT_MS
+            }
+        );
+        
+        // Sucesso - resetar contador de falhas
+        consecutiveFailures = 0;
+        
+        return {
+            available: response.data.available,
+            cached: false
+        };
+        
+    } catch (error) {
+        consecutiveFailures++;
+        
+        logger.warn("Voice AI API unavailable", {
+            extension,
+            consecutiveFailures,
+            error: error.message
+        });
+        
+        // ══════════════════════════════════════════════════════════
+        // FALLBACK: API offline
+        // ══════════════════════════════════════════════════════════
+        
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            // Muitas falhas consecutivas - alertar admin
+            await notifyAdminVoiceAIDown();
+        }
+        
+        // Assumir indisponível para evitar callbacks falhos
+        return {
+            available: false,
+            cached: true
+        };
+    }
+}
+
+async function notifyAdminVoiceAIDown(): Promise<void> {
+    // Enviar alerta apenas uma vez por hora
+    const cacheKey = "voice_ai_down_alert_sent";
+    const alreadySent = await cache.get(cacheKey);
+    
+    if (!alreadySent) {
+        logger.error("🚨 Voice AI API is DOWN - callback processing paused");
+        
+        // TODO: Enviar email/Slack para admin
+        // await sendAdminAlert("Voice AI API está offline");
+        
+        await cache.set(cacheKey, "true", 3600); // 1 hora
+    }
+}
+```
+
+---
+
 ## 📋 ESCOPO REVISADO (Mais Realista)
 
 ### FASE 1: Transferência Básica (MVP Simplificado)
@@ -2314,14 +3258,41 @@ router.post("/callback/initiate", authMiddleware, async (req, res) => {
 
 ---
 
+---
+
+## ✅ RESUMO DAS CORREÇÕES INCORPORADAS
+
+### 🔴 Erros de Lógica Corrigidos
+
+| # | Erro | Correção |
+|---|------|----------|
+| 1 | `uuid_hold` + `uuid_transfer` incompatíveis | Usar `uuid_broadcast` (música) + `originate` (nova leg) + `uuid_bridge` |
+| 2 | Reconexão ao Voice AI não explicada | Confirmado: `mod_audio_stream` permanece ativo durante música |
+| 3 | Loop infinito no worker | Adicionar `callbackExpiresAt`, `callbackMaxNotifications`, `callbackMinIntervalMinutes` |
+
+### 🟡 Melhorias Adicionadas
+
+| # | Melhoria | Implementação |
+|---|----------|---------------|
+| 1 | Eventos ESL não especificados | Mapeamento completo de `CHANNEL_*` + `HANGUP_CAUSE_MAP` |
+| 2 | Falta estado RINGING | Novo `TransferStatus.RINGING` para feedback ao cliente |
+| 3 | Cliente desliga durante hold | Handler `_on_caller_hangup` que mata B-leg e cancela transfer |
+| 4 | Wrap-up após transferência | Monitor `CHANNEL_UNBRIDGE` + endpoint `/voice/transfer/completed` |
+| 5 | Horário comercial ignorado | Função `is_within_working_hours()` com mensagem contextual |
+| 6 | Caller ID inválido | Validação `INVALID_CALLER_IDS` + prompt para capturar número |
+| 7 | API Voice AI offline | Fallback com `consecutiveFailures` + alerta ao admin |
+
+---
+
 ## Próximos Passos
 
-1. ✅ Aprovar este proposal REVISADO
-2. 📝 Criar design.md com arquitetura de proxy Voice AI
-3. 📋 Criar tasks.md com tarefas de implementação
+1. ✅ Aprovar este proposal REVISADO COM CORREÇÕES
+2. 📝 Atualizar design.md incorporando as correções ESL
+3. 📋 Criar tasks.md com tarefas de implementação detalhadas
 4. 🚀 Implementar API de disponibilidade no Voice AI primeiro
-5. 🚀 Implementar FASE 1 + 2 (MVP simplificado)
-6. 🧪 Testes internos com ramais
-7. 🚀 Implementar FASE 3 + 4
-8. 📊 Coletar métricas por 1 semana
-9. 🚀 Implementar FASE 5 se métricas positivas
+5. 🚀 Implementar FASE 1: Transfer básico com monitoramento de eventos
+6. 🧪 Testes internos com ramais (validar RINGING, BUSY, NO_ANSWER)
+7. 🚀 Implementar FASE 2: Callback com timeout e wrap-up
+8. 🚀 Implementar FASE 3: UI de callback no OmniPlay
+9. 📊 Coletar métricas por 1 semana
+10. 🚀 Implementar FASE 4 + 5 (Click-to-Call + WhatsApp)
