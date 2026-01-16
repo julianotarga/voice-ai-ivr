@@ -255,6 +255,138 @@ class DatabaseService:
             return None
         
         return dict(row)
+    
+    @classmethod
+    async def get_domain_settings(
+        cls,
+        domain_uuid: UUID,
+        setting_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get global domain settings from v_voice_secretary_settings.
+        
+        These are the settings configured in FusionPBX settings.php page.
+        
+        Args:
+            domain_uuid: REQUIRED - Domain UUID
+            setting_names: Optional - List of specific settings to fetch
+            
+        Returns:
+            Dict of setting_name -> setting_value with defaults applied
+        """
+        if not domain_uuid:
+            raise ValueError("domain_uuid is required for multi-tenant isolation")
+        
+        # Default values - must match settings.php $defaults
+        defaults = {
+            # Service Configuration
+            'service_url': 'http://127.0.0.1:8100/api/v1',
+            'max_concurrent_calls': 10,
+            'default_max_turns': 20,
+            'rate_limit_rpm': 60,
+            
+            # ESL Configuration (FreeSWITCH)
+            'esl_host': '127.0.0.1',
+            'esl_port': 8021,
+            'esl_password': 'ClueCon',
+            'esl_connect_timeout': 5.0,
+            'esl_read_timeout': 30.0,
+            
+            # Transfer Settings
+            'transfer_default_timeout': 30,
+            'transfer_announce_enabled': True,
+            'transfer_music_on_hold': 'local_stream://moh',
+            'transfer_cache_ttl_seconds': 300,
+            
+            # Callback Settings
+            'callback_enabled': True,
+            'callback_expiration_hours': 24,
+            'callback_max_notifications': 5,
+            'callback_min_interval_minutes': 10,
+            
+            # OmniPlay Integration
+            'omniplay_api_url': 'http://127.0.0.1:8080',
+            'omniplay_api_timeout_ms': 10000,
+            'omniplay_api_key': '',
+            'omniplay_webhook_url': '',
+            
+            # Data Management
+            'data_retention_days': 90,
+            'recording_enabled': True,
+            
+            # Audio Settings
+            'audio_sample_rate': 16000,
+            'silence_threshold_ms': 3000,
+            'max_recording_seconds': 30,
+        }
+        
+        pool = await cls.get_pool()
+        
+        if setting_names:
+            # Fetch specific settings
+            query = """
+                SELECT setting_name, setting_value 
+                FROM v_voice_secretary_settings
+                WHERE domain_uuid = $1
+                  AND setting_name = ANY($2)
+            """
+            rows = await pool.fetch(query, domain_uuid, setting_names)
+        else:
+            # Fetch all settings
+            query = """
+                SELECT setting_name, setting_value 
+                FROM v_voice_secretary_settings
+                WHERE domain_uuid = $1
+            """
+            rows = await pool.fetch(query, domain_uuid)
+        
+        # Start with defaults
+        result = defaults.copy()
+        
+        # Override with database values
+        for row in rows:
+            name = row['setting_name']
+            value = row['setting_value']
+            
+            if name in result:
+                # Convert to appropriate type based on default
+                default_type = type(defaults.get(name, value))
+                try:
+                    if default_type == bool:
+                        result[name] = value.lower() in ('true', '1', 'yes')
+                    elif default_type == int:
+                        result[name] = int(value)
+                    elif default_type == float:
+                        result[name] = float(value)
+                    else:
+                        result[name] = value
+                except (ValueError, AttributeError):
+                    result[name] = value
+            else:
+                result[name] = value
+        
+        return result
+    
+    @classmethod
+    async def get_setting(
+        cls,
+        domain_uuid: UUID,
+        setting_name: str,
+        default: Any = None,
+    ) -> Any:
+        """
+        Get a single domain setting.
+        
+        Args:
+            domain_uuid: REQUIRED - Domain UUID
+            setting_name: Name of the setting
+            default: Default value if not found
+            
+        Returns:
+            Setting value or default
+        """
+        settings = await cls.get_domain_settings(domain_uuid, [setting_name])
+        return settings.get(setting_name, default)
 
 
 # Singleton instance

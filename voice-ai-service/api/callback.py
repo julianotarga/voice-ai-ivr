@@ -6,6 +6,8 @@ Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/
 
 MULTI-TENANT: All operations require domain_uuid.
 
+Settings loaded from: v_voice_secretary_settings (FusionPBX database)
+
 Endpoints:
 - POST /api/callback/originate - Originar chamada de callback
 - POST /api/callback/check-availability - Verificar disponibilidade do ramal
@@ -18,6 +20,8 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
+from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -27,6 +31,9 @@ from realtime.handlers.esl_client import AsyncESLClient, get_esl_client
 
 # Métricas Prometheus (FASE 6)
 from realtime.utils.metrics import get_metrics
+
+# Database service para buscar configurações do FusionPBX
+from services.database import db
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +124,60 @@ class CallStatusResponse(BaseModel):
     answered_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     hangup_cause: Optional[str] = None
+
+
+# =============================================================================
+# Domain Settings Loader
+# =============================================================================
+
+# Cache de configurações por domínio (TTL em memória)
+_domain_settings_cache: Dict[str, Dict[str, Any]] = {}
+
+async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
+    """
+    Carrega configurações do domínio do banco de dados FusionPBX.
+    
+    Lê da tabela v_voice_secretary_settings configurada via settings.php.
+    
+    Args:
+        domain_uuid: UUID do domínio
+        
+    Returns:
+        Dict com todas as configurações (com defaults aplicados)
+    """
+    # Cache simples em memória (em produção considerar Redis)
+    if domain_uuid in _domain_settings_cache:
+        return _domain_settings_cache[domain_uuid]
+    
+    try:
+        settings = await db.get_domain_settings(UUID(domain_uuid))
+        _domain_settings_cache[domain_uuid] = settings
+        logger.info(f"Loaded domain settings for {domain_uuid[:8]}...", extra={
+            "domain_uuid": domain_uuid,
+            "esl_host": settings.get('esl_host'),
+            "omniplay_api_url": settings.get('omniplay_api_url'),
+        })
+        return settings
+    except Exception as e:
+        logger.warning(f"Failed to load domain settings, using defaults: {e}")
+        # Retornar defaults se falhar
+        return {
+            'esl_host': '127.0.0.1',
+            'esl_port': 8021,
+            'esl_password': 'ClueCon',
+            'transfer_default_timeout': 30,
+            'callback_enabled': True,
+            'omniplay_api_url': 'http://127.0.0.1:8080',
+            'omniplay_api_timeout_ms': 10000,
+        }
+
+
+def clear_domain_settings_cache(domain_uuid: Optional[str] = None):
+    """Limpa cache de configurações."""
+    if domain_uuid:
+        _domain_settings_cache.pop(domain_uuid, None)
+    else:
+        _domain_settings_cache.clear()
 
 
 # =============================================================================
@@ -290,9 +351,23 @@ async def originate_callback(request: OriginateRequest):
     
     O atendente vê o caller ID do cliente.
     A chamada é gravada se record=true.
+    
+    Settings loaded from: v_voice_secretary_settings (FusionPBX)
     """
     if not request.domain_uuid:
         raise HTTPException(status_code=400, detail="domain_uuid is required")
+    
+    # Carregar configurações do domínio do banco de dados FusionPBX
+    domain_settings = await get_domain_settings(request.domain_uuid)
+    
+    # Verificar se callback está habilitado
+    if not domain_settings.get('callback_enabled', True):
+        return OriginateResponse(
+            success=False,
+            status=OriginateStatus.FAILED,
+            error="Callback desabilitado",
+            message="O sistema de callback está desabilitado para este domínio."
+        )
     
     logger.info(
         "Originating callback",
@@ -301,6 +376,7 @@ async def originate_callback(request: OriginateRequest):
             "extension": request.extension,
             "client_number": request.client_number,
             "ticket_id": request.ticket_id,
+            "transfer_timeout": domain_settings.get('transfer_default_timeout', 30),
         }
     )
     
@@ -333,13 +409,16 @@ async def originate_callback(request: OriginateRequest):
         # 2. Construir comando originate
         # Formato: originate {vars}dial_string &bridge(destination)
         
+        # Usar timeout do banco se não especificado na request
+        call_timeout = request.call_timeout or domain_settings.get('transfer_default_timeout', 30)
+        
         # Variáveis de canal
         channel_vars = [
             f"origination_caller_id_number={request.client_number}",
             f"origination_caller_id_name={request.caller_id_name}",
             f"domain_uuid={request.domain_uuid}",
             f"call_direction=outbound",
-            f"call_timeout={request.call_timeout}",
+            f"call_timeout={call_timeout}",
         ]
         
         if request.ticket_id:
@@ -522,6 +601,53 @@ async def cancel_callback(call_uuid: str):
     except Exception as e:
         logger.exception(f"Error cancelling callback: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settings/reload")
+async def reload_settings(domain_uuid: str):
+    """
+    Recarrega as configurações do domínio do banco de dados.
+    
+    Deve ser chamado pelo FusionPBX após salvar configurações.
+    """
+    if not domain_uuid:
+        raise HTTPException(status_code=400, detail="domain_uuid is required")
+    
+    # Limpar cache
+    clear_domain_settings_cache(domain_uuid)
+    
+    # Recarregar configurações
+    settings = await get_domain_settings(domain_uuid)
+    
+    logger.info(f"Settings reloaded for domain {domain_uuid[:8]}...")
+    
+    return {
+        "success": True, 
+        "message": "Configurações recarregadas",
+        "settings": {
+            "esl_host": settings.get('esl_host'),
+            "callback_enabled": settings.get('callback_enabled'),
+            "transfer_default_timeout": settings.get('transfer_default_timeout'),
+        }
+    }
+
+
+@router.get("/settings/{domain_uuid}")
+async def get_settings(domain_uuid: str):
+    """
+    Retorna as configurações atuais do domínio.
+    
+    Útil para debug e verificação.
+    """
+    if not domain_uuid:
+        raise HTTPException(status_code=400, detail="domain_uuid is required")
+    
+    settings = await get_domain_settings(domain_uuid)
+    
+    # Não retornar senhas
+    safe_settings = {k: v for k, v in settings.items() if 'password' not in k.lower() and 'key' not in k.lower()}
+    
+    return {"domain_uuid": domain_uuid, "settings": safe_settings}
 
 
 # Health check

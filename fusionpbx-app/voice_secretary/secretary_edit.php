@@ -698,3 +698,13 @@ document.addEventListener('DOMContentLoaded', function() {
 	require_once "resources/footer.php";
 
 ?>
+<style>
+.vtable-hint {
+	font-size: 11px;
+	color: #666;
+	line-height: 1.4;
+}
+.vtable-hint b {
+	color: #333;
+}
+</style>
