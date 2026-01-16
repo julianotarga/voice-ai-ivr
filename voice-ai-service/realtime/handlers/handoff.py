@@ -174,13 +174,15 @@ class HandoffHandler:
     def is_internal_extension(number: str) -> bool:
         """
         Verifica se é ramal interno (não é número de telefone real).
-        Ramais tipicamente têm menos de 8 dígitos.
+        Ramais internos têm 2-4 dígitos (ex: 10, 100, 1000).
+        Números brasileiros reais têm 10+ dígitos.
         """
         if not number:
             return True
         
         clean = "".join(c for c in number if c.isdigit())
-        return len(clean) < 8
+        # Ramal: 2-4 dígitos
+        return len(clean) <= 4
     
     def should_check_handoff(self) -> bool:
         """Verifica se deve checar handoff neste turn."""
