@@ -1464,7 +1464,7 @@ Esta seção identifica problemas de lógica e funcionalidades que seriam difíc
 
 ---
 
-### 🔴 PROBLEMA 1: ESL do OmniPlay Backend
+### ✅ PROBLEMA 1: ESL do OmniPlay Backend → DECIDIDO
 
 **Proposta Original:**
 > Worker de monitoramento (BullMQ no OmniPlay) verifica disponibilidade de ramais via FreeSWITCH ESL
@@ -1475,7 +1475,7 @@ Esta seção identifica problemas de lógica e funcionalidades que seriam difíc
 - Não existe biblioteca ESL para Node.js bem mantida e confiável
 - Conexões ESL persistentes de outro container são instáveis
 
-**ALTERNATIVA VIÁVEL:**
+**✅ DECISÃO: PROXY VIA VOICE AI (HTTP)**
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  ARQUITETURA CORRIGIDA: PROXY VIA VOICE AI                                  │
@@ -1581,7 +1581,7 @@ async def check_dnd_database(extension: str, domain_uuid: str) -> bool:
 
 ---
 
-### 🔴 PROBLEMA 2: Attended Transfer com Retorno ao Agente IA
+### ✅ PROBLEMA 2: Attended Transfer com Retorno ao Agente IA → DECIDIDO
 
 **Proposta Original:**
 > FreeSWITCH faz attended transfer; se falhar, agente IA retoma conversa
@@ -1592,16 +1592,16 @@ async def check_dnd_database(extension: str, domain_uuid: str) -> bool:
 3. O WebSocket do Voice AI precisa ser **mantido ativo** durante hold
 4. Se transfer falhar, como **reconectar** o áudio de volta ao Voice AI?
 
-**OPÇÕES:**
+**OPÇÕES AVALIADAS:**
 
-| Opção | Descrição | Complexidade | Recomendação |
-|-------|-----------|--------------|--------------|
-| A | Attended Transfer Real | 🔴 ALTA | ❌ Não recomendado |
-| B | Blind Transfer com Fallback | 🟡 MÉDIA | ⚠️ Parcial |
-| C | Hold + Polling + Reconnect | 🟡 MÉDIA | ✅ Recomendado |
-| D | **Callback (já proposto)** | 🟢 BAIXA | ✅ **MELHOR** |
+| Opção | Descrição | Complexidade | Status |
+|-------|-----------|--------------|--------|
+| A | Attended Transfer Real | 🔴 ALTA | ❌ Descartado |
+| B | Blind Transfer com Fallback | 🟡 MÉDIA | ❌ Descartado |
+| **C** | **Hold + Polling + Reconnect** | 🟡 MÉDIA | ✅ **ESCOLHIDO** |
+| D | Callback (já proposto) | 🟢 BAIXA | ✅ Como fallback |
 
-**ALTERNATIVA RECOMENDADA - Opção C (Hold + Polling):**
+**✅ DECISÃO: OPÇÃO C (Hold + Polling + Reconnect)**
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  FLUXO CORRIGIDO: HOLD COM RECONEXÃO                                        │
@@ -1636,7 +1636,7 @@ async def check_dnd_database(extension: str, domain_uuid: str) -> bool:
 
 ---
 
-### 🔴 PROBLEMA 3: Mensagem TTS Dinâmica para Atendente
+### ✅ PROBLEMA 3: Mensagem TTS Dinâmica para Atendente → DECIDIDO
 
 **Proposta Original:**
 > Sistema toca: "Callback para cliente 18 99775-1234. Assunto: boleto vencido."
@@ -1646,72 +1646,110 @@ async def check_dnd_database(extension: str, domain_uuid: str) -> bool:
 - Precisaria de integração com Google TTS/Amazon Polly via mod_shout ou script
 - Latência adicional de 1-2 segundos para gerar áudio
 
-**ALTERNATIVAS:**
+**OPÇÕES AVALIADAS:**
 
-| Opção | Descrição | Complexidade |
-|-------|-----------|--------------|
-| A | TTS via Google Cloud (Lua script) | 🟡 Média |
-| B | Popup no softphone (se houver API) | 🔴 Alta |
-| C | **WhatsApp/SMS antes de conectar** | 🟢 Baixa |
-| D | **Tela do OmniPlay (já aberta)** | 🟢 Baixa |
-| E | Áudio genérico + número apenas | 🟢 Muito Baixa |
+| Opção | Descrição | Complexidade | Status |
+|-------|-----------|--------------|--------|
+| A | TTS via Google Cloud (Lua script) | 🟡 Média | ❌ Descartado |
+| B | Popup no softphone (se houver API) | 🔴 Alta | ❌ Descartado |
+| C | WhatsApp/SMS antes de conectar | 🟢 Baixa | ❌ Descartado |
+| **D** | **Tela do OmniPlay (já aberta)** | 🟢 Baixa | ✅ **ESCOLHIDO** |
+| E | Áudio genérico + número apenas | 🟢 Muito Baixa | ⚠️ Como fallback |
 
-**ALTERNATIVA RECOMENDADA - Opção D + E:**
+**✅ DECISÃO: USAR TELA DO OMNIPLAY (JÁ ABERTA)**
+
 ```
-1. Atendente já vê o alerta no OmniPlay com todos os detalhes
-2. Ao clicar "Ligar Agora", apenas um beep ou "Conectando cliente..."
-3. O atendente já sabe quem é e o assunto
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FLUXO DE CONTEXTO PARA ATENDENTE                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. Atendente vê alerta de callback no OmniPlay:                            │
+│     ┌────────────────────────────────────────────────────────┐              │
+│     │  🔔 Callback Pendente!                              ⏰  │              │
+│     │  📞 Cliente: 18 99775-1234                             │              │
+│     │  📝 Assunto: "Boleto vencido"                          │              │
+│     │  ⏱️  Aguardando há: 5 minutos                          │              │
+│     │  🎧 [▶️ Ouvir conversa original]                       │              │
+│     │  [📞 Ligar Agora]   [⏰ 5min]   [❌ Dispensar]         │              │
+│     └────────────────────────────────────────────────────────┘              │
+│                                                                             │
+│  2. Atendente LEIA o contexto ANTES de clicar "Ligar Agora"                 │
+│                                                                             │
+│  3. Ao clicar, telefone toca com caller ID "Callback - 18997751234"         │
+│     (informação mínima no telefone, detalhes já estão na tela)              │
+│                                                                             │
+│  4. Atendente atende e já sabe:                                             │
+│     - Quem é o cliente                                                      │
+│     - Qual o assunto                                                        │
+│     - Histórico da conversa com IA                                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**SE QUISER TTS (Opção A):**
-```lua
--- freeswitch/scripts/callback_tts.lua
-local number = session:getVariable("callback_number")
-local reason = session:getVariable("callback_reason") or ""
-
--- Google TTS via shout
-local tts_url = "shout://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&q=" 
-              .. "Callback%20para%20" .. number
-              
-session:execute("playback", tts_url)
-```
+**VANTAGENS:**
+- Zero complexidade adicional no FreeSWITCH
+- Zero latência de TTS
+- Atendente tem contexto COMPLETO antes da chamada
+- Pode ouvir a gravação da conversa original
+- Funciona com qualquer tipo de telefone (IP, ATA, softphone)
 
 ---
 
-### 🔴 PROBLEMA 4: Mapeamento user_id ↔ extension
+### ✅ PROBLEMA 4: Mapeamento user_id ↔ extension → DECIDIDO
 
 **Proposta Original:**
 > `callbackIntendedFor = user_id (Jeni)`
 
-**PROBLEMA DE LÓGICA:**
-- OmniPlay conhece `user_id` (atendente)
-- FreeSWITCH conhece `extension` (ramal)
-- Um usuário pode ter múltiplos ramais (celular, desktop, etc.)
-- Um ramal pode ser compartilhado
+**CONTEXTO REAL:**
+- **1 pessoa = 1 ramal** (caso mais comum)
+- Este ramal pode estar logado em:
+  - 📞 Telefone IP (Yealink, Grandstream, etc.)
+  - 📠 Porta de um ATA (Linksys, Grandstream)
+  - 💻 Softphone do OmniPlay (WebRTC)
+- O ramal é o MESMO em todos os dispositivos
 
-**PERGUNTA:** Como saber qual ramal ligar?
+**✅ DECISÃO: ARMAZENAR EXTENSION DIRETAMENTE**
 
-**ALTERNATIVA - Usar Extension Diretamente:**
 ```typescript
-// Ao invés de armazenar user_id, armazenar extension
-callbackExtension: "1004",           // Ramal principal
-callbackExtensionFallback: "1005",   // Ramal alternativo (opcional)
+// Model Ticket - campos de callback
+callbackExtension: "1004",           // Ramal (identificador único)
+callbackIntendedForName: "Jeni",     // Nome para exibição (opcional)
+callbackDepartment: "Financeiro",    // Departamento (opcional)
 
-// Se precisar de user_id, fazer JOIN com tabela de mapeamento
-// FusionPBX já tem: v_extensions (extension, user_uuid)
+// NÃO armazenar user_id diretamente - usar extension como chave
+// O mapeamento extension → user já existe no FusionPBX (v_extensions)
 ```
 
-**OU - Tabela de Mapeamento OmniPlay:**
-```sql
--- Nova tabela: user_extensions
-CREATE TABLE user_extensions (
-    user_id INT REFERENCES Users(id),
-    extension VARCHAR(10),
-    domain_name VARCHAR(100),
-    priority INT DEFAULT 1,  -- 1 = principal, 2 = fallback
-    PRIMARY KEY (user_id, extension)
-);
+**FLUXO DE RESOLUÇÃO:**
+
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  MAPEAMENTO EXTENSION → DISPOSITIVOS                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Cliente: "Quero falar com a Jeni do financeiro"                            │
+│                                                                             │
+│  1. Agente IA consulta v_voice_transfer_destinations:                       │
+│     SELECT * FROM v_voice_transfer_destinations                             │
+│     WHERE 'jeni' = ANY(aliases) OR name ILIKE '%jeni%'                      │
+│     → extension = "1004", name = "Jeni", department = "Financeiro"          │
+│                                                                             │
+│  2. Armazenar no ticket:                                                    │
+│     callbackExtension = "1004"                                              │
+│     callbackIntendedForName = "Jeni"                                        │
+│     callbackDepartment = "Financeiro"                                       │
+│                                                                             │
+│  3. Quando ligar, FreeSWITCH toca o ramal 1004:                             │
+│     - Se Jeni estiver no telefone IP → toca lá                              │
+│     - Se Jeni estiver no softphone → toca lá                                │
+│     - Se Jeni estiver nos dois → toca em AMBOS (ring-all)                   │
+│                                                                             │
+│  4. Jeni atende onde for mais conveniente                                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**VANTAGEM:** FreeSWITCH já gerencia o "ring-all" entre dispositivos do mesmo ramal automaticamente!
 
 ---
 
@@ -1839,39 +1877,71 @@ async function initiateCallback(ticketId: number, userId: number) {
 
 ---
 
-### 🔴 PROBLEMA 8: Gravação de Chamada (Acesso ao Storage)
+### ✅ PROBLEMA 8: Gravação de Chamada (Acesso ao Storage) → DECIDIDO
 
 **PROBLEMA:**
 - Gravações ficam no FusionPBX (`/var/lib/freeswitch/recordings/`)
 - OmniPlay precisa acessar para anexar ao ticket
 - Servidores diferentes, filesystems diferentes
+- Complexidade de SSH/NFS/S3 para acessar arquivos
 
-**ALTERNATIVA - Upload Imediato:**
+**✅ DECISÃO: NÃO ANEXAR GRAVAÇÃO, APENAS INFORMAR VIA TICKET**
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  FLUXO DE GRAVAÇÃO CORRIGIDO                                                │
+│  FLUXO SIMPLIFICADO - SEM ANEXO DE GRAVAÇÃO                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  1. Chamada encerra                                                         │
 │     ▼                                                                       │
-│  2. FreeSWITCH salva gravação localmente                                    │
-│     ▼                                                                       │
-│  3. Lua script ou hangup_hook envia evento para Voice AI:                   │
-│     {call_uuid: "xxx", recording_path: "/path/to/file.wav"}                 │
-│     ▼                                                                       │
-│  4. Voice AI:                                                               │
-│     a) Lê arquivo via SSH/SCP do FusionPBX                                  │
-│     b) OU acessa storage compartilhado (NFS/S3)                             │
-│     c) Converte para MP3 (ffmpeg)                                           │
-│     d) Upload para MinIO                                                    │
-│     e) Notifica OmniPlay: POST /api/voice/recording/ready                   │
-│     ▼                                                                       │
-│  5. OmniPlay recebe URL do MinIO e anexa ao ticket                          │
+│  2. Ticket é criado no OmniPlay com:                                        │
+│     ┌──────────────────────────────────────────────────────────┐            │
+│     │  📞 Chamada de Voz                                       │            │
+│     │  ──────────────────────────────────────────────────────  │            │
+│     │                                                          │            │
+│     │  📝 **Resumo:** Cliente ligou sobre boleto vencido.      │            │
+│     │  Solicitou falar com Jeni do financeiro.                 │            │
+│     │  Ramal estava ocupado, cliente solicitou callback.       │            │
+│     │                                                          │            │
+│     │  💬 **Transcrição:**                                     │            │
+│     │  👤 Cliente: "Bom dia, preciso falar sobre um boleto"    │            │
+│     │  🤖 IA: "Bom dia! Posso ajudar com o boleto?"            │            │
+│     │  👤 Cliente: "Quero falar com a Jeni"                    │            │
+│     │  🤖 IA: "Vou transferir para a Jeni..."                  │            │
+│     │  ...                                                     │            │
+│     │                                                          │            │
+│     │  📁 **Gravação disponível em:**                          │            │
+│     │  FusionPBX → Recordings → {call_uuid}.wav                │            │
+│     │  Data: 16/01/2026 14:30                                  │            │
+│     │  Duração: 2min 35s                                       │            │
+│     │                                                          │            │
+│     └──────────────────────────────────────────────────────────┘            │
+│                                                                             │
+│  3. Atendente pode acessar gravação diretamente no FusionPBX                │
+│     se necessário (link ou instruções no ticket)                            │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**REQUISITO:** Voice AI precisa acesso ao filesystem do FusionPBX (SSH ou NFS mount)
+**VANTAGENS:**
+- ✅ Zero complexidade de integração de storage
+- ✅ Transcrição já fornece contexto suficiente
+- ✅ Gravação ainda existe no FusionPBX para auditoria
+- ✅ Implementação mais rápida
+
+**INFORMAÇÕES NO TICKET:**
+```typescript
+// Campos adicionais para referência à gravação (sem anexar)
+voiceCallUuid: string;           // UUID para localizar no FusionPBX
+voiceCallDate: Date;             // Data/hora da chamada
+voiceCallDuration: number;       // Duração em segundos
+voiceRecordingPath: string;      // Caminho no FusionPBX (referência)
+voiceTranscript: string;         // Transcrição completa (PRINCIPAL)
+voiceSummary: string;            // Resumo da conversa
+```
+
+**FUTURO (se necessário):**
+> Se no futuro for necessário anexar gravação, pode ser implementado como feature separada com MinIO/S3.
 
 ---
 
@@ -1918,19 +1988,19 @@ router.post("/callback/initiate", authMiddleware, async (req, res) => {
 
 ---
 
-## ✅ RESUMO DAS ALTERNATIVAS VIÁVEIS
+## ✅ RESUMO DAS DECISÕES TOMADAS
 
-| Problema | Solução Original | Alternativa Viável |
-|----------|------------------|-------------------|
-| ESL do OmniPlay | Worker ESL direto | Proxy via Voice AI HTTP |
-| Attended Transfer | FreeSWITCH nativo | Hold + Polling + Reconnect |
-| TTS Dinâmico | Google TTS no FreeSWITCH | Info já no alerta OmniPlay |
-| user_id ↔ extension | Mapeamento automático | Armazenar extension diretamente |
-| Disponibilidade | FreeSWITCH só | OmniPlay + FreeSWITCH combinados |
-| WhatsApp botões | Sempre interativo | Template fora da janela 24h |
-| Race condition | Sem tratamento | Double-check + auto-retry |
-| Gravação | Acesso direto | Upload para MinIO via Voice AI |
-| Multi-tenant | Assumido OK | Validação explícita em todas camadas |
+| # | Problema | Solução Original | ✅ Decisão Final |
+|---|----------|------------------|------------------|
+| 1 | ESL do OmniPlay | Worker ESL direto | **Proxy via Voice AI HTTP** |
+| 2 | Attended Transfer | FreeSWITCH nativo | **Hold + Polling + Reconnect** |
+| 3 | TTS Dinâmico | Google TTS no FreeSWITCH | **Tela do OmniPlay (já aberta)** |
+| 4 | user_id ↔ extension | Mapeamento automático | **1 pessoa = 1 ramal, armazenar extension** |
+| 5 | Disponibilidade | FreeSWITCH só | OmniPlay + FreeSWITCH combinados |
+| 6 | WhatsApp botões | Sempre interativo | Template fora da janela 24h |
+| 7 | Race condition | Sem tratamento | Double-check + auto-retry |
+| 8 | Gravação | Anexar ao ticket | **NÃO anexar, apenas informar no ticket** |
+| 9 | Multi-tenant | Assumido OK | Validação explícita em todas camadas |
 
 ---
 
