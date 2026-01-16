@@ -429,7 +429,8 @@ class RealtimeSession:
                         logger.info("Max AI turns reached, initiating handoff", extra={
                             "call_uuid": self.call_uuid,
                         })
-                        await self._initiate_handoff(reason="max_turns_exceeded")
+                        # NÃO bloquear - handoff em background
+                        asyncio.create_task(self._initiate_handoff(reason="max_turns_exceeded"))
         
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
@@ -494,8 +495,8 @@ class RealtimeSession:
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
         elif name == "request_handoff":
-            # Handoff requested by LLM via function call
-            await self._initiate_handoff(reason="llm_intent")
+            # Handoff requested by LLM via function call - não bloquear
+            asyncio.create_task(self._initiate_handoff(reason="llm_intent"))
             return {"status": "handoff_initiated"}
         return {"error": f"Unknown function: {name}"}
     
@@ -515,7 +516,8 @@ class RealtimeSession:
                 "call_uuid": self.call_uuid,
                 "keyword": keyword,
             })
-            await self._initiate_handoff(reason=f"keyword_match:{keyword}")
+            # NÃO bloquear o event loop - handoff roda em background
+            asyncio.create_task(self._initiate_handoff(reason=f"keyword_match:{keyword}"))
             return True
         return False
     

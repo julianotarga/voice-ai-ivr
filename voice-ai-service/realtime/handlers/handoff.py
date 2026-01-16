@@ -119,7 +119,7 @@ class HandoffHandler:
             
             self._http_session = aiohttp.ClientSession(
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=3)  # Timeout curto para não bloquear áudio
             )
         return self._http_session
     
