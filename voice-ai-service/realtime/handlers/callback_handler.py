@@ -489,6 +489,435 @@ class CallbackHandler:
         """Calcula data de expiração."""
         self._callback_data.expires_at = datetime.now() + timedelta(hours=hours)
     
+    # =========================================================================
+    # FLUXO CONVERSACIONAL - Métodos para captura de dados via voz
+    # =========================================================================
+    
+    async def capture_callback_number(
+        self,
+        wait_for_response: Callable[[], Any],
+        max_attempts: int = 3
+    ) -> bool:
+        """
+        Captura inteligente do número de callback via conversa.
+        
+        Fluxo:
+        1. Verifica se caller_id é válido
+        2. Se válido, pergunta se quer usar o mesmo número
+        3. Se não, pede outro número
+        4. Confirma o número com o cliente
+        
+        Args:
+            wait_for_response: Função async que aguarda resposta do cliente
+            max_attempts: Máximo de tentativas para capturar número válido
+        
+        Returns:
+            True se número capturado e confirmado com sucesso
+        """
+        # 1. Verificar se caller_id atual é válido
+        normalized, is_valid = PhoneNumberUtils.validate_brazilian_number(self.caller_id)
+        
+        if is_valid:
+            # Caller ID válido - perguntar se quer usar o mesmo
+            formatted = PhoneNumberUtils.format_for_speech(normalized)
+            await self._say(
+                f"Vou anotar para retornar no número {formatted}. Está correto?"
+            )
+            
+            response = await wait_for_response()
+            response_text = response if isinstance(response, str) else str(response)
+            
+            if ResponseAnalyzer.is_affirmative(response_text):
+                # Cliente confirmou usar o mesmo número
+                self._callback_data.callback_number = normalized
+                self._number_confirmed = True
+                logger.info(
+                    "Callback number confirmed from caller_id",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "number": normalized,
+                    }
+                )
+                return True
+            else:
+                # Cliente quer outro número
+                return await self._ask_for_number(wait_for_response, max_attempts)
+        else:
+            # Caller ID inválido (ramal interno ou número estrangeiro)
+            return await self._ask_for_number(wait_for_response, max_attempts)
+    
+    async def _ask_for_number(
+        self,
+        wait_for_response: Callable[[], Any],
+        max_attempts: int = 3
+    ) -> bool:
+        """
+        Pede número de telefone ao cliente.
+        
+        Tenta até max_attempts vezes extrair um número válido.
+        
+        Args:
+            wait_for_response: Função async que aguarda resposta
+            max_attempts: Máximo de tentativas
+        
+        Returns:
+            True se conseguiu número válido
+        """
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                await self._say(
+                    "Qual número devo ligar? Pode falar com o DDD."
+                )
+            else:
+                await self._say(
+                    "Desculpe, não consegui entender. "
+                    "Pode repetir o número com o DDD, por favor?"
+                )
+            
+            response = await wait_for_response()
+            response_text = response if isinstance(response, str) else str(response)
+            
+            # Tentar extrair número do texto
+            extracted = PhoneNumberUtils.extract_phone_from_text(response_text)
+            
+            if extracted:
+                normalized, is_valid = PhoneNumberUtils.validate_brazilian_number(extracted)
+                
+                if is_valid:
+                    # Confirmar com o cliente
+                    formatted = PhoneNumberUtils.format_for_speech(normalized)
+                    await self._say(f"Anotei o número {formatted}. Está correto?")
+                    
+                    confirm_response = await wait_for_response()
+                    confirm_text = confirm_response if isinstance(confirm_response, str) else str(confirm_response)
+                    
+                    if ResponseAnalyzer.is_affirmative(confirm_text):
+                        self._callback_data.callback_number = normalized
+                        self._number_confirmed = True
+                        logger.info(
+                            "Callback number confirmed from voice input",
+                            extra={
+                                "call_uuid": self.call_uuid,
+                                "number": normalized,
+                                "attempt": attempt + 1,
+                            }
+                        )
+                        return True
+                    else:
+                        # Cliente disse que está errado, tentar novamente
+                        continue
+            
+            # Número inválido, próxima tentativa
+            logger.debug(
+                f"Invalid number attempt {attempt + 1}: {response_text}"
+            )
+        
+        # Esgotou tentativas
+        await self._say(
+            "Desculpe, não consegui capturar o número. "
+            "Vou criar um recado e alguém entrará em contato."
+        )
+        return False
+    
+    async def capture_callback_time(
+        self,
+        wait_for_response: Callable[[], Any]
+    ) -> Optional[datetime]:
+        """
+        Captura horário preferido para o callback.
+        
+        Args:
+            wait_for_response: Função async que aguarda resposta
+        
+        Returns:
+            datetime se cliente especificou horário, None se "assim que possível"
+        """
+        await self._say(
+            "Prefere que liguemos assim que possível, ou em um horário específico?"
+        )
+        
+        response = await wait_for_response()
+        response_text = response if isinstance(response, str) else str(response)
+        
+        # Verificar se quer "agora" / "assim que possível"
+        asap_keywords = [
+            "agora", "possível", "puder", "quando der", "o quanto antes",
+            "urgente", "já", "assim que", "logo"
+        ]
+        
+        text_lower = response_text.lower()
+        if any(kw in text_lower for kw in asap_keywords):
+            await self._say("Certo, vamos ligar assim que estiver disponível.")
+            self._callback_data.scheduled_at = None
+            return None
+        
+        # Tentar parsear horário específico
+        scheduled_time = self._parse_time_reference(response_text)
+        
+        if scheduled_time:
+            # Formatar para fala
+            time_str = scheduled_time.strftime("%H horas")
+            if scheduled_time.date() > datetime.now().date():
+                time_str = f"amanhã às {time_str}"
+            else:
+                time_str = f"hoje às {time_str}"
+            
+            await self._say(f"Certo, agendado para {time_str}.")
+            self._callback_data.scheduled_at = scheduled_time
+            return scheduled_time
+        else:
+            await self._say("Entendi, vamos ligar assim que possível.")
+            self._callback_data.scheduled_at = None
+            return None
+    
+    def _parse_time_reference(self, text: str) -> Optional[datetime]:
+        """
+        Parseia referência de horário do texto.
+        
+        Exemplos:
+        - "às 14h" → hoje às 14:00
+        - "às duas da tarde" → hoje às 14:00
+        - "amanhã às 10" → amanhã às 10:00
+        - "depois das 3" → hoje às 15:00
+        
+        Returns:
+            datetime ou None se não conseguir parsear
+        """
+        text_lower = text.lower()
+        now = datetime.now()
+        
+        # Mapear palavras para horas
+        word_to_hour = {
+            "uma": 1, "duas": 2, "três": 3, "tres": 3, "quatro": 4,
+            "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9,
+            "dez": 10, "onze": 11, "doze": 12, "meio dia": 12,
+            "meio-dia": 12, "meia noite": 0, "meia-noite": 0
+        }
+        
+        # Verificar amanhã
+        is_tomorrow = "amanhã" in text_lower or "manhã" in text_lower
+        
+        # Tentar extrair hora numérica
+        hour_match = re.search(r'(\d{1,2})\s*(?:h|hora|horas)?', text_lower)
+        
+        hour = None
+        if hour_match:
+            hour = int(hour_match.group(1))
+        else:
+            # Tentar palavras
+            for word, h in word_to_hour.items():
+                if word in text_lower:
+                    hour = h
+                    break
+        
+        if hour is None:
+            return None
+        
+        # Ajustar para PM se mencionou "tarde" ou "noite"
+        if hour <= 12:
+            if "tarde" in text_lower or "noite" in text_lower:
+                if hour < 12:
+                    hour += 12
+            elif hour < 8:
+                # Horas muito cedo provavelmente são PM
+                hour += 12
+        
+        # Construir datetime
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        
+        if is_tomorrow or (not is_tomorrow and target <= now):
+            # Se já passou ou é amanhã, adicionar um dia
+            target += timedelta(days=1)
+        
+        return target
+    
+    async def capture_callback_reason(
+        self,
+        wait_for_response: Callable[[], Any]
+    ) -> Optional[str]:
+        """
+        Captura o motivo do callback.
+        
+        Args:
+            wait_for_response: Função async que aguarda resposta
+        
+        Returns:
+            Motivo do callback ou None
+        """
+        await self._say(
+            "Para já adiantar o assunto, pode me contar brevemente o motivo do contato?"
+        )
+        
+        response = await wait_for_response()
+        response_text = response if isinstance(response, str) else str(response)
+        
+        if response_text and len(response_text.strip()) > 2:
+            # Limitar tamanho
+            reason = response_text.strip()
+            if len(reason) > 500:
+                reason = reason[:497] + "..."
+            
+            self._callback_data.reason = reason
+            
+            logger.info(
+                "Callback reason captured",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "reason_length": len(reason),
+                }
+            )
+            return reason
+        
+        return None
+    
+    async def confirm_and_create_callback(
+        self,
+        destination: TransferDestination,
+        transcript: Optional[List[Dict[str, Any]]] = None,
+        summary: Optional[str] = None,
+        call_duration: int = 0,
+        notify_via_whatsapp: bool = False
+    ) -> CallbackResult:
+        """
+        Confirma detalhes com o cliente e cria o callback.
+        
+        Fluxo:
+        1. Resume o que foi anotado
+        2. Cria ticket via API OmniPlay
+        3. Confirma para o cliente
+        
+        Args:
+            destination: Destino pretendido do callback
+            transcript: Transcrição da conversa
+            summary: Resumo da conversa
+            call_duration: Duração da chamada em segundos
+            notify_via_whatsapp: Notificar cliente via WhatsApp
+        
+        Returns:
+            CallbackResult com status da criação
+        """
+        if not self._callback_data.callback_number:
+            return CallbackResult(
+                success=False,
+                error="Número de callback não capturado"
+            )
+        
+        # Configurar dados do destino
+        self.set_intended_destination(destination)
+        
+        # Configurar dados da chamada
+        self.set_voice_call_data(
+            duration=call_duration,
+            transcript=transcript
+        )
+        
+        # Configurar notificação WhatsApp
+        self.set_notify_via_whatsapp(notify_via_whatsapp)
+        
+        # Garantir expiração
+        if not self._callback_data.expires_at:
+            self.calculate_expiration()
+        
+        # Mensagem de confirmação para o cliente
+        formatted_number = PhoneNumberUtils.format_for_speech(
+            self._callback_data.callback_number
+        )
+        
+        await self._say(
+            f"Perfeito! {destination.name} vai retornar para o número {formatted_number}. "
+            "Obrigada pela ligação e tenha um ótimo dia!"
+        )
+        
+        # Criar callback via API
+        result = await self.create_callback(summary=summary)
+        
+        if result.success:
+            logger.info(
+                "Callback created successfully",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "ticket_id": result.ticket_id,
+                    "destination": destination.name,
+                    "whatsapp_sent": result.whatsapp_sent,
+                }
+            )
+        else:
+            logger.error(
+                "Failed to create callback",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "error": result.error,
+                }
+            )
+        
+        return result
+    
+    async def run_full_callback_flow(
+        self,
+        destination: TransferDestination,
+        wait_for_response: Callable[[], Any],
+        transcript: Optional[List[Dict[str, Any]]] = None,
+        summary: Optional[str] = None,
+        call_duration: int = 0,
+        capture_time: bool = True,
+        capture_reason: bool = True,
+        notify_via_whatsapp: bool = False
+    ) -> CallbackResult:
+        """
+        Executa o fluxo completo de captura e criação de callback.
+        
+        Fluxo:
+        1. Captura número
+        2. (Opcional) Captura horário
+        3. (Opcional) Captura motivo
+        4. Confirma e cria callback
+        
+        Args:
+            destination: Destino pretendido
+            wait_for_response: Função para aguardar resposta do cliente
+            transcript: Transcrição da conversa
+            summary: Resumo da conversa
+            call_duration: Duração da chamada
+            capture_time: Se deve perguntar horário preferido
+            capture_reason: Se deve perguntar motivo
+            notify_via_whatsapp: Notificar via WhatsApp
+        
+        Returns:
+            CallbackResult
+        """
+        try:
+            # 1. Capturar número
+            number_ok = await self.capture_callback_number(wait_for_response)
+            if not number_ok:
+                return CallbackResult(
+                    success=False,
+                    error="Não foi possível capturar o número de callback"
+                )
+            
+            # 2. Capturar horário (opcional)
+            if capture_time:
+                await self.capture_callback_time(wait_for_response)
+            
+            # 3. Capturar motivo (opcional)
+            if capture_reason:
+                await self.capture_callback_reason(wait_for_response)
+            
+            # 4. Confirmar e criar
+            return await self.confirm_and_create_callback(
+                destination=destination,
+                transcript=transcript,
+                summary=summary,
+                call_duration=call_duration,
+                notify_via_whatsapp=notify_via_whatsapp
+            )
+            
+        except Exception as e:
+            logger.exception(f"Error in callback flow: {e}")
+            return CallbackResult(
+                success=False,
+                error=str(e)
+            )
+    
     async def create_callback(
         self,
         summary: Optional[str] = None

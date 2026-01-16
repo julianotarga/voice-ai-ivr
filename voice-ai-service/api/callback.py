@@ -574,6 +574,24 @@ async def originate_callback(request: OriginateRequest):
                 status="initiated"
             )
             
+            # Iniciar monitoramento em background (se tiver ticket_id)
+            if call_uuid and request.ticket_id:
+                import asyncio
+                asyncio.create_task(
+                    monitor_callback_result(
+                        call_uuid=call_uuid,
+                        ticket_id=request.ticket_id,
+                        domain_uuid=request.domain_uuid
+                    )
+                )
+                logger.info(
+                    "Started background monitoring for callback",
+                    extra={
+                        "call_uuid": call_uuid,
+                        "ticket_id": request.ticket_id
+                    }
+                )
+            
             return OriginateResponse(
                 success=True,
                 call_uuid=call_uuid,
@@ -746,8 +764,306 @@ async def get_settings(domain_uuid: str):
     return {"domain_uuid": domain_uuid, "settings": safe_settings}
 
 
+# =============================================================================
+# Background Monitoring - Monitorar resultado de chamadas
+# =============================================================================
+
+# Cache de chamadas em monitoramento
+# Formato: {call_uuid: {"ticket_id": int, "domain_uuid": str, "started_at": datetime}}
+_active_callbacks: Dict[str, Dict[str, Any]] = {}
+
+
+async def notify_omniplay_callback_result(
+    ticket_id: int,
+    domain_uuid: str,
+    status: str,
+    duration_seconds: Optional[int] = None,
+    hangup_cause: Optional[str] = None
+) -> bool:
+    """
+    Notifica o OmniPlay sobre o resultado do callback.
+    
+    Args:
+        ticket_id: ID do ticket no OmniPlay
+        domain_uuid: UUID do domínio
+        status: "completed" | "failed" | "no_answer"
+        duration_seconds: Duração da chamada
+        hangup_cause: Causa do desligamento
+    
+    Returns:
+        True se notificação foi enviada com sucesso
+    """
+    try:
+        domain_settings = await get_domain_settings(domain_uuid)
+        omniplay_url = domain_settings.get('omniplay_api_url', 'http://127.0.0.1:8080')
+        
+        payload = {
+            "ticketId": ticket_id,
+            "status": status,
+            "durationSeconds": duration_seconds,
+            "hangupCause": hangup_cause,
+            "completedAt": datetime.now().isoformat()
+        }
+        
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{omniplay_url}/api/callbacks/{ticket_id}/complete",
+                json={"success": status == "completed", "duration": duration_seconds},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Service-Name": "voice-ai-service"
+                },
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status in (200, 201):
+                    logger.info(
+                        "OmniPlay notified of callback result",
+                        extra={
+                            "ticket_id": ticket_id,
+                            "status": status,
+                            "duration": duration_seconds
+                        }
+                    )
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to notify OmniPlay: {response.status}",
+                        extra={"ticket_id": ticket_id}
+                    )
+                    return False
+                    
+    except Exception as e:
+        logger.exception(f"Error notifying OmniPlay: {e}")
+        return False
+
+
+async def monitor_callback_result(
+    call_uuid: str,
+    ticket_id: int,
+    domain_uuid: str,
+    timeout_seconds: int = 3600
+) -> None:
+    """
+    Monitora o resultado de um callback em background.
+    
+    Aguarda eventos de CHANNEL_BRIDGE (conectado) e CHANNEL_HANGUP (desligou).
+    Notifica o OmniPlay quando a chamada terminar.
+    
+    Esta função deve ser chamada em asyncio.create_task() após originate.
+    
+    Args:
+        call_uuid: UUID da chamada
+        ticket_id: ID do ticket no OmniPlay
+        domain_uuid: UUID do domínio
+        timeout_seconds: Timeout máximo de monitoramento
+    """
+    logger.info(
+        "Starting callback monitoring",
+        extra={
+            "call_uuid": call_uuid,
+            "ticket_id": ticket_id,
+            "timeout": timeout_seconds
+        }
+    )
+    
+    # Registrar callback ativo
+    _active_callbacks[call_uuid] = {
+        "ticket_id": ticket_id,
+        "domain_uuid": domain_uuid,
+        "started_at": datetime.now()
+    }
+    
+    try:
+        esl = await get_esl()
+        
+        # Aguardar eventos
+        connected = False
+        answered_at: Optional[datetime] = None
+        hangup_cause: Optional[str] = None
+        
+        start_time = time.time()
+        check_interval = 5  # Verificar a cada 5 segundos
+        
+        while time.time() - start_time < timeout_seconds:
+            # Verificar se a chamada ainda existe
+            exists_result = await esl.execute_api(f"uuid_exists {call_uuid}")
+            
+            if exists_result and "true" in exists_result.lower():
+                # Chamada ainda ativa
+                # Verificar se já está em bridge (conectada)
+                dump_result = await esl.execute_api(f"uuid_dump {call_uuid} json")
+                
+                if dump_result and "Answered" in dump_result:
+                    if not connected:
+                        connected = True
+                        answered_at = datetime.now()
+                        logger.info(
+                            "Callback connected",
+                            extra={
+                                "call_uuid": call_uuid,
+                                "ticket_id": ticket_id
+                            }
+                        )
+                
+                # Aguardar um pouco antes de verificar novamente
+                import asyncio
+                await asyncio.sleep(check_interval)
+                
+            else:
+                # Chamada terminou
+                # Tentar obter hangup cause do último CDR
+                # (Na prática, seria necessário consultar o CDR do FreeSWITCH)
+                
+                duration = None
+                if answered_at:
+                    duration = int((datetime.now() - answered_at).total_seconds())
+                    status = "completed"
+                else:
+                    status = "failed"
+                
+                logger.info(
+                    "Callback ended",
+                    extra={
+                        "call_uuid": call_uuid,
+                        "ticket_id": ticket_id,
+                        "status": status,
+                        "duration": duration,
+                        "was_connected": connected
+                    }
+                )
+                
+                # Registrar métrica
+                metrics = get_metrics()
+                metrics.record_callback_completed(
+                    domain_uuid=domain_uuid,
+                    ticket_id=ticket_id,
+                    status=status,
+                    duration=duration
+                )
+                
+                # Notificar OmniPlay
+                await notify_omniplay_callback_result(
+                    ticket_id=ticket_id,
+                    domain_uuid=domain_uuid,
+                    status=status,
+                    duration_seconds=duration,
+                    hangup_cause=hangup_cause
+                )
+                
+                break
+        
+        else:
+            # Timeout
+            logger.warning(
+                "Callback monitoring timeout",
+                extra={
+                    "call_uuid": call_uuid,
+                    "ticket_id": ticket_id,
+                    "timeout": timeout_seconds
+                }
+            )
+            
+            # Notificar como incompleto
+            await notify_omniplay_callback_result(
+                ticket_id=ticket_id,
+                domain_uuid=domain_uuid,
+                status="timeout",
+                hangup_cause="MONITORING_TIMEOUT"
+            )
+    
+    except Exception as e:
+        logger.exception(f"Error monitoring callback: {e}")
+        
+        # Notificar erro
+        await notify_omniplay_callback_result(
+            ticket_id=ticket_id,
+            domain_uuid=domain_uuid,
+            status="error",
+            hangup_cause=str(e)
+        )
+    
+    finally:
+        # Remover do cache
+        _active_callbacks.pop(call_uuid, None)
+
+
+@router.post("/monitor")
+async def start_monitoring(
+    call_uuid: str,
+    ticket_id: int,
+    domain_uuid: str
+):
+    """
+    Inicia monitoramento de uma chamada em background.
+    
+    Usado pelo OmniPlay para monitorar o resultado de um callback
+    que já foi originado.
+    """
+    if not call_uuid or not ticket_id or not domain_uuid:
+        raise HTTPException(
+            status_code=400, 
+            detail="call_uuid, ticket_id and domain_uuid required"
+        )
+    
+    # Verificar se já está monitorando
+    if call_uuid in _active_callbacks:
+        return {
+            "success": True, 
+            "message": "Já está sendo monitorado",
+            "already_monitoring": True
+        }
+    
+    # Iniciar monitoramento em background
+    import asyncio
+    asyncio.create_task(
+        monitor_callback_result(
+            call_uuid=call_uuid,
+            ticket_id=ticket_id,
+            domain_uuid=domain_uuid
+        )
+    )
+    
+    return {
+        "success": True,
+        "message": "Monitoramento iniciado",
+        "call_uuid": call_uuid
+    }
+
+
+@router.get("/active")
+async def list_active_callbacks():
+    """
+    Lista callbacks ativos sendo monitorados.
+    
+    Útil para debug e monitoramento.
+    """
+    active_list = []
+    for call_uuid, data in _active_callbacks.items():
+        started_at = data.get("started_at")
+        duration = None
+        if started_at:
+            duration = int((datetime.now() - started_at).total_seconds())
+        
+        active_list.append({
+            "call_uuid": call_uuid,
+            "ticket_id": data.get("ticket_id"),
+            "domain_uuid": data.get("domain_uuid", "")[:8] + "...",
+            "monitoring_duration_seconds": duration
+        })
+    
+    return {
+        "count": len(active_list),
+        "callbacks": active_list
+    }
+
+
 # Health check
 @router.get("/health")
 async def callback_health():
     """Health check para o serviço de callback."""
-    return {"status": "ok", "service": "callback"}
+    return {
+        "status": "ok", 
+        "service": "callback",
+        "active_callbacks": len(_active_callbacks)
+    }
