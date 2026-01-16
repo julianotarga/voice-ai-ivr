@@ -638,7 +638,6 @@ class RealtimeServer:
                         # Enviar chunks com pacing PRECISO usando clock absoluto
                         # FIX: Usar clock absoluto ao invés de sleep relativo para evitar drift
                         if streaming_started:
-                            import time
                             chunk_interval = PCM16_CHUNK_MS / 1000.0  # 0.02s
                             next_send_time = time.monotonic()
                             
