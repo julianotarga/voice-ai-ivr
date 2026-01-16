@@ -623,6 +623,10 @@ class RealtimeServer:
                             logger.warning("Switching to streamAudio fallback (header failed)", extra={"call_uuid": call_uuid})
 
                     if playback_mode == "rawaudio":
+                        # Limpar chunks obsoletos (de generation anterior) antes de acumular
+                        # Isso evita que chunks antigos sejam contados no warmup
+                        buffered_chunks = [(g, c) for g, c in buffered_chunks if g == generation]
+                        
                         # Acumular chunks para warmup
                         buffered_chunks.append((generation, chunk))
 
