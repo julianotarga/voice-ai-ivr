@@ -366,10 +366,11 @@ class HandoffHandler:
             # Gerar resumo simples se não houver LLM
             summary = self._generate_simple_summary()
             
+            transcript_dicts = [t.to_dict() for t in self.transcript]
             payload = {
                 "call_uuid": self.call_uuid,
                 "caller_id": caller_number,
-                "transcript": [t.to_dict() for t in self.transcript],
+                "transcript": transcript_dicts,
                 "summary": summary,
                 "provider": provider,
                 "language": language,
@@ -381,6 +382,16 @@ class HandoffHandler:
                 "secretary_uuid": self.config.secretary_uuid,
                 "recording_url": final_recording_url  # ← URL da gravação no MinIO
             }
+            
+            logger.info(
+                "Creating fallback ticket",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "transcript_count": len(transcript_dicts),
+                    "summary_length": len(summary) if summary else 0,
+                    "has_recording": bool(final_recording_url),
+                }
+            )
             
             url = f"{OMNIPLAY_API_URL}/api/tickets/realtime-handoff"
             
