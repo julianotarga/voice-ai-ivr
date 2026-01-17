@@ -701,6 +701,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._current_assistant_text += event.transcript
         
         elif event.type == ProviderEventType.TRANSCRIPT_DONE:
+            # IMPORTANTE: Marcar que o assistente terminou de falar
+            # ElevenLabs envia agent_response (→ TRANSCRIPT_DONE) ao final de cada resposta
+            self._assistant_speaking = False
+            
             if self._current_assistant_text:
                 self._transcript.append(TranscriptEntry(role="assistant", text=self._current_assistant_text))
                 if self._on_transcript:
@@ -752,6 +756,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._user_speaking = False
         
         elif event.type == ProviderEventType.RESPONSE_DONE:
+            # IMPORTANTE: Marcar que o assistente terminou de falar
+            # Isso é usado pelo _delayed_stop() para saber quando pode desligar
+            self._assistant_speaking = False
+            
             if self._speech_start_time:
                 self._metrics.record_latency(self.call_uuid, time.time() - self._speech_start_time)
                 self._speech_start_time = None
@@ -1018,20 +1026,22 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # Espera mínima inicial
         await asyncio.sleep(delay)
         
-        # Esperar o assistente terminar de falar (máximo 30s adicionais)
-        max_wait = 30
+        # Esperar o assistente terminar de falar (máximo 10s adicionais)
+        # O evento TRANSCRIPT_DONE (agent_response no ElevenLabs) marca o fim
+        max_wait = 10
         waited = 0
         while self._assistant_speaking and waited < max_wait:
-            await asyncio.sleep(0.5)
-            waited += 0.5
+            await asyncio.sleep(0.3)
+            waited += 0.3
             
         # Delay adicional para o áudio terminar de tocar no FreeSWITCH
         # (o áudio é enviado em chunks e pode estar na fila de playback)
         if waited > 0:
-            logger.debug(f"Waited {waited}s for assistant to finish speaking", extra={
+            logger.debug(f"Waited {waited:.1f}s for assistant to finish speaking", extra={
                 "call_uuid": self.call_uuid,
             })
-            await asyncio.sleep(1.5)  # Buffer adicional para playback
+        # Sempre dar um pequeno delay para o playback finalizar
+        await asyncio.sleep(1.0)
         
         await self.stop(reason)
     
