@@ -266,7 +266,7 @@ class AsyncESLClient:
             for event in events:
                 try:
                     await self._send(f"event plain {event}\n\n")
-                        await self._read_response(discard_events=True)
+                    await self._read_response(discard_events=True)
                     self._subscribed_events.add(event)
                 except Exception as e:
                     logger.warning(f"Failed to resubscribe to {event}: {e}")
