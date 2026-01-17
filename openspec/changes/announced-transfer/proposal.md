@@ -95,7 +95,7 @@ await esl.uuid_broadcast(b_leg, f"http://minio/announcements/{uuid}.wav")
 
 ### D2: Como detectar resposta do humano?
 
-**Opção A**: DTMF
+**Opção A**: DTMF explícito
 - "Pressione 1 para aceitar, 2 para recusar"
 - ✅ Simples, confiável
 - ❌ Menos natural
@@ -110,7 +110,16 @@ await esl.uuid_broadcast(b_leg, f"http://minio/announcements/{uuid}.wav")
 - ✅ Simples
 - ❌ Pode conectar sem consentimento explícito
 
-**Decisão**: **Opção A (DTMF)** para MVP.
+**Opção D**: Híbrida (Timeout + DTMF para recusar) ⭐
+- "Olá, tenho um cliente na linha. Pressione 2 para recusar ou aguarde para aceitar."
+- Timeout de 5 segundos → aceitar automaticamente
+- DTMF 2 → recusar
+- Hangup → recusar
+- ✅ Natural (humano não precisa fazer nada para aceitar)
+- ✅ Ainda permite recusar facilmente
+- ✅ Simples de implementar
+
+**Decisão**: **Opção D (Híbrida)** - mais natural para o atendente.
 
 ### D3: O que incluir no anúncio?
 
@@ -124,12 +133,17 @@ Informações disponíveis:
 ```
 "Olá, tenho [nome ou número] na linha.
 [Motivo se disponível].
-Pressione 1 para aceitar ou 2 para recusar."
+Pressione 2 para recusar ou aguarde para aceitar."
 ```
 
 **Exemplos**:
-- "Olá, tenho o número 11999887766 na linha. Ele quer falar sobre contratação de plano. Pressione 1 para aceitar ou 2 para recusar."
-- "Olá, tenho um cliente na linha. Pressione 1 para aceitar ou 2 para recusar."
+- "Olá, tenho o número 11999887766 na linha, sobre contratação de plano. Pressione 2 para recusar ou aguarde para aceitar."
+- "Olá, tenho um cliente na linha. Aguarde para aceitar ou pressione 2 para recusar."
+
+**Comportamento**:
+- Humano **não faz nada** → após 5 segundos, conecta automaticamente
+- Humano **pressiona 2** → recusa, agente volta ao cliente
+- Humano **desliga** → recusa, agente volta ao cliente
 
 ### D4: Timeout e fallback
 

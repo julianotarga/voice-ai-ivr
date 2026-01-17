@@ -53,43 +53,47 @@ async def uuid_say(
 - [ ] Adicionar DTMF à lista de eventos monitorados
 - [ ] Criar queue para armazenar DTMFs recebidos por UUID
 
-### 2.2 Implementar wait_for_dtmf()
-- [ ] Aguardar DTMF específico ou timeout
+### 2.2 Implementar wait_for_reject_or_timeout()
+- [ ] Aguardar DTMF "2" (recusar) ou timeout (aceitar)
 - [ ] Filtrar por UUID do canal
+- [ ] Retornar "accept" se timeout, "reject" se DTMF 2 ou hangup
 
 ```python
-async def wait_for_dtmf(
+async def wait_for_reject_or_timeout(
     self,
     uuid: str,
-    valid_digits: str = "12",
-    timeout: float = 15.0
-) -> Optional[str]:
+    timeout: float = 5.0
+) -> str:
     """
-    Aguarda DTMF de um canal específico.
+    Aguarda recusa (DTMF 2 ou hangup) ou timeout (aceitar).
+    
+    Modelo híbrido: não fazer nada = aceitar, pressionar 2 = recusar.
     
     Args:
         uuid: UUID do canal
-        valid_digits: Dígitos válidos (ex: "12" para 1 ou 2)
-        timeout: Timeout em segundos
+        timeout: Tempo para aceitar automaticamente (segundos)
     
     Returns:
-        Dígito pressionado ou None se timeout/hangup
+        "accept" - Timeout (humano aguardou)
+        "reject" - DTMF 2 pressionado
+        "hangup" - Humano desligou
     """
     start = time.time()
     
     while time.time() - start < timeout:
         # Verificar se canal ainda existe
         if not await self.uuid_exists(uuid):
-            return None
+            return "hangup"
         
-        # Verificar fila de DTMFs
+        # Verificar se DTMF 2 foi pressionado
         dtmf = self._dtmf_queue.get(uuid)
-        if dtmf and dtmf in valid_digits:
-            return dtmf
+        if dtmf == "2":
+            return "reject"
         
         await asyncio.sleep(0.1)
     
-    return None
+    # Timeout = aceitar
+    return "accept"
 ```
 
 ### 2.3 Handler de evento DTMF
@@ -110,22 +114,26 @@ async def wait_for_dtmf(
   2. Aguardar DTMF com `wait_for_dtmf()`
   3. Processar resposta
 
-### 3.3 Tratamento de respostas
-- [ ] DTMF 1 (aceitar): bridge A↔B
-- [ ] DTMF 2 (recusar): matar B-leg, retornar REJECTED
-- [ ] Timeout: assumir aceite (bridge)
-- [ ] Hangup: retornar REJECTED
+### 3.3 Tratamento de respostas (Modelo Híbrido)
+- [ ] Timeout (5s): aceitar automaticamente → bridge A↔B
+- [ ] DTMF 2: recusar → matar B-leg, retornar REJECTED
+- [ ] Hangup: recusar → retornar REJECTED
 
 ```python
 async def execute_announced_transfer(
     self,
     destination: TransferDestination,
     announcement: str,
-    timeout: int = 30,
-    dtmf_timeout: int = 15,
+    ring_timeout: int = 30,
+    accept_timeout: int = 5,  # Tempo para aceitar automaticamente
 ) -> TransferResult:
     """
     Transferência com anúncio para o humano.
+    
+    Modelo híbrido:
+    - Não fazer nada por 5s = aceitar
+    - Pressionar 2 = recusar
+    - Desligar = recusar
     """
     # 1. MOH no cliente
     await self._start_moh()
@@ -136,22 +144,21 @@ async def execute_announced_transfer(
         await self._stop_moh()
         return TransferResult(status=FAILED)
     
-    # 3. Anunciar para o humano
-    announcement_with_dtmf = (
+    # 3. Anunciar para o humano (modelo híbrido)
+    announcement_text = (
         f"{announcement}. "
-        "Pressione 1 para aceitar ou 2 para recusar."
+        "Pressione 2 para recusar ou aguarde para aceitar."
     )
-    await self._esl.uuid_say(b_leg_uuid, announcement_with_dtmf)
+    await self._esl.uuid_say(b_leg_uuid, announcement_text)
     
-    # 4. Aguardar DTMF
-    dtmf = await self._esl.wait_for_dtmf(
+    # 4. Aguardar resposta (timeout = aceitar)
+    response = await self._esl.wait_for_reject_or_timeout(
         b_leg_uuid, 
-        valid_digits="12", 
-        timeout=dtmf_timeout
+        timeout=accept_timeout
     )
     
     # 5. Processar resposta
-    if dtmf == "1" or dtmf is None:  # Aceitar ou timeout
+    if response == "accept":  # Timeout = aceitar
         await self._stop_moh()
         await self._esl.uuid_setvar(self.call_uuid, "hangup_after_bridge", "true")
         success = await self._esl.uuid_bridge(self.call_uuid, b_leg_uuid)
@@ -162,7 +169,7 @@ async def execute_announced_transfer(
             await self._esl.uuid_kill(b_leg_uuid)
             return TransferResult(status=FAILED, error="Bridge failed")
     
-    elif dtmf == "2":  # Recusar
+    elif response == "reject":  # DTMF 2 pressionado
         await self._esl.uuid_kill(b_leg_uuid)
         await self._stop_moh()
         return TransferResult(
@@ -171,11 +178,12 @@ async def execute_announced_transfer(
             should_offer_callback=True
         )
     
-    else:  # Hangup (dtmf is None e canal não existe)
+    else:  # Hangup
         await self._stop_moh()
         return TransferResult(
             status=REJECTED,
-            message="O atendente não está disponível. Quer deixar um recado?"
+            message="O atendente não está disponível. Quer deixar um recado?",
+            should_offer_callback=True
         )
 ```
 
@@ -275,33 +283,33 @@ def _extract_call_reason(self) -> Optional[str]:
 
 ## Fase 6: Testes (3h)
 
-### 6.1 Teste manual - Fluxo feliz
+### 6.1 Teste manual - Fluxo feliz (timeout = aceitar)
 - [ ] Cliente pede transferência
 - [ ] Humano atende, ouve anúncio
-- [ ] Humano pressiona 1
-- [ ] Bridge estabelecido
+- [ ] Humano **aguarda 5 segundos** (não faz nada)
+- [ ] Bridge estabelecido automaticamente
 - [ ] Conversa funciona
 
-### 6.2 Teste manual - Humano recusa
+### 6.2 Teste manual - Humano recusa (DTMF 2)
 - [ ] Cliente pede transferência
 - [ ] Humano atende, ouve anúncio
-- [ ] Humano pressiona 2
+- [ ] Humano **pressiona 2**
 - [ ] Agente volta ao cliente: "Vendas não pode atender..."
 
 ### 6.3 Teste manual - Humano desliga
 - [ ] Cliente pede transferência
 - [ ] Humano atende, ouve anúncio
-- [ ] Humano desliga
-- [ ] Agente volta ao cliente
+- [ ] Humano **desliga** antes do timeout
+- [ ] Agente volta ao cliente: "Vendas não está disponível..."
 
-### 6.4 Teste manual - Timeout
+### 6.4 Teste manual - Humano não atende
 - [ ] Cliente pede transferência
-- [ ] Humano atende, não pressiona nada
-- [ ] Após 15s, bridge automático
+- [ ] Telefone toca mas humano **não atende** (30s)
+- [ ] Agente volta ao cliente: "Vendas não atendeu..."
 
 ### 6.5 Teste manual - Cliente desliga durante anúncio
 - [ ] Cliente pede transferência
-- [ ] Durante anúncio, cliente desliga
+- [ ] Durante anúncio, **cliente desliga**
 - [ ] B-leg é encerrado automaticamente
 
 ---
