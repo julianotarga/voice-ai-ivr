@@ -251,6 +251,8 @@ class RealtimeSession:
         self._assistant_speaking = False
         self._last_barge_in_ts = 0.0
         self._last_audio_delta_ts = 0.0
+        self._local_barge_hits = 0
+        self._barge_noise_floor = 0.0
         self._pending_audio_bytes = 0  # Audio bytes da resposta ATUAL (reset a cada nova resposta)
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
         self._farewell_response_started = False  # True quando o áudio de despedida começou
@@ -600,17 +602,32 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # que pode chegar tarde, fazendo o caller ouvir o agente por mais tempo.
         # Considerar "assistente falando" se ainda estamos recebendo áudio recentemente,
         # mesmo que o flag tenha sido zerado por eventos de transcript.
-        assistant_audio_recent = (time.time() - self._last_audio_delta_ts) < 1.0
+        # Janela curta: serve só para cobrir casos onde transcript chega antes do áudio terminar.
+        assistant_audio_recent = (time.time() - self._last_audio_delta_ts) < 0.6
         if self.config.barge_in_enabled and (self._assistant_speaking or assistant_audio_recent) and audio_bytes:
             try:
                 rms = audioop.rms(audio_bytes, 2)  # PCM16 => width=2
                 rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "450"))
                 cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "0.5"))
                 # Evita falsos positivos por ruído: exige N frames consecutivos acima do limiar
-                required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "3"))
+                required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "8"))
+                # Noise floor adaptativo (eco/ruído do ambiente): threshold dinâmico = max(fixo, floor * mult)
+                noise_mult = float(os.getenv("REALTIME_LOCAL_BARGE_NOISE_MULTIPLIER", "3.0"))
                 now = time.time()
-                if rms >= rms_threshold:
-                    self._local_barge_hits = getattr(self, "_local_barge_hits", 0) + 1
+                
+                # Atualizar floor somente quando estamos "ouvindo" durante fala do assistente,
+                # pois é quando eco/ruído tende a aparecer e causar falsos positivos.
+                if self._assistant_speaking:
+                    if self._barge_noise_floor <= 0:
+                        self._barge_noise_floor = float(rms)
+                    else:
+                        # EMA suave
+                        self._barge_noise_floor = (0.90 * self._barge_noise_floor) + (0.10 * float(rms))
+                
+                dynamic_threshold = max(rms_threshold, int(self._barge_noise_floor * noise_mult))
+
+                if rms >= dynamic_threshold:
+                    self._local_barge_hits += 1
                 else:
                     self._local_barge_hits = 0
                 if (
