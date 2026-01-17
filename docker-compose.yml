@@ -354,6 +354,9 @@ services:
     
     volumes:
       - voice-ai-logs:/app/logs
+      # Compartilhar diretório de anúncios TTS com FreeSWITCH
+      # O FreeSWITCH precisa acessar os arquivos WAV gerados pelo ElevenLabs
+      - /tmp/voice-ai-announcements:/tmp/voice-ai-announcements
     
     extra_hosts:
       # Acesso ao host (para PostgreSQL e FreeSWITCH)
