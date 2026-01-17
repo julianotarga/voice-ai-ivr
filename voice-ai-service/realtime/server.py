@@ -530,25 +530,22 @@ class RealtimeServer:
             tools.append(END_CALL_FUNCTION_DEFINITION)
         
         # ========================================
-        # MODO DUAL: Ferramentas adicionais
+        # FERRAMENTAS DE CONTROLE DE CHAMADA
+        # Disponíveis em todos os modos (usam ESL adapter)
         # Ref: openspec/changes/dual-mode-esl-websocket/
         # ========================================
-        audio_mode = os.getenv("AUDIO_MODE", "websocket").lower()
         
-        if audio_mode == "dual":
-            # Adicionar ferramentas de controle de chamada
-            if "hold_call" not in tool_names:
-                tools.append(HOLD_CALL_FUNCTION_DEFINITION)
-            
-            if "unhold_call" not in tool_names:
-                tools.append(UNHOLD_CALL_FUNCTION_DEFINITION)
-            
-            if "check_extension_available" not in tool_names:
-                tools.append(CHECK_EXTENSION_FUNCTION_DEFINITION)
-            
-            logger.debug("Added dual mode tools (hold, unhold, check_extension)", extra={
-                "call_uuid": call_uuid
-            })
+        # Adicionar ferramentas de controle de chamada
+        if "hold_call" not in tool_names:
+            tools.append(HOLD_CALL_FUNCTION_DEFINITION)
+        
+        if "unhold_call" not in tool_names:
+            tools.append(UNHOLD_CALL_FUNCTION_DEFINITION)
+        
+        if "check_extension_available" not in tool_names:
+            tools.append(CHECK_EXTENSION_FUNCTION_DEFINITION)
+        
+        audio_mode = os.getenv("AUDIO_MODE", "websocket").lower()
         
         logger.info("Session tools configured", extra={
             "call_uuid": call_uuid,
