@@ -524,6 +524,9 @@ class DualModeEventRelay:
         Este método é chamado pela RealtimeSession quando precisa
         desligar a chamada (ex: após despedida do usuário).
         
+        NOTA: Usa timeout de 2s para evitar bloqueio indefinido
+        se a sessão já tiver sido desconectada.
+        
         Args:
             cause: Hangup cause (ex: NORMAL_CLEARING, USER_BUSY)
             
@@ -538,20 +541,27 @@ class DualModeEventRelay:
         try:
             # has_gone_away é True quando o caller já desligou
             if hasattr(self.session, 'has_gone_away') and self.session.has_gone_away:
-                logger.warning(f"[{self._uuid}] Session already gone, cannot hangup via Outbound")
-                return False
+                logger.info(f"[{self._uuid}] Session already gone, no hangup needed")
+                return True  # Não é erro, a chamada já encerrou
         except Exception:
             pass  # Ignorar se não conseguir verificar
         
         try:
-            # Encerrar a chamada usando o método correto do greenswitch
-            self.session.hangup(cause)
-            logger.info(f"[{self._uuid}] Hangup sent via ESL Outbound: {cause}")
-            return True
+            import gevent
+            
+            # Usar timeout para evitar bloqueio indefinido
+            with gevent.Timeout(2.0, False):
+                self.session.hangup(cause)
+                logger.info(f"[{self._uuid}] Hangup sent via ESL Outbound: {cause}")
+                return True
+            
+            # Se chegou aqui, timeout expirou
+            logger.warning(f"[{self._uuid}] Hangup via ESL Outbound timed out (session may be gone)")
+            return False
             
         except Exception as e:
             # Se falhar, a sessão provavelmente já foi desconectada
-            logger.warning(f"[{self._uuid}] Hangup via ESL Outbound failed (session may be gone): {e}")
+            logger.warning(f"[{self._uuid}] Hangup via ESL Outbound failed: {e}")
             return False
     
     def execute_api(self, command: str) -> Optional[str]:
