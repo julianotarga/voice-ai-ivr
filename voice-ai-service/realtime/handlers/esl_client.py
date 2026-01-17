@@ -958,39 +958,60 @@ class AsyncESLClient:
         self,
         uuid: str,
         text: str,
-        lang: str = "pt-BR"
+        lang: str = "en"
     ) -> bool:
         """
-        Fala texto para um canal usando mod_say do FreeSWITCH.
+        Fala texto para um canal usando mod_flite (text-to-speech) do FreeSWITCH.
         
-        NOTA: mod_say usa voz robótica. Para voz natural, usar TTS externo
-        e uuid_broadcast com arquivo de áudio.
+        NOTA: mod_flite é mais confiável que mod_say para TTS.
+        Usa voz robótica mas funciona em qualquer instalação.
+        
+        Fallback: Se flite não funcionar, tenta speak (Cepstral/eSpeak).
         
         Args:
             uuid: UUID do canal
             text: Texto a falar
-            lang: Idioma (pt-BR, en-US, es-MX, etc)
+            lang: Idioma (não usado pelo flite, mas mantido para compatibilidade)
         
         Returns:
             True se comando enviado com sucesso
         """
         try:
             # Escapar caracteres especiais
-            text_escaped = text.replace("'", "").replace('"', "").replace("\n", " ")
+            text_escaped = text.replace("'", "").replace('"', "").replace("\n", " ").replace("|", " ")
             
-            # Formato: uuid_broadcast <uuid> say:<lang>:<text> aleg
-            # "aleg" significa tocar apenas para o leg A (o canal especificado)
+            # Tentar mod_flite primeiro (mais comum)
+            # Formato: uuid_broadcast <uuid> flite://<text> aleg
             result = await self.execute_api(
-                f"uuid_broadcast {uuid} 'say:{lang}:{text_escaped}' aleg"
+                f"uuid_broadcast {uuid} 'flite://{text_escaped}' aleg"
+            )
+            
+            if "+OK" in result:
+                logger.debug(f"uuid_say (flite) success: {uuid} - {text[:50]}...")
+                return True
+            
+            # Fallback: tentar speak (Cepstral/eSpeak)
+            result = await self.execute_api(
+                f"uuid_broadcast {uuid} 'speak:{text_escaped}' aleg"
+            )
+            
+            if "+OK" in result:
+                logger.debug(f"uuid_say (speak) success: {uuid} - {text[:50]}...")
+                return True
+            
+            # Fallback final: tentar say (mod_say)
+            result = await self.execute_api(
+                f"uuid_broadcast {uuid} 'say:en:name:pronounced:{text_escaped}' aleg"
             )
             
             success = "+OK" in result
             if success:
-                logger.debug(f"uuid_say success: {uuid} - {text[:50]}...")
+                logger.debug(f"uuid_say (say) success: {uuid} - {text[:50]}...")
             else:
-                logger.warning(f"uuid_say failed: {result}")
+                logger.warning(f"uuid_say failed all methods: {result}")
             
             return success
+            
         except Exception as e:
             logger.error(f"uuid_say error: {e}")
             return False
