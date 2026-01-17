@@ -500,7 +500,13 @@ class RealtimeServer:
         # ADICIONAR FERRAMENTAS OBRIGATÓRIAS
         # ========================================
         # Importar definições de ferramentas
-        from .session import HANDOFF_FUNCTION_DEFINITION, END_CALL_FUNCTION_DEFINITION
+        from .session import (
+            HANDOFF_FUNCTION_DEFINITION,
+            END_CALL_FUNCTION_DEFINITION,
+            HOLD_CALL_FUNCTION_DEFINITION,
+            UNHOLD_CALL_FUNCTION_DEFINITION,
+            CHECK_EXTENSION_FUNCTION_DEFINITION,
+        )
         
         # Inicializar tools se não existir
         if not tools:
@@ -518,15 +524,35 @@ class RealtimeServer:
         # Adicionar request_handoff se não existir
         if "request_handoff" not in tool_names:
             tools.append(HANDOFF_FUNCTION_DEFINITION)
-            logger.debug("Added request_handoff tool", extra={"call_uuid": call_uuid})
         
         # Adicionar end_call se não existir
         if "end_call" not in tool_names:
             tools.append(END_CALL_FUNCTION_DEFINITION)
-            logger.debug("Added end_call tool", extra={"call_uuid": call_uuid})
+        
+        # ========================================
+        # MODO DUAL: Ferramentas adicionais
+        # Ref: openspec/changes/dual-mode-esl-websocket/
+        # ========================================
+        audio_mode = os.getenv("AUDIO_MODE", "websocket").lower()
+        
+        if audio_mode == "dual":
+            # Adicionar ferramentas de controle de chamada
+            if "hold_call" not in tool_names:
+                tools.append(HOLD_CALL_FUNCTION_DEFINITION)
+            
+            if "unhold_call" not in tool_names:
+                tools.append(UNHOLD_CALL_FUNCTION_DEFINITION)
+            
+            if "check_extension_available" not in tool_names:
+                tools.append(CHECK_EXTENSION_FUNCTION_DEFINITION)
+            
+            logger.debug("Added dual mode tools (hold, unhold, check_extension)", extra={
+                "call_uuid": call_uuid
+            })
         
         logger.info("Session tools configured", extra={
             "call_uuid": call_uuid,
+            "audio_mode": audio_mode,
             "tool_count": len(tools),
             "tool_names": [t.get("name") or (t.get("function") or {}).get("name") for t in tools if isinstance(t, dict)],
         })

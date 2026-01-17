@@ -61,49 +61,74 @@ def run_dual_mode(
     esl_port: int,
 ) -> None:
     """
-    Executa ambos os servidores simultaneamente.
+    Executa ambos os servidores simultaneamente (MODO DUAL).
     
-    WebSocket roda em asyncio (thread principal).
-    ESL roda em gevent (thread separada).
+    Arquitetura:
+    - WebSocket Server (8085): Processa áudio via mod_audio_stream
+    - ESL Outbound Server (8022): Recebe eventos (HANGUP, DTMF) e correlaciona com sessões
+    
+    O ESL NÃO processa áudio no modo dual - apenas eventos.
+    
+    Ref: openspec/changes/dual-mode-esl-websocket/proposal.md
     """
-    from .esl import create_server
+    from .esl import create_server, DualModeEventRelay, set_main_asyncio_loop
     from .server import run_server
     
-    # Criar servidor ESL
-    esl_server = create_server(host=esl_host, port=esl_port)
+    # Criar servidor ESL com DualModeEventRelay (não VoiceAIApplication)
+    # O DualModeEventRelay só processa eventos, não áudio
+    esl_server = create_server(
+        host=esl_host,
+        port=esl_port,
+        application_class=DualModeEventRelay,  # ← Usar EventRelay no modo dual
+    )
     
     # Thread para ESL (gevent)
     esl_thread = threading.Thread(
         target=esl_server.start,
-        name="ESLServer",
+        name="ESLEventRelay",
         daemon=True,
     )
     
     # Handler para shutdown gracioso
-    shutdown_event = asyncio.Event()
-    
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, shutting down...")
         esl_server.stop()
-        shutdown_event.set()
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Iniciar ESL em thread separada
-    logger.info(f"Starting ESL server on {esl_host}:{esl_port}")
+    logger.info(f"Starting ESL EventRelay server on {esl_host}:{esl_port}")
     esl_thread.start()
     
     # Rodar WebSocket na thread principal (asyncio)
     logger.info(f"Starting WebSocket server on {ws_host}:{ws_port}")
     
+    async def run_with_loop_registration():
+        """Executa servidor e registra o loop para o ESL EventRelay."""
+        # Registrar o asyncio loop para que o ESL EventRelay possa despachar eventos
+        loop = asyncio.get_running_loop()
+        set_main_asyncio_loop(loop)
+        logger.info("Asyncio loop registered for ESL event dispatching")
+        
+        # Importar e executar servidor
+        from .server import RealtimeServer
+        server = RealtimeServer(host=ws_host, port=ws_port)
+        await server.start()
+        
+        try:
+            await server.serve_forever()
+        finally:
+            await server.stop()
+    
     try:
-        asyncio.run(run_server(host=ws_host, port=ws_port))
+        asyncio.run(run_with_loop_registration())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
         esl_server.stop()
         esl_thread.join(timeout=5.0)
+        logger.info("Dual mode servers stopped")
 
 
 def main() -> None:

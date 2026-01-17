@@ -85,6 +85,59 @@ END_CALL_FUNCTION_DEFINITION = {
     }
 }
 
+# ========================================
+# MODO DUAL: Function Definitions
+# Ref: openspec/changes/dual-mode-esl-websocket/
+# ========================================
+
+HOLD_CALL_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "hold_call",
+    "description": (
+        "Coloca o cliente em espera com música. "
+        "Use quando precisar verificar algo ou consultar informações. "
+        "Lembre-se de avisar o cliente antes de colocar em espera."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+}
+
+UNHOLD_CALL_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "unhold_call",
+    "description": (
+        "Retira o cliente da espera. "
+        "Use após verificar as informações necessárias."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+}
+
+CHECK_EXTENSION_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "check_extension_available",
+    "description": (
+        "Verifica se um ramal ou atendente está disponível para transferência. "
+        "Use antes de prometer ao cliente que vai transferir para alguém específico."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "extension": {
+                "type": "string",
+                "description": "Número do ramal para verificar (ex: '1001', '200')"
+            }
+        },
+        "required": ["extension"]
+    }
+}
+
 
 @dataclass
 class TranscriptEntry:
@@ -228,6 +281,14 @@ class RealtimeSession:
         # Business Hours / Callback Handler
         self._outside_hours_task: Optional[asyncio.Task] = None
         self._callback_handler: Optional[Any] = None  # Type hint genérico para evitar import circular
+        
+        # ========================================
+        # Modo Dual: ESL Event Relay Integration
+        # Ref: openspec/changes/dual-mode-esl-websocket/
+        # ========================================
+        self._esl_connected = False  # True quando ESL Outbound conectou
+        self._on_hold = False  # True quando chamada está em espera
+        self._bridged_to: Optional[str] = None  # UUID do canal bridged
     
     @property
     def call_uuid(self) -> str:
@@ -734,9 +795,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """Executa função internamente."""
         if name == "transfer_call":
             return {"action": "transfer", "destination": args.get("destination", "")}
+        
         elif name == "end_call":
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
+        
         elif name == "request_handoff":
             # FASE 1: Usar TransferManager se disponível
             destination = args.get("destination", "qualquer atendente")
@@ -750,6 +813,32 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # Fallback para handoff legacy (cria ticket)
                 asyncio.create_task(self._initiate_handoff(reason="llm_intent"))
                 return {"status": "handoff_initiated"}
+        
+        # ========================================
+        # MODO DUAL: Novas funções
+        # ========================================
+        elif name == "hold_call":
+            success = await self.hold_call()
+            if success:
+                return {"status": "on_hold", "message": "Cliente em espera"}
+            else:
+                return {"status": "error", "message": "Não foi possível colocar em espera"}
+        
+        elif name == "unhold_call":
+            success = await self.unhold_call()
+            if success:
+                return {"status": "off_hold", "message": "Cliente retirado da espera"}
+            else:
+                return {"status": "error", "message": "Não foi possível retirar da espera"}
+        
+        elif name == "check_extension_available":
+            extension = args.get("extension", "")
+            if not extension:
+                return {"status": "error", "message": "Número do ramal não informado"}
+            
+            result = await self.check_extension_available(extension)
+            return result
+        
         return {"error": f"Unknown function: {name}"}
     
     async def _send_text_to_provider(self, text: str) -> None:
@@ -988,6 +1077,232 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "reason": reason,
             "hangup_sent": should_hangup,
         })
+    
+    # =========================================================================
+    # MODO DUAL: ESL Event Handlers
+    # Ref: openspec/changes/dual-mode-esl-websocket/
+    # =========================================================================
+    
+    async def set_esl_connected(self, connected: bool) -> None:
+        """
+        Notifica que ESL Outbound conectou/desconectou.
+        
+        Chamado pelo DualModeEventRelay quando correlaciona a sessão.
+        """
+        self._esl_connected = connected
+        logger.info(
+            f"ESL {'connected' if connected else 'disconnected'}",
+            extra={"call_uuid": self.call_uuid}
+        )
+    
+    async def handle_dtmf(self, digit: str) -> None:
+        """
+        Processa DTMF recebido via ESL.
+        
+        Mapeamento padrão:
+        - 0: Transferir para operador
+        - *: Encerrar chamada
+        - #: Repetir último menu / informação
+        
+        Args:
+            digit: Dígito DTMF (0-9, *, #)
+        """
+        logger.info(f"DTMF received: {digit}", extra={"call_uuid": self.call_uuid})
+        
+        # Ignorar DTMF durante transferência
+        if self._transfer_in_progress:
+            logger.debug("Ignoring DTMF during transfer")
+            return
+        
+        # Mapeamento de DTMF para ações
+        if digit == "0":
+            # Transferir para operador/recepção
+            await self._send_text_to_provider(
+                "Você pressionou zero. Vou transferir você para um atendente."
+            )
+            await asyncio.sleep(2.0)
+            await self._execute_intelligent_handoff("operador", "DTMF 0")
+            
+        elif digit == "*":
+            # Encerrar chamada
+            await self._send_text_to_provider("Obrigado por ligar. Até logo!")
+            await asyncio.sleep(2.0)
+            await self.stop("dtmf_hangup")
+            
+        elif digit == "#":
+            # Repetir / ajuda
+            await self._send_text_to_provider(
+                "Pressione zero para falar com um atendente, "
+                "ou continue a conversa normalmente."
+            )
+        
+        else:
+            # Outros dígitos - pode ser usado para menus futuros
+            logger.debug(f"DTMF {digit} not mapped to action")
+    
+    async def handle_bridge(self, other_uuid: str) -> None:
+        """
+        Notifica que a chamada foi conectada a outro canal (bridge).
+        
+        Isso acontece quando uma transferência é completada com sucesso.
+        
+        Args:
+            other_uuid: UUID do outro canal (destino da transferência)
+        """
+        self._bridged_to = other_uuid
+        logger.info(
+            f"Call bridged to {other_uuid}",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
+        # Quando em bridge, a sessão de IA deve pausar
+        # (o cliente está falando com humano)
+        if self._provider:
+            await self._provider.disconnect()
+    
+    async def handle_unbridge(self, _: Any = None) -> None:
+        """
+        Notifica que o bridge foi desfeito.
+        
+        Isso pode acontecer se o destino da transferência desligar
+        antes do cliente.
+        """
+        if self._bridged_to:
+            logger.info(
+                f"Call unbridged from {self._bridged_to}",
+                extra={"call_uuid": self.call_uuid}
+            )
+            self._bridged_to = None
+            
+            # TODO: Retomar sessão de IA ou encerrar?
+            # Por ora, encerrar a chamada
+            await self.stop("unbridge")
+    
+    async def handle_hold(self, on_hold: bool) -> None:
+        """
+        Notifica mudança de estado de espera.
+        
+        Args:
+            on_hold: True se foi colocado em espera, False se foi retirado
+        """
+        self._on_hold = on_hold
+        logger.info(
+            f"Call {'on hold' if on_hold else 'off hold'}",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
+        # Quando em hold, pausar processamento de áudio
+        # (música de espera está tocando para o cliente)
+    
+    async def hold_call(self) -> bool:
+        """
+        Coloca o cliente em espera.
+        
+        Returns:
+            True se sucesso
+        """
+        if self._on_hold:
+            return True
+        
+        try:
+            from .handlers.esl_client import get_esl_client
+            esl = get_esl_client()
+            
+            if not esl._connected:
+                await esl.connect()
+            
+            success = await esl.uuid_hold(self.call_uuid, on=True)
+            if success:
+                self._on_hold = True
+                logger.info("Call placed on hold", extra={"call_uuid": self.call_uuid})
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error placing call on hold: {e}")
+            return False
+    
+    async def unhold_call(self) -> bool:
+        """
+        Retira o cliente da espera.
+        
+        Returns:
+            True se sucesso
+        """
+        if not self._on_hold:
+            return True
+        
+        try:
+            from .handlers.esl_client import get_esl_client
+            esl = get_esl_client()
+            
+            if not esl._connected:
+                await esl.connect()
+            
+            success = await esl.uuid_hold(self.call_uuid, on=False)
+            if success:
+                self._on_hold = False
+                logger.info("Call taken off hold", extra={"call_uuid": self.call_uuid})
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error taking call off hold: {e}")
+            return False
+    
+    async def check_extension_available(self, extension: str) -> dict:
+        """
+        Verifica se um ramal está disponível.
+        
+        Args:
+            extension: Número do ramal
+        
+        Returns:
+            Dict com status de disponibilidade
+        """
+        try:
+            from .handlers.esl_client import get_esl_client
+            esl = get_esl_client()
+            
+            if not esl._connected:
+                await esl.connect()
+            
+            # Verificar registro
+            result = await esl.execute_api(
+                f"sofia status profile internal reg {extension}"
+            )
+            
+            is_registered = result and "REGISTERED" in result.upper()
+            
+            if not is_registered:
+                return {
+                    "extension": extension,
+                    "available": False,
+                    "reason": "Ramal não está online"
+                }
+            
+            # Verificar se está em chamada
+            channels = await esl.show_channels()
+            in_call = extension in channels
+            
+            if in_call:
+                return {
+                    "extension": extension,
+                    "available": False,
+                    "reason": "Ramal está em outra ligação"
+                }
+            
+            return {
+                "extension": extension,
+                "available": True,
+                "reason": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking extension {extension}: {e}")
+            return {
+                "extension": extension,
+                "available": False,
+                "reason": f"Erro ao verificar: {str(e)}"
+            }
     
     async def _save_conversation(self, resolution: str) -> None:
         """Salva conversa no banco."""
