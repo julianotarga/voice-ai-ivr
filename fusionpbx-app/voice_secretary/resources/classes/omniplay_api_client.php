@@ -246,15 +246,16 @@ class OmniPlayAPIClient {
     private function getFromCache($key) {
         $cache_key = "omniplay_{$this->domain_uuid}_{$key}";
         
+        // ✅ FIX: PostgreSQL INTERVAL precisa de aspas simples ao redor do valor
+        // Usamos interpolação segura pois $this->cache_ttl é int definido internamente
+        $ttl = (int) $this->cache_ttl;  // Garantir que é int
+        
         $sql = "SELECT cache_data, cached_at 
                 FROM v_voice_omniplay_cache 
                 WHERE domain_uuid = :domain_uuid 
                   AND cache_key = :cache_key
-                  AND cached_at > NOW() - INTERVAL ':ttl seconds'
+                  AND cached_at > NOW() - INTERVAL '{$ttl} seconds'
                 LIMIT 1";
-        
-        // Note: Substituir :ttl diretamente pois PDO não suporta em INTERVAL
-        $sql = str_replace(':ttl', $this->cache_ttl, $sql);
         
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([
