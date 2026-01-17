@@ -1050,29 +1050,43 @@ fs_cli -x "module_exists mod_audio_stream"
 					<td><code>VOICE_AI_DOMAIN_UUID=${domain_uuid}</code></td>
 					<td>🏢 Passa o domínio para o Voice AI</td>
 				</tr>
-				<tr style="background: #e3f2fd;">
+				<tr style="background: #ffebee;">
 					<td><strong>3</strong></td>
+					<td>action</td>
+					<td><code>set</code></td>
+					<td><code>STREAM_PLAYBACK=true</code></td>
+					<td>🔊 <strong>CRÍTICO:</strong> Habilita playback bidirecional</td>
+				</tr>
+				<tr style="background: #fce4ec;">
+					<td><strong>4</strong></td>
+					<td>action</td>
+					<td><code>set</code></td>
+					<td><code>jitterbuffer_msec=100:300:40</code></td>
+					<td>🎚️ Configura jitter buffer (evita áudio picotado)</td>
+				</tr>
+				<tr style="background: #e3f2fd;">
+					<td><strong>5</strong></td>
 					<td>action</td>
 					<td><code>set</code></td>
 					<td><code style="font-size: 10px;">api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k</code></td>
 					<td>🎙️ Configura streaming (executa após answer)</td>
 				</tr>
 				<tr style="background: #e8f5e9;">
-					<td><strong>4</strong></td>
+					<td><strong>6</strong></td>
 					<td>action</td>
 					<td><code>answer</code></td>
 					<td><em>(deixe vazio)</em></td>
 					<td>📞 Atende a chamada (dispara api_on_answer)</td>
 				</tr>
 				<tr style="background: #e3f2fd;">
-					<td><strong>5</strong></td>
+					<td><strong>7</strong></td>
 					<td>action</td>
 					<td><code>socket</code></td>
 					<td><code>127.0.0.1:8022 async full</code></td>
 					<td>🔌 Conecta ESL para controle</td>
 				</tr>
 				<tr style="background: #f5f5f5;">
-					<td><strong>6</strong></td>
+					<td><strong>8</strong></td>
 					<td>action</td>
 					<td><code>park</code></td>
 					<td><em>(deixe vazio)</em></td>
@@ -1147,17 +1161,23 @@ fs_cli -x "show dialplan" | grep voice_ai
     &lt;action application="set" data="VOICE_AI_SECRETARY_UUID=dc923a2f-b88a-4a2f-8029-d6e0c06893c5"/&gt;
     &lt;action application="set" data="VOICE_AI_DOMAIN_UUID=${domain_uuid}"/&gt;
     
-    <span class="comment">&lt;!-- 2. Configurar streaming via api_on_answer (ANTES do answer!) --&gt;</span>
+    <span class="comment">&lt;!-- 2. CRÍTICO: Habilitar playback bidirecional --&gt;</span>
+    &lt;action application="set" data="STREAM_PLAYBACK=true"/&gt;
+    
+    <span class="comment">&lt;!-- 3. Configurar jitter buffer para evitar áudio picotado --&gt;</span>
+    &lt;action application="set" data="jitterbuffer_msec=100:300:40"/&gt;
+    
+    <span class="comment">&lt;!-- 4. Configurar streaming via api_on_answer (ANTES do answer!) --&gt;</span>
     <span class="comment">&lt;!-- O comando será executado APÓS o answer, automaticamente --&gt;</span>
     &lt;action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/&gt;
     
-    <span class="comment">&lt;!-- 3. Atender a chamada (dispara api_on_answer) --&gt;</span>
+    <span class="comment">&lt;!-- 5. Atender a chamada (dispara api_on_answer) --&gt;</span>
     &lt;action application="answer"/&gt;
     
-    <span class="comment">&lt;!-- 4. Conectar ESL para CONTROLE (transferências, hangup, etc) --&gt;</span>
+    <span class="comment">&lt;!-- 6. Conectar ESL para CONTROLE (transferências, hangup, etc) --&gt;</span>
     &lt;action application="socket" data="127.0.0.1:8022 async full"/&gt;
     
-    <span class="comment">&lt;!-- 5. Manter chamada ativa --&gt;</span>
+    <span class="comment">&lt;!-- 7. Manter chamada ativa --&gt;</span>
     &lt;action application="park"/&gt;
   &lt;/condition&gt;
 &lt;/extension&gt;

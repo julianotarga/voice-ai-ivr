@@ -249,10 +249,12 @@ Adicione as seguintes ações **na ordem exata**:
 |-------|-----|------|------|--------|
 | 1 | action | `set` | `VOICE_AI_SECRETARY_UUID=SEU-UUID-AQUI` | 🔑 Identifica a secretária |
 | 2 | action | `set` | `VOICE_AI_DOMAIN_UUID=${domain_uuid}` | 🏢 Passa o domínio |
-| 3 | action | `set` | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k` | 🎙️ Configura streaming (executa após answer) |
-| 4 | action | `answer` | *(vazio)* | 📞 Atende a chamada (dispara api_on_answer) |
-| 5 | action | `socket` | `127.0.0.1:8022 async full` | 🔌 Conecta ESL (controle) |
-| 6 | action | `park` | *(vazio)* | ⏸️ Mantém chamada ativa |
+| 3 | action | `set` | `STREAM_PLAYBACK=true` | 🔊 **CRÍTICO: Habilita playback bidirecional** |
+| 4 | action | `set` | `jitterbuffer_msec=100:300:40` | 🎚️ Configura jitter buffer (evita áudio picotado) |
+| 5 | action | `set` | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k` | 🎙️ Configura streaming (executa após answer) |
+| 6 | action | `answer` | *(vazio)* | 📞 Atende a chamada (dispara api_on_answer) |
+| 7 | action | `socket` | `127.0.0.1:8022 async full` | 🔌 Conecta ESL (controle) |
+| 8 | action | `park` | *(vazio)* | ⏸️ Mantém chamada ativa |
 
 > 💡 **Como obter o UUID da Secretária:** Vá em Voice Secretary → Secretaries, clique para editar, e o UUID está na URL: `/secretary_edit.php?id=UUID-AQUI`
 
@@ -275,17 +277,23 @@ O FusionPBX gera automaticamente este XML:
     <action application="set" data="VOICE_AI_SECRETARY_UUID=dc923a2f-b88a-4a2f-8029-d6e0c06893c5"/>
     <action application="set" data="VOICE_AI_DOMAIN_UUID=${domain_uuid}"/>
     
-    <!-- 2. Configurar streaming via api_on_answer -->
+    <!-- 2. CRÍTICO: Habilitar playback bidirecional -->
+    <action application="set" data="STREAM_PLAYBACK=true"/>
+    
+    <!-- 3. Configurar jitter buffer para evitar áudio picotado -->
+    <action application="set" data="jitterbuffer_msec=100:300:40"/>
+    
+    <!-- 4. Configurar streaming via api_on_answer -->
     <!-- Este comando será executado APÓS o answer -->
     <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/>
     
-    <!-- 3. Atender a chamada (dispara api_on_answer automaticamente) -->
+    <!-- 5. Atender a chamada (dispara api_on_answer automaticamente) -->
     <action application="answer"/>
     
-    <!-- 4. ESL para CONTROLE (transferências, hangup, hold) -->
+    <!-- 6. ESL para CONTROLE (transferências, hangup, hold) -->
     <action application="socket" data="127.0.0.1:8022 async full"/>
     
-    <!-- 5. Manter chamada ativa enquanto IA processa -->
+    <!-- 7. Manter chamada ativa enquanto IA processa -->
     <action application="park"/>
   </condition>
 </extension>
