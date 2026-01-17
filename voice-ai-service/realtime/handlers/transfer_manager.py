@@ -478,7 +478,8 @@ class TransferManager:
                     
                     return final_result
                 else:
-                    # Bridge falhou - matar B-leg
+                    # Bridge falhou - parar MOH e matar B-leg
+                    await self._stop_moh()
                     await self._esl.uuid_kill(b_leg_uuid)
                     
                     return TransferResult(
@@ -671,8 +672,8 @@ class TransferManager:
             return f"sofia/gateway/{gateway}/{number}"
         
         else:
-            # Default: tratar como extensão via sofia
-            return f"sofia/{sofia_profile}/{number}@{context}"
+            # Default: tratar como extensão via user/
+            return f"user/{number}@{context}"
     
     async def cancel_transfer(self) -> bool:
         """
