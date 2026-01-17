@@ -637,9 +637,7 @@ class TransferManager:
                 return TransferResult(
                     status=TransferStatus.NO_ANSWER,
                     destination=destination,
-                    error="Destino não atendeu",
-                    message=f"{destination.name} não atendeu. Quer deixar um recado?",
-                    should_offer_callback=True,
+                    error=f"Destino não atendeu: {destination.name}",
                 )
             
             self._b_leg_uuid = b_leg_uuid
@@ -673,10 +671,14 @@ class TransferManager:
             if audio_path:
                 logger.info(f"Playing ElevenLabs announcement: {audio_path}")
                 await self._esl.uuid_playback(b_leg_uuid, audio_path)
+                # Aguardar um pouco para o áudio começar a tocar
+                # Evita race condition com uuid_exists no wait_for_reject_or_timeout
+                await asyncio.sleep(0.5)
             else:
                 # Fallback: mod_flite (voz robótica)
                 logger.warning("ElevenLabs TTS failed, falling back to mod_flite")
                 tts_success = await self._esl.uuid_say(b_leg_uuid, announcement_with_instructions)
+                await asyncio.sleep(0.5)
                 
                 if not tts_success:
                     # Último fallback: arquivo de áudio genérico
@@ -755,8 +757,7 @@ class TransferManager:
                 return TransferResult(
                     status=TransferStatus.REJECTED,
                     destination=destination,
-                    message=f"{destination.name} não pode atender agora. Quer deixar um recado?",
-                    should_offer_callback=True,
+                    error=f"Transferência recusada por {destination.name}",
                 )
             
             else:  # "hangup"
@@ -768,8 +769,7 @@ class TransferManager:
                 return TransferResult(
                     status=TransferStatus.REJECTED,
                     destination=destination,
-                    message=f"{destination.name} não está disponível. Quer deixar um recado?",
-                    should_offer_callback=True,
+                    error=f"Humano desligou: {destination.name}",
                 )
         
         except asyncio.CancelledError:

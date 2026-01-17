@@ -18,6 +18,7 @@ Para uso com greenswitch, execute em thread separada com event loop asyncio.
 import os
 import logging
 import asyncio
+import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
 from datetime import datetime
