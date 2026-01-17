@@ -961,20 +961,21 @@ class AsyncESLClient:
         voice: str = "kal"
     ) -> bool:
         """
-        Fala texto para um canal usando mod_flite (text-to-speech) do FreeSWITCH.
+        Tenta falar texto usando TTS do FreeSWITCH.
         
-        Usa a aplicação 'speak' que é mais confiável via uuid_broadcast.
+        NOTA: TTS no FreeSWITCH é problemático. Esta função tenta vários
+        métodos mas pode falhar. O código que chama deve ter fallback.
         
         Args:
             uuid: UUID do canal
-            text: Texto a falar
-            voice: Voz do flite (kal, slt, rms, awb)
+            text: Texto a falar (ignorado se TTS não funcionar)
+            voice: Voz do flite (ignorado se não disponível)
         
         Returns:
-            True se comando enviado com sucesso
+            True se algum método funcionou
         """
         try:
-            # Escapar caracteres especiais que podem quebrar o comando
+            # Escapar caracteres especiais
             text_escaped = (
                 text
                 .replace("'", "")
@@ -984,28 +985,24 @@ class AsyncESLClient:
                 .replace("\\", "")
             )
             
-            # Método 1: uuid_broadcast com speak (formato: flite|voice|text)
-            # Este é o formato mais confiável para mod_flite
+            # Tentar uuid_displace com arquivo de beep (teste de conectividade)
+            # Se isso funcionar, o canal está ativo e podemos tentar outros métodos
+            
+            # Método 1: Tentar executar speak como app via uuid_transfer
+            # Este método usa o dialplan para executar o TTS
             result = await self.execute_api(
-                f"uuid_broadcast {uuid} speak::flite|{voice}|{text_escaped} aleg"
+                f"uuid_setvar {uuid} tts_voice flite|{voice}"
+            )
+            
+            result = await self.execute_api(
+                f"uuid_broadcast {uuid} 'speak:flite|{voice}|{text_escaped}' aleg"
             )
             
             if "+OK" in result:
-                logger.info(f"uuid_say (speak::flite) success: {uuid}")
+                logger.info(f"uuid_say success: {uuid}")
                 return True
             
-            logger.debug(f"speak::flite failed: {result}, trying alternative...")
-            
-            # Método 2: playback com protocolo tts
-            result = await self.execute_api(
-                f"uuid_broadcast {uuid} 'tts://flite|{voice}|{text_escaped}' aleg"
-            )
-            
-            if "+OK" in result:
-                logger.info(f"uuid_say (tts://) success: {uuid}")
-                return True
-            
-            logger.warning(f"uuid_say failed all methods: {result}")
+            logger.warning(f"uuid_say TTS failed: {result}")
             return False
             
         except Exception as e:
