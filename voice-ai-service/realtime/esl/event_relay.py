@@ -537,14 +537,14 @@ class DualModeEventRelay:
             logger.warning(f"[{self._uuid}] Cannot hangup: not connected")
             return False
         
-        # Verificar se a sessão já foi desconectada
+        # Verificar se a sessão já foi desconectada usando raise_if_disconnected
+        # Ref: https://github.com/EvoluxBR/greenswitch - método padrão do greenswitch
         try:
-            # has_gone_away é True quando o caller já desligou
-            if hasattr(self.session, 'has_gone_away') and self.session.has_gone_away:
-                logger.info(f"[{self._uuid}] Session already gone, no hangup needed")
-                return True  # Não é erro, a chamada já encerrou
+            self.session.raise_if_disconnected()
         except Exception:
-            pass  # Ignorar se não conseguir verificar
+            # Sessão já desconectada, não precisa fazer hangup
+            logger.info(f"[{self._uuid}] Session already disconnected, no hangup needed")
+            return True  # Não é erro, a chamada já encerrou
         
         try:
             import gevent

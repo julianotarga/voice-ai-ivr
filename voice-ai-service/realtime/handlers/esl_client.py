@@ -356,6 +356,8 @@ class AsyncESLClient:
     async def _read_event(self) -> Optional[ESLEvent]:
         """Lê e parseia um evento do ESL."""
         try:
+            # NOTA: Este método NÃO usa lock porque roda no _event_reader_loop
+            # O lock é usado apenas em execute_api() que pausa este loop
             response = await self._read_response(timeout=60.0)
             
             # Verificar se é evento
