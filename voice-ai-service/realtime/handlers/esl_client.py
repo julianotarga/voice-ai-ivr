@@ -162,11 +162,11 @@ class AsyncESLClient:
                 )
                 
                 # Ler banner
-                await self._read_response()
+                await self._read_response(discard_events=True)
                 
                 # Autenticar
                 await self._send(f"auth {self.password}\n\n")
-                response = await self._read_response()
+                response = await self._read_response(discard_events=True)
                 
                 if "Reply-Text: +OK" in response:
                     self._connected = True
@@ -266,7 +266,7 @@ class AsyncESLClient:
             for event in events:
                 try:
                     await self._send(f"event plain {event}\n\n")
-                    await self._read_response()
+                        await self._read_response(discard_events=True)
                     self._subscribed_events.add(event)
                 except Exception as e:
                     logger.warning(f"Failed to resubscribe to {event}: {e}")
@@ -286,7 +286,7 @@ class AsyncESLClient:
         self._writer.write(data.encode())
         await self._writer.drain()
     
-    async def _read_response(self, timeout: float = ESL_READ_TIMEOUT) -> str:
+    async def _read_response(self, timeout: float = ESL_READ_TIMEOUT, discard_events: bool = False) -> str:
         """
         Lê resposta do ESL (headers + body se houver).
         
@@ -296,16 +296,18 @@ class AsyncESLClient:
             \n
             [Body se Content-Length presente]
         
-        IMPORTANTE: Ignora eventos (Content-Type: text/event-plain) que podem
-        ter ficado no buffer e continua lendo até receber uma resposta de comando
-        (Content-Type: api/response ou command/reply).
+        IMPORTANTE:
+        - Se discard_events=True: ignora eventos (Content-Type: text/event-plain) que podem
+          ter ficado no buffer e continua lendo até receber uma resposta de comando
+          (Content-Type: api/response ou command/reply).
+        - Se discard_events=False: retorna o payload mesmo se for evento (usado pelo event loop).
         """
         if not self._reader:
             raise ESLConnectionError("Not connected")
         
-        max_retries = 10  # Evitar loop infinito
+        max_retries = 10  # Evitar loop infinito (quando discard_events=True)
         
-        for attempt in range(max_retries):
+        for attempt in range(max_retries if discard_events else 1):
             try:
                 lines = []
                 content_length = 0
@@ -342,8 +344,9 @@ class AsyncESLClient:
                     )
                     body = body_bytes.decode()
                 
-                # Verificar se é evento (text/event-plain) - descartar e continuar
-                if content_type == "text/event-plain":
+                # Verificar se é evento (text/event-plain)
+                # No modo de leitura de comando, descartar e continuar.
+                if discard_events and content_type.startswith("text/event-plain"):
                     logger.debug(f"Discarding buffered event during command read: {body[:100]}...")
                     continue  # Ler próximo pacote
                 
@@ -395,7 +398,7 @@ class AsyncESLClient:
         try:
             # NOTA: Este método NÃO usa lock porque roda no _event_reader_loop
             # O lock é usado apenas em execute_api() que pausa este loop
-            response = await self._read_response(timeout=60.0)
+            response = await self._read_response(timeout=60.0, discard_events=False)
             
             # Verificar se é evento
             if "Event-Name:" not in response:
@@ -484,7 +487,7 @@ class AsyncESLClient:
                 await asyncio.sleep(0.01)
                 
                 await self._send(f"api {command}\n\n")
-                response = await self._read_response()
+                response = await self._read_response(discard_events=True)
                 
                 # Extrair body da resposta
                 if "Content-Length:" in response:
@@ -517,7 +520,7 @@ class AsyncESLClient:
                 await asyncio.sleep(0.01)
                 
                 await self._send(f"bgapi {command}\n\n")
-                response = await self._read_response()
+                response = await self._read_response(discard_events=True)
                 
                 # Extrair Job-UUID
                 match = re.search(r"Job-UUID:\s*([a-f0-9-]+)", response)
@@ -553,13 +556,13 @@ class AsyncESLClient:
                     if event not in self._subscribed_events:
                         cmd = f"event plain {event}"
                         await self._send(f"{cmd}\n\n")
-                        await self._read_response()
+                        await self._read_response(discard_events=True)
                         self._subscribed_events.add(event)
                 
                 # Se uuid específico, filtrar eventos
                 if uuid:
                     await self._send(f"filter Unique-ID {uuid}\n\n")
-                    await self._read_response()
+                    await self._read_response(discard_events=True)
             finally:
                 self._command_in_progress = False
     
@@ -571,7 +574,7 @@ class AsyncESLClient:
                 try:
                     await asyncio.sleep(0.01)
                     await self._send(f"filter delete Unique-ID {uuid}\n\n")
-                    await self._read_response()
+                    await self._read_response(discard_events=True)
                 finally:
                     self._command_in_progress = False
     
