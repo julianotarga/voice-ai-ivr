@@ -19,7 +19,7 @@ import logging
 import os
 import threading
 import weakref
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 from datetime import datetime
 
 import gevent
@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 # Timeout para correlação de sessão (WebSocket pode demorar a conectar)
 CORRELATION_TIMEOUT_SECONDS = float(os.getenv("DUAL_MODE_CORRELATION_TIMEOUT", "5.0"))
 CORRELATION_RETRY_INTERVAL = float(os.getenv("DUAL_MODE_CORRELATION_RETRY", "0.5"))
+
+# Intervalo de poll do event loop (segundos)
+EVENT_LOOP_INTERVAL = float(os.getenv("DUAL_MODE_EVENT_LOOP_INTERVAL", "0.1"))
 
 # ========================================
 # Thread-Safe Global State
@@ -98,6 +101,10 @@ class DualModeEventRelay:
     - ESL Outbound (8022) recebe eventos e os retransmite para a sessão
     
     Esta classe é instanciada para cada conexão ESL Outbound.
+    
+    CORREÇÃO: greenswitch OutboundSession não tem método receive().
+    Em vez disso, usamos event handlers registrados via session.register_handle().
+    Ref: https://github.com/EvoluxBR/greenswitch/blob/master/examples/
     """
     
     def __init__(self, session: OutboundSession):
@@ -122,7 +129,12 @@ class DualModeEventRelay:
         # Estado
         self._should_stop = False
         self._connected = False
+        self._hangup_received = False
         self._session_lock = threading.Lock()  # Protege acesso à sessão
+        
+        # Últimos eventos recebidos (para debug)
+        self._last_dtmf: Optional[str] = None
+        self._last_event: Optional[str] = None
     
     @property
     def _realtime_session(self) -> Optional[Any]:
@@ -147,6 +159,11 @@ class DualModeEventRelay:
         Entry point principal - chamado pelo greenswitch.
         
         Este método é executado em uma greenlet separada (gevent).
+        
+        CORREÇÃO: Usar abordagem correta do greenswitch:
+        1. connect() + myevents() + linger()
+        2. Registrar handlers de eventos
+        3. Loop com raise_if_disconnected()
         """
         try:
             # 1. Conectar ao canal FreeSWITCH
@@ -160,11 +177,14 @@ class DualModeEventRelay:
                 f"caller={self._caller_id}, domain={self._domain_uuid}"
             )
             
-            # 3. Tentar correlacionar com sessão WebSocket
+            # 3. Registrar handlers de eventos
+            self._register_event_handlers()
+            
+            # 4. Tentar correlacionar com sessão WebSocket
             self._correlate_session()
             
-            # 4. Loop de eventos
-            self._event_loop()
+            # 5. Loop principal
+            self._main_loop()
             
         except Exception as e:
             logger.exception(f"[{self._uuid}] Error in ESL EventRelay: {e}")
@@ -218,17 +238,41 @@ class DualModeEventRelay:
                 "secretary_uuid": self._secretary_uuid,
             })
     
+    def _register_event_handlers(self) -> None:
+        """
+        Registra handlers de eventos no greenswitch.
+        
+        CORREÇÃO: O greenswitch usa session.register_handle() para eventos,
+        não um método receive(). Os handlers são chamados automaticamente.
+        
+        Ref: https://github.com/EvoluxBR/greenswitch
+        """
+        # Handler para CHANNEL_HANGUP
+        self.session.register_handle("CHANNEL_HANGUP", self._on_channel_hangup_raw)
+        
+        # Handler para DTMF
+        self.session.register_handle("DTMF", self._on_dtmf_raw)
+        
+        # Handler para CHANNEL_BRIDGE
+        self.session.register_handle("CHANNEL_BRIDGE", self._on_channel_bridge_raw)
+        
+        # Handler para CHANNEL_UNBRIDGE
+        self.session.register_handle("CHANNEL_UNBRIDGE", self._on_channel_unbridge_raw)
+        
+        # Handler para CHANNEL_HOLD
+        self.session.register_handle("CHANNEL_HOLD", self._on_channel_hold_raw)
+        
+        # Handler para CHANNEL_UNHOLD
+        self.session.register_handle("CHANNEL_UNHOLD", self._on_channel_unhold_raw)
+        
+        logger.debug(f"[{self._uuid}] Event handlers registered")
+    
     def _correlate_session(self) -> None:
         """
         Tenta correlacionar com sessão WebSocket existente.
         
         O WebSocket pode conectar antes ou depois do ESL socket.
         Fazemos retry com backoff até encontrar a sessão.
-        
-        CORREÇÃO: 
-        - Registrar no relay registry para correlação reversa
-        - Usar weakref para evitar memory leak
-        - Continuar verificando periodicamente mesmo após timeout inicial
         """
         if not self._uuid:
             logger.warning("Cannot correlate: no call_uuid")
@@ -269,7 +313,7 @@ class DualModeEventRelay:
             retries += 1
         
         # Não encontrou sessão no timeout inicial, mas continua tentando
-        # em background no event loop
+        # em background no main loop
         logger.warning(
             f"[{self._uuid}] Could not correlate within {CORRELATION_TIMEOUT_SECONDS}s. "
             "Will continue trying in background. Check if mod_audio_stream is configured."
@@ -296,42 +340,52 @@ class DualModeEventRelay:
         except Exception as e:
             logger.debug(f"Could not notify ESL connected: {e}")
     
-    def _event_loop(self) -> None:
-        """Loop principal de eventos."""
-        logger.debug(f"[{self._uuid}] Starting event loop")
+    def _main_loop(self) -> None:
+        """
+        Loop principal - mantém a sessão viva e processa eventos.
+        
+        CORREÇÃO: O greenswitch processa eventos automaticamente via handlers.
+        Nós apenas precisamos:
+        1. Manter a greenlet viva
+        2. Verificar desconexão via raise_if_disconnected()
+        3. Tentar correlação tardia se necessário
+        """
+        logger.debug(f"[{self._uuid}] Starting main loop")
         
         # Contador para retry de correlação em background
         retry_correlation_counter = 0
-        RETRY_CORRELATION_INTERVAL = 10  # A cada 10 iterações (~10s)
+        RETRY_CORRELATION_INTERVAL = 100  # A cada 100 iterações (~10s)
         
-        while not self._should_stop and self._connected:
+        while not self._should_stop and self._connected and not self._hangup_received:
             try:
-                # Aguardar evento com timeout
-                event = self._wait_for_event(timeout=1.0)
+                # Verificar se caller desligou
+                try:
+                    self.session.raise_if_disconnected()
+                except Exception:
+                    logger.info(f"[{self._uuid}] Session disconnected")
+                    self._on_disconnect()
+                    break
                 
-                if event:
-                    self._handle_event(event)
-                
-                # CORREÇÃO: Continuar tentando correlação em background
-                # se ainda não conseguiu
+                # Continuar tentando correlação em background se ainda não conseguiu
                 if not self._realtime_session and self._correlation_attempted:
                     retry_correlation_counter += 1
                     if retry_correlation_counter >= RETRY_CORRELATION_INTERVAL:
                         retry_correlation_counter = 0
                         self._try_late_correlation()
                 
+                # Yield para outras greenlets (CRÍTICO para greenswitch funcionar)
+                gevent.sleep(EVENT_LOOP_INTERVAL)
+                
             except Exception as e:
                 if not self._should_stop:
-                    logger.error(f"[{self._uuid}] Error in event loop: {e}")
+                    logger.error(f"[{self._uuid}] Error in main loop: {e}")
                 break
         
-        logger.debug(f"[{self._uuid}] Event loop ended")
+        logger.debug(f"[{self._uuid}] Main loop ended")
     
     def _try_late_correlation(self) -> None:
         """
         Tenta correlação tardia (WebSocket conectou depois do timeout).
-        
-        Isso pode acontecer se o mod_audio_stream demorar para conectar.
         """
         from ..session_manager import get_session_manager
         manager = get_session_manager()
@@ -348,59 +402,33 @@ class DualModeEventRelay:
             
             self._notify_session_esl_connected()
     
-    def _wait_for_event(self, timeout: float = 1.0) -> Optional[dict]:
+    def _on_disconnect(self) -> None:
+        """Chamado quando a sessão ESL desconecta."""
+        self._should_stop = True
+        
+        # Notificar sessão WebSocket
+        if self._realtime_session:
+            self._dispatch_to_session("stop", "esl_disconnect")
+    
+    # ========================================
+    # Event Handlers (chamados pelo greenswitch)
+    # ========================================
+    
+    def _on_channel_hangup_raw(self, event: Any) -> None:
         """
-        Aguarda evento do FreeSWITCH.
+        Handler para CHANNEL_HANGUP.
         
-        Greenswitch usa gevent.Timeout para isso.
+        Args:
+            event: Objeto de evento do greenswitch (ESLEvent)
         """
-        try:
-            with gevent.Timeout(timeout, False):
-                # Ler dados do socket
-                data = self.session.receive()
-                if data:
-                    return self._parse_event(data)
-        except Exception:
-            pass
-        return None
-    
-    def _parse_event(self, data: str) -> dict:
-        """Parseia evento ESL."""
-        event = {}
-        for line in data.split('\n'):
-            if ':' in line:
-                key, value = line.split(':', 1)
-                event[key.strip()] = value.strip()
-        return event
-    
-    def _handle_event(self, event: dict) -> None:
-        """Processa evento recebido."""
-        event_name = event.get("Event-Name", "")
+        self._hangup_received = True
         
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"[{self._uuid}] Event received: {event_name}")
-        
-        if event_name == "CHANNEL_HANGUP":
-            self._on_channel_hangup(event)
-        
-        elif event_name == "DTMF":
-            self._on_dtmf(event)
-        
-        elif event_name == "CHANNEL_BRIDGE":
-            self._on_channel_bridge(event)
-        
-        elif event_name == "CHANNEL_UNBRIDGE":
-            self._on_channel_unbridge(event)
-        
-        elif event_name == "CHANNEL_HOLD":
-            self._on_channel_hold(event)
-        
-        elif event_name == "CHANNEL_UNHOLD":
-            self._on_channel_unhold(event)
-    
-    def _on_channel_hangup(self, event: dict) -> None:
-        """Handler para CHANNEL_HANGUP."""
-        hangup_cause = event.get("Hangup-Cause", "NORMAL_CLEARING")
+        # Extrair hangup cause do evento
+        hangup_cause = "NORMAL_CLEARING"
+        if hasattr(event, 'headers') and isinstance(event.headers, dict):
+            hangup_cause = event.headers.get("Hangup-Cause", "NORMAL_CLEARING")
+        elif hasattr(event, 'get_header'):
+            hangup_cause = event.get_header("Hangup-Cause") or "NORMAL_CLEARING"
         
         logger.info(
             f"[{self._uuid}] CHANNEL_HANGUP detected",
@@ -415,15 +443,22 @@ class DualModeEventRelay:
         
         # Notificar sessão WebSocket
         if self._realtime_session:
-            self._dispatch_to_session(
-                "stop",
-                f"esl_hangup:{hangup_cause}"
-            )
+            self._dispatch_to_session("stop", f"esl_hangup:{hangup_cause}")
     
-    def _on_dtmf(self, event: dict) -> None:
+    def _on_dtmf_raw(self, event: Any) -> None:
         """Handler para DTMF."""
-        digit = event.get("DTMF-Digit", "")
-        duration = event.get("DTMF-Duration", "0")
+        # Extrair dígito do evento
+        digit = ""
+        duration = "0"
+        
+        if hasattr(event, 'headers') and isinstance(event.headers, dict):
+            digit = event.headers.get("DTMF-Digit", "")
+            duration = event.headers.get("DTMF-Duration", "0")
+        elif hasattr(event, 'get_header'):
+            digit = event.get_header("DTMF-Digit") or ""
+            duration = event.get_header("DTMF-Duration") or "0"
+        
+        self._last_dtmf = digit
         
         logger.info(
             f"[{self._uuid}] DTMF received: {digit}",
@@ -436,9 +471,14 @@ class DualModeEventRelay:
         if self._realtime_session and digit:
             self._dispatch_to_session("handle_dtmf", digit)
     
-    def _on_channel_bridge(self, event: dict) -> None:
-        """Handler para CHANNEL_BRIDGE (chamada conectada a outro canal)."""
-        other_uuid = event.get("Other-Leg-Unique-ID", "")
+    def _on_channel_bridge_raw(self, event: Any) -> None:
+        """Handler para CHANNEL_BRIDGE."""
+        other_uuid = ""
+        
+        if hasattr(event, 'headers') and isinstance(event.headers, dict):
+            other_uuid = event.headers.get("Other-Leg-Unique-ID", "")
+        elif hasattr(event, 'get_header'):
+            other_uuid = event.get_header("Other-Leg-Unique-ID") or ""
         
         logger.info(
             f"[{self._uuid}] CHANNEL_BRIDGE: connected to {other_uuid}",
@@ -447,26 +487,30 @@ class DualModeEventRelay:
         if self._realtime_session:
             self._dispatch_to_session("handle_bridge", other_uuid)
     
-    def _on_channel_unbridge(self, event: dict) -> None:
-        """Handler para CHANNEL_UNBRIDGE (chamada desconectada de outro canal)."""
+    def _on_channel_unbridge_raw(self, event: Any) -> None:
+        """Handler para CHANNEL_UNBRIDGE."""
         logger.info(f"[{self._uuid}] CHANNEL_UNBRIDGE")
         
         if self._realtime_session:
             self._dispatch_to_session("handle_unbridge", None)
     
-    def _on_channel_hold(self, event: dict) -> None:
+    def _on_channel_hold_raw(self, event: Any) -> None:
         """Handler para CHANNEL_HOLD."""
         logger.info(f"[{self._uuid}] CHANNEL_HOLD")
         
         if self._realtime_session:
             self._dispatch_to_session("handle_hold", True)
     
-    def _on_channel_unhold(self, event: dict) -> None:
+    def _on_channel_unhold_raw(self, event: Any) -> None:
         """Handler para CHANNEL_UNHOLD."""
         logger.info(f"[{self._uuid}] CHANNEL_UNHOLD")
         
         if self._realtime_session:
             self._dispatch_to_session("handle_hold", False)
+    
+    # ========================================
+    # Dispatching para Sessão WebSocket
+    # ========================================
     
     def _dispatch_to_session(self, method_name: str, arg: Any) -> None:
         """
@@ -493,10 +537,10 @@ class DualModeEventRelay:
                         loop
                     )
                     # Não bloquear esperando resultado
-                    # future.result(timeout=5.0)
+                    # O resultado será processado pelo asyncio loop
                 else:
-                    # Método síncrono - executar diretamente
-                    loop.call_soon_threadsafe(method, arg)
+                    # Método síncrono - agendar no loop
+                    loop.call_soon_threadsafe(lambda: method(arg))
             else:
                 logger.debug(f"[{self._uuid}] Method {method_name} not found on session")
                 
@@ -508,7 +552,7 @@ class DualModeEventRelay:
         self._should_stop = True
         self._connected = False
         
-        # CORREÇÃO: Desregistrar do relay registry
+        # Desregistrar do relay registry
         if self._uuid:
             unregister_relay(self._uuid)
         
@@ -523,6 +567,7 @@ class DualModeEventRelay:
             extra={
                 "duration_seconds": elapsed,
                 "was_correlated": self._correlation_attempted,
+                "hangup_received": self._hangup_received,
             }
         )
 
