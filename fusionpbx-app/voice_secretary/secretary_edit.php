@@ -416,6 +416,10 @@
 	echo "<tr>\n";
 	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
 	echo "		<b>".($text['header-transfer'] ?? 'Transfer & Handoff Settings')."</b>\n";
+	echo "		<div style='background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 12px; margin-top: 10px; border-radius: 4px; font-size: 0.9em;'>\n";
+	echo "			<b style='color: #856404;'>💡 Dica:</b> Estas configurações são para <b>handoff GENÉRICO</b> (quando o cliente diz \"quero falar com alguém\").<br/>\n";
+	echo "			<span style='color: #666;'>Para transferir para departamentos específicos (Vendas, Financeiro, Suporte), use a aba <b>\"Regras\"</b>.</span>\n";
+	echo "		</div>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
@@ -433,8 +437,11 @@
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-transfer_extension'] ?? 'Transfer Extension')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '200')."' placeholder='ex: 200, 1001, *1'>\n";
-	echo "		<br /><span class='vtable-hint'>Ramal ou fila para transferir chamadas. <b>Padrão:</b> 200</span>\n";
+	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '200')."' placeholder='ex: 200 (Recepção)'>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "<b>⚠️ Use a RECEPÇÃO ou fila GERAL</b> - Este é o ramal para handoff genérico (cliente diz 'quero falar com alguém'). "
+		. "Para departamentos específicos (Vendas, Financeiro), use as <b>Regras de Transferência</b>."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
@@ -484,9 +491,12 @@
 	echo "<tr class='handoff-option'>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-handoff_keywords'] ?? 'Handoff Keywords')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	$keywords = $data['handoff_keywords'] ?? 'atendente,humano,pessoa,operador,falar com alguém';
-	echo "		<input class='formfld' type='text' name='handoff_keywords' maxlength='500' value='".escape($keywords)."' style='width: 100%;'>\n";
-	echo "		<br />".($text['description-handoff_keywords'] ?? 'Comma-separated keywords that trigger handoff (e.g., "atendente,humano,pessoa")')."\n";
+	$keywords = $data['handoff_keywords'] ?? 'atendente,humano,pessoa,operador';
+	echo "		<input class='formfld' type='text' name='handoff_keywords' maxlength='500' value='".escape($keywords)."' style='width: 100%;' placeholder='atendente,humano,pessoa,operador'>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "<b>⚠️ NÃO inclua nomes de departamentos!</b> Use apenas termos genéricos como: <code>atendente, humano, pessoa, operador, recepcionista</code>. "
+		. "Nomes de departamentos (vendas, financeiro, suporte) devem estar nas <b>Regras de Transferência</b>."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
@@ -505,8 +515,11 @@
 	echo "<tr class='handoff-option'>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-handoff_queue'] ?? 'Ticket Queue')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='text' name='handoff_queue_id' maxlength='20' value='".escape($data['handoff_queue_id'] ?? '')."' placeholder='Queue ID from OmniPlay'>\n";
-	echo "		<br />".($text['description-handoff_queue'] ?? 'OmniPlay queue ID to assign tickets created by voice handoff')."\n";
+	echo "		<input class='formfld' type='number' name='handoff_queue_id' min='1' max='999' value='".escape($data['handoff_queue_id'] ?? '')."' placeholder='Ex: 1' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "ID numérico da fila no OmniPlay onde serão criados os tickets de callback/fallback. "
+		. "Encontre o ID em OmniPlay → Filas."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

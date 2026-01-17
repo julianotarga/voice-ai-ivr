@@ -192,16 +192,23 @@
 	echo "	<div style='clear: both;'></div>\n";
 	echo "</div>\n";
 
-	echo ($text['description-transfer_rule'] ?? 'Configure a transfer rule based on keywords.')."\n";
-	echo "<br /><br />\n";
+	echo "<div style='background: #e7f3ff; border-left: 4px solid #2196F3; padding: 12px 15px; margin-bottom: 15px; border-radius: 4px;'>\n";
+	echo "	<b style='color: #1976D2;'>💡 Como Funciona:</b><br/>\n";
+	echo "	<span style='color: #555;'>As Regras de Transferência permitem direcionar chamadas para departamentos específicos. "
+		. "Quando o cliente menciona uma <b>keyword</b> (ex: \"quero falar com vendas\"), a IA transfere automaticamente para o ramal configurado.<br/><br/>"
+		. "⚠️ <b>Importante:</b> Não confunda com 'Handoff Keywords' da Secretary - aquelas são para handoff genérico (\"quero falar com atendente\").</span>\n";
+	echo "</div>\n";
 
 	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
 
 	echo "<tr>\n";
 	echo "	<td width='30%' class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-department'] ?? 'Department')."</td>\n";
 	echo "	<td width='70%' class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='text' name='department_name' maxlength='255' value='".escape($data['department_name'] ?? '')."' required>\n";
-	echo "		<br />".($text['description-department'] ?? 'Name of the department or sector.')."\n";
+	echo "		<input class='formfld' type='text' name='department_name' maxlength='255' value='".escape($data['department_name'] ?? '')."' required placeholder='Ex: Vendas, Financeiro, Suporte'>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "Nome do departamento que será identificado pela IA. "
+		. "A IA usará este nome para confirmar a transferência: <i>\"Transferindo para o setor de <b>[Departamento]</b>...\"</i>"
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
@@ -209,29 +216,39 @@
 	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-keywords'] ?? 'Keywords')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
 	$keywords = isset($data['keywords']) ? json_decode($data['keywords'], true) : [];
-	echo "		<textarea class='formfld' name='keywords' rows='3' style='width: 100%;' required>".escape(implode(', ', $keywords ?: []))."</textarea>\n";
-	echo "		<br />".($text['description-keywords'] ?? 'Comma-separated keywords that trigger this transfer.')."\n";
+	echo "		<textarea class='formfld' name='keywords' rows='3' style='width: 100%;' required placeholder='vendas, comprar, preço, orçamento, produto'>".escape(implode(', ', $keywords ?: []))."</textarea>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "<b>Palavras-chave de INTENÇÃO</b> que identificam este departamento. Separe por vírgula.<br/>"
+		. "Exemplo para Vendas: <code>vendas, comprar, preço, orçamento, catálogo, produto</code><br/>"
+		. "⚠️ <b>NÃO use termos genéricos</b> como 'atendente', 'humano' - esses devem ficar em Handoff Keywords na Secretary."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
 	echo "<tr>\n";
 	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-extension'] ?? 'Extension')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '')."' required pattern='[0-9*#]{1,20}' title='".($text['description-extension_pattern'] ?? 'Only digits, * or # (max 20 chars)')."' list='extensions_list' autocomplete='off'>\n";
+	echo "		<input class='formfld' type='text' name='transfer_extension' maxlength='20' value='".escape($data['transfer_extension'] ?? '')."' required pattern='[0-9*#]{1,20}' title='".($text['description-extension_pattern'] ?? 'Only digits, * or # (max 20 chars)')."' list='extensions_list' autocomplete='off' placeholder='Ex: 1001'>\n";
 	echo "		<datalist id='extensions_list'>\n";
 	foreach ($valid_destinations as $dest) {
 		echo "			<option value='".escape($dest)."'>\n";
 	}
 	echo "		</datalist>\n";
-	echo "		<br />".($text['description-extension'] ?? 'Extension to transfer the call to (digits, * or # only).')."\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "<b>Ramal ESPECÍFICO do departamento.</b> Pode ser: Ramal direto, Ring Group ou Fila de Call Center.<br/>"
+		. "⚠️ <b>NÃO use o mesmo ramal</b> do Transfer Extension da Secretary (aquele é para handoff genérico)."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-transfer_message'] ?? 'Transfer Message')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<textarea class='formfld' name='transfer_message' rows='2' style='width: 100%;' maxlength='500'>".escape($data['transfer_message'] ?? '')."</textarea>\n";
-	echo "		<br />".($text['description-transfer_message'] ?? 'Optional message spoken to the caller before transfer (e.g., "I will transfer you to Sales now.").')."\n";
+	echo "		<textarea class='formfld' name='transfer_message' rows='2' style='width: 100%;' maxlength='500' placeholder='Ex: Vou transferir você para o nosso setor de vendas. Um momento, por favor.'>".escape($data['transfer_message'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
+		. "Mensagem opcional que a IA falará <b>antes</b> de iniciar a transferência. "
+		. "Se deixar em branco, a IA usará uma mensagem padrão."
+		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
