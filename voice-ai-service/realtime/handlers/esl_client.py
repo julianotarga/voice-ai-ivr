@@ -719,7 +719,10 @@ class AsyncESLClient:
             True se sucesso
         """
         try:
+            logger.info(f"[DEBUG] Sending uuid_bridge command: {uuid_a} <-> {uuid_b}")
             result = await self.execute_api(f"uuid_bridge {uuid_a} {uuid_b}")
+            logger.info(f"[DEBUG] uuid_bridge raw result: '{result}'")
+            
             success = "+OK" in result
             
             if success:

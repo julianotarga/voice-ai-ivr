@@ -1245,18 +1245,26 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         hangup_success = False
 
-        # Em transfer_success, tentar parar o mod_audio_stream de forma limpa.
-        # Isso remove o "BUG" de áudio sem derrubar o bridge (A-leg <-> B-leg).
+        # Em transfer_success, NÃO parar o audio_stream - pode matar o canal.
+        # O bridge vai sobrepor o audio_stream naturalmente.
+        #
+        # DEBUG: Comentado temporariamente para investigar se estava causando hangup.
+        # if reason == "transfer_success":
+        #     try:
+        #         from .esl import get_esl_adapter
+        #         adapter = get_esl_adapter(self.call_uuid)
+        #         await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
+        #     except Exception as e:
+        #         logger.warning(...)
+        
         if reason == "transfer_success":
-            try:
-                from .esl import get_esl_adapter
-                adapter = get_esl_adapter(self.call_uuid)
-                await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to stop uuid_audio_stream on transfer_success: {e}",
-                    extra={"call_uuid": self.call_uuid}
-                )
+            logger.info(
+                f"[DEBUG] Transfer success - NOT sending uuid_audio_stream stop",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "b_leg_uuid": getattr(self._transfer_manager, '_b_leg_uuid', None) if self._transfer_manager else None,
+                }
+            )
 
         if should_hangup:
             try:

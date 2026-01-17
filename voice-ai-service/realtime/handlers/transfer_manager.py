@@ -449,9 +449,17 @@ class TransferManager:
                 await self._stop_moh()
                 
                 # 8. Criar bridge IMEDIATAMENTE (B-leg já está atendida)
+                logger.info(
+                    f"[DEBUG] About to uuid_bridge: A={self.call_uuid} <-> B={b_leg_uuid}"
+                )
+                
                 bridge_success = await self._esl.uuid_bridge(
                     self.call_uuid,
                     b_leg_uuid
+                )
+                
+                logger.info(
+                    f"[DEBUG] uuid_bridge returned: success={bridge_success}"
                 )
                 
                 if bridge_success:
@@ -465,7 +473,7 @@ class TransferManager:
                     )
                     
                     logger.info(
-                        f"Transfer successful: bridge established",
+                        f"[DEBUG] Transfer SUCCESS - bridge established, returning to session.py",
                         extra={
                             "call_uuid": self.call_uuid,
                             "b_leg_uuid": b_leg_uuid,
