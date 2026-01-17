@@ -826,25 +826,28 @@ class AsyncESLClient:
             UUID da nova chamada ou None se falhou
         """
         try:
-            # Construir variáveis
-            var_string = ""
-            if variables:
-                var_parts = [f"{k}={v}" for k, v in variables.items()]
-                var_string = "{" + ",".join(var_parts) + "}"
-            
             # Gerar UUID para a nova chamada
             new_uuid = str(uuid_module.uuid4())
             
-            # Adicionar origination_uuid às variáveis
-            if var_string:
-                var_string = var_string[:-1] + f",origination_uuid={new_uuid}" + "}"
-            else:
-                var_string = "{" + f"origination_uuid={new_uuid}" + "}"
+            # Construir variáveis - sempre incluir timeout e uuid
+            all_vars = {
+                "origination_uuid": new_uuid,
+                "originate_timeout": str(timeout),
+                "call_timeout": str(timeout),
+            }
             
-            # Construir comando
-            cmd = f"originate {var_string}{dial_string} {app}"
+            # Adicionar variáveis do usuário
+            if variables:
+                all_vars.update(variables)
             
-            logger.info(f"Originating call: {dial_string}")
+            # Formatar string de variáveis
+            var_parts = [f"{k}={v}" for k, v in all_vars.items()]
+            var_string = "{" + ",".join(var_parts) + "}"
+            
+            # Construir comando com espaço entre variáveis e dial_string
+            cmd = f"originate {var_string} {dial_string} {app}"
+            
+            logger.info(f"Originate command: {cmd}")
             result = await self.execute_api(cmd)
             
             if "+OK" in result:
