@@ -1033,40 +1033,64 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # ENCERRAR CHAMADA NO FREESWITCH VIA ESL
         # ========================================
         # Apenas encerrar via ESL se a sessão está sendo finalizada pela IA
-        # Se o motivo for "hangup" ou "connection_closed", o FreeSWITCH já sabe
-        should_hangup = reason not in ("hangup", "connection_closed", "caller_hangup")
+        # Se o motivo começar com "esl_hangup:" ou for "hangup"/"caller_hangup",
+        # o FreeSWITCH já desligou - não precisamos enviar hangup
+        should_hangup = not (
+            reason.startswith("esl_hangup:") or
+            reason in ("hangup", "connection_closed", "caller_hangup")
+        )
         
         if should_hangup:
+            hangup_sent = False
+            
+            # MODO DUAL: Preferir ESL Outbound (via DualModeEventRelay)
+            # O ESL Outbound já tem conexão ativa, não precisa reconectar
             try:
-                from .handlers.esl_client import get_esl_client
-                esl = get_esl_client()
+                from .esl.event_relay import get_relay
+                relay = get_relay(self.call_uuid)
                 
-                # Conectar ao ESL se não estiver conectado
-                if not esl._connected:
-                    await esl.connect()
-                
-                if esl._connected:
-                    # 1. Parar o audio stream primeiro
-                    try:
-                        await esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
-                        logger.debug(f"Audio stream stopped for {self.call_uuid}")
-                    except Exception as e:
-                        logger.debug(f"Could not stop audio stream (may be already stopped): {e}")
-                    
-                    # 2. Encerrar a chamada
-                    success = await esl.uuid_kill(self.call_uuid, "NORMAL_CLEARING")
-                    if success:
-                        logger.info(f"Call terminated via ESL: {self.call_uuid}")
+                if relay:
+                    hangup_sent = relay.hangup("NORMAL_CLEARING")
+                    if hangup_sent:
+                        logger.info(f"Call terminated via ESL Outbound: {self.call_uuid}")
                     else:
-                        logger.warning(f"Failed to terminate call via ESL: {self.call_uuid}")
-                else:
-                    logger.warning(f"ESL not connected, cannot terminate call: {self.call_uuid}")
-                    
+                        logger.warning(f"ESL Outbound hangup returned False: {self.call_uuid}")
+                        
             except Exception as e:
-                logger.error(f"Error terminating call via ESL: {e}", extra={
-                    "call_uuid": self.call_uuid,
-                    "error": str(e),
-                })
+                logger.debug(f"ESL Outbound not available, trying Inbound: {e}")
+            
+            # FALLBACK: ESL Inbound (para modo websocket-only ou se Outbound falhou)
+            if not hangup_sent:
+                try:
+                    from .handlers.esl_client import get_esl_client
+                    esl = get_esl_client()
+                    
+                    # Conectar ao ESL se não estiver conectado
+                    if not esl._connected:
+                        await esl.connect()
+                    
+                    if esl._connected:
+                        # 1. Parar o audio stream primeiro
+                        try:
+                            await esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
+                            logger.debug(f"Audio stream stopped for {self.call_uuid}")
+                        except Exception as e:
+                            logger.debug(f"Could not stop audio stream (may be already stopped): {e}")
+                        
+                        # 2. Encerrar a chamada
+                        success = await esl.uuid_kill(self.call_uuid, "NORMAL_CLEARING")
+                        if success:
+                            logger.info(f"Call terminated via ESL Inbound: {self.call_uuid}")
+                        else:
+                            logger.warning(f"Failed to terminate call via ESL Inbound: {self.call_uuid}")
+                    else:
+                        logger.warning(f"ESL Inbound not connected, cannot terminate call: {self.call_uuid}")
+                        
+                except Exception as e:
+                    logger.error(f"Error terminating call via ESL: {e}", extra={
+                        "call_uuid": self.call_uuid,
+                        "error": str(e),
+                    })
         
         if self._on_session_end:
             await self._on_session_end(reason)

@@ -509,6 +509,66 @@ class DualModeEventRelay:
             self._dispatch_to_session("handle_hold", False)
     
     # ========================================
+    # Comandos ESL Outbound (para RealtimeSession)
+    # ========================================
+    
+    def hangup(self, cause: str = "NORMAL_CLEARING") -> bool:
+        """
+        Encerra a chamada via ESL Outbound.
+        
+        Este método é chamado pela RealtimeSession quando precisa
+        desligar a chamada (ex: após despedida do usuário).
+        
+        Args:
+            cause: Hangup cause (ex: NORMAL_CLEARING, USER_BUSY)
+            
+        Returns:
+            True se comando foi enviado, False se falhou
+        """
+        if not self._connected or not self.session:
+            logger.warning(f"[{self._uuid}] Cannot hangup: not connected")
+            return False
+        
+        try:
+            # Primeiro, parar o audio stream
+            try:
+                self.session.api(f"uuid_audio_stream {self._uuid} stop")
+                logger.debug(f"[{self._uuid}] Audio stream stopped via ESL Outbound")
+            except Exception as e:
+                logger.debug(f"[{self._uuid}] Audio stream stop failed (may be already stopped): {e}")
+            
+            # Encerrar a chamada
+            self.session.hangup(cause)
+            logger.info(f"[{self._uuid}] Hangup sent via ESL Outbound: {cause}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{self._uuid}] Hangup via ESL Outbound failed: {e}")
+            return False
+    
+    def execute_api(self, command: str) -> Optional[str]:
+        """
+        Executa comando API via ESL Outbound.
+        
+        Args:
+            command: Comando FreeSWITCH (ex: "uuid_hold on <uuid>")
+            
+        Returns:
+            Resultado do comando ou None se falhou
+        """
+        if not self._connected or not self.session:
+            logger.warning(f"[{self._uuid}] Cannot execute API: not connected")
+            return None
+        
+        try:
+            result = self.session.api(command)
+            logger.debug(f"[{self._uuid}] ESL API command executed: {command[:50]}")
+            return result
+        except Exception as e:
+            logger.error(f"[{self._uuid}] ESL API command failed: {e}")
+            return None
+    
+    # ========================================
     # Dispatching para Sessão WebSocket
     # ========================================
     
