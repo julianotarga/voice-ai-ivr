@@ -445,9 +445,49 @@
 		</ul>
 		
 		<div class="warning-box">
-			<h4>⚠️ mod_audio_stream é Obrigatório</h4>
-			<p>O FreeSWITCH precisa do módulo <code>mod_audio_stream</code> para enviar áudio via WebSocket para a IA.</p>
-			<p>Verifique com: <code>fs_cli -x "module_exists mod_audio_stream"</code></p>
+			<h4>⚠️ mod_audio_stream é OBRIGATÓRIO (Não vem por padrão!)</h4>
+			<p><strong>IMPORTANTE:</strong> O módulo <code>mod_audio_stream</code> <strong>NÃO é padrão</strong> do FreeSWITCH/FusionPBX. Ele precisa ser instalado manualmente!</p>
+			<p>Este módulo permite enviar áudio da chamada via WebSocket para o servidor de IA.</p>
+		</div>
+		
+		<div class="step-box">
+			<h4><span class="step-number">A</span> Verificar se mod_audio_stream está instalado</h4>
+			<div class="code-block">
+<span class="comment"># No terminal do servidor, execute:</span>
+fs_cli -x "module_exists mod_audio_stream"
+
+<span class="comment"># Se retornar "false", o módulo NÃO está instalado!</span>
+<span class="comment"># Se retornar "true", está OK ✅</span>
+			</div>
+		</div>
+		
+		<div class="step-box">
+			<h4><span class="step-number">B</span> Instalar mod_audio_stream (se necessário)</h4>
+			<p>O módulo está disponível em: <a href="https://github.com/amigniter/mod_audio_stream" target="_blank">github.com/amigniter/mod_audio_stream</a></p>
+			<div class="code-block">
+<span class="comment"># 1. Instalar dependências</span>
+apt-get install -y libfreeswitch-dev libcurl4-openssl-dev libjsoncpp-dev
+
+<span class="comment"># 2. Clonar e compilar</span>
+cd /usr/src
+git clone https://github.com/amigniter/mod_audio_stream.git
+cd mod_audio_stream
+make
+
+<span class="comment"># 3. Instalar</span>
+cp mod_audio_stream.so /usr/lib/freeswitch/mod/
+
+<span class="comment"># 4. Habilitar no autoload</span>
+nano /etc/freeswitch/autoload_configs/modules.conf.xml
+<span class="comment"># Adicione: &lt;load module="mod_audio_stream"/&gt;</span>
+
+<span class="comment"># 5. Carregar o módulo</span>
+fs_cli -x "load mod_audio_stream"
+
+<span class="comment"># 6. Verificar</span>
+fs_cli -x "module_exists mod_audio_stream"
+<span class="comment"># Deve retornar "true"</span>
+			</div>
 		</div>
 		
 		<h4>🐳 Verificar Container Voice AI</h4>
@@ -866,6 +906,17 @@ Tenha um ótimo dia!
 			<li><strong>ESL (porta 8022)</strong> → Controle da chamada (transfer, hangup, hold)</li>
 			<li><strong>mod_audio_stream (porta 8085)</strong> → Transporte de áudio via WebSocket</li>
 		</ul>
+		
+		<div class="warning-box">
+			<h4>⚠️ PRÉ-REQUISITO CRÍTICO: mod_audio_stream</h4>
+			<p>A ação <code>audio_stream</code> <strong>NÃO é padrão</strong> do FreeSWITCH. Ela só funciona se o módulo <code>mod_audio_stream</code> estiver instalado!</p>
+			<p>Verifique antes de configurar o dialplan:</p>
+			<div class="code-block" style="margin: 10px 0;">
+fs_cli -x "module_exists mod_audio_stream"
+<span class="comment"># Deve retornar "true"</span>
+			</div>
+			<p>Se retornar "false", <strong>veja a seção 2 (Pré-requisitos)</strong> para instruções de instalação.</p>
+		</div>
 		
 		<div class="info-box">
 			<h4>🎯 Por que Arquitetura Híbrida?</h4>

@@ -153,15 +153,59 @@ voice-ai-realtime:
     - "8085:8085"
 ```
 
-### 3. FreeSWITCH - Verificar mod_audio_stream
+### 3. FreeSWITCH - INSTALAR mod_audio_stream (OBRIGATÓRIO)
+
+> ⚠️ **IMPORTANTE:** `mod_audio_stream` NÃO é um módulo padrão do FreeSWITCH. Ele precisa ser instalado manualmente!
+
+#### Passo 3.1: Verificar se já está instalado
 
 ```bash
-# Verificar se módulo está carregado
+# Verificar se módulo existe
 fs_cli -x "module_exists mod_audio_stream"
+# Se retornar "false", precisa instalar!
 
-# Se não estiver, carregar
-fs_cli -x "load mod_audio_stream"
+# Listar módulos carregados
+fs_cli -x "show modules" | grep audio_stream
 ```
+
+#### Passo 3.2: Instalar mod_audio_stream (se necessário)
+
+O módulo está disponível em: https://github.com/amigniter/mod_audio_stream
+
+```bash
+# 1. Instalar dependências de compilação
+apt-get install -y libfreeswitch-dev libcurl4-openssl-dev libjsoncpp-dev
+
+# 2. Clonar o repositório
+cd /usr/src
+git clone https://github.com/amigniter/mod_audio_stream.git
+cd mod_audio_stream
+
+# 3. Compilar
+make
+
+# 4. Instalar o módulo
+cp mod_audio_stream.so /usr/lib/freeswitch/mod/
+
+# 5. Habilitar no autoload (adicionar ao modules.conf.xml)
+echo '<load module="mod_audio_stream"/>' >> /etc/freeswitch/autoload_configs/modules.conf.xml
+
+# 6. Carregar o módulo
+fs_cli -x "load mod_audio_stream"
+
+# 7. Verificar se carregou
+fs_cli -x "module_exists mod_audio_stream"
+# Deve retornar "true"
+```
+
+#### Passo 3.3: Alternativa - Instalação via pacote (se disponível)
+
+```bash
+# Algumas distribuições têm pacotes pré-compilados
+apt-get install freeswitch-mod-audio-stream
+```
+
+> 💡 **Dica:** Consulte a documentação do repositório para instruções atualizadas: https://github.com/amigniter/mod_audio_stream
 
 ### 4. Dialplan no FusionPBX (Tutorial Passo a Passo)
 

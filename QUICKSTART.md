@@ -70,6 +70,7 @@
 
 - [x] FusionPBX instalado e funcionando
 - [x] FreeSWITCH com ESL habilitado (porta 8021)
+- [x] **mod_audio_stream instalado** (NÃO vem por padrão!)
 - [x] PostgreSQL acessível
 - [x] Docker e Docker Compose instalados
 - [x] Portas 8022, 8085, 8100 disponíveis
@@ -84,6 +85,46 @@ fs_cli -x "module_exists mod_event_socket"
 # Verificar porta
 ss -tlnp | grep 8021
 ```
+
+### ⚠️ CRÍTICO: Instalar mod_audio_stream
+
+> **IMPORTANTE:** O módulo `mod_audio_stream` **NÃO é padrão** do FreeSWITCH/FusionPBX.
+> Ele é necessário para enviar áudio via WebSocket para o Voice AI.
+
+```bash
+# Verificar se já está instalado
+fs_cli -x "module_exists mod_audio_stream"
+# Se retornar "false", precisa instalar!
+```
+
+#### Instalar mod_audio_stream
+
+```bash
+# 1. Instalar dependências
+apt-get install -y libfreeswitch-dev libcurl4-openssl-dev libjsoncpp-dev
+
+# 2. Clonar e compilar
+cd /usr/src
+git clone https://github.com/amigniter/mod_audio_stream.git
+cd mod_audio_stream
+make
+
+# 3. Instalar
+cp mod_audio_stream.so /usr/lib/freeswitch/mod/
+
+# 4. Habilitar no autoload (adicionar ao modules.conf.xml)
+nano /etc/freeswitch/autoload_configs/modules.conf.xml
+# Adicione: <load module="mod_audio_stream"/>
+
+# 5. Carregar
+fs_cli -x "load mod_audio_stream"
+
+# 6. Verificar
+fs_cli -x "module_exists mod_audio_stream"
+# Deve retornar "true"
+```
+
+> 📚 Documentação: https://github.com/amigniter/mod_audio_stream
 
 ### Chaves de API (pelo menos uma)
 
