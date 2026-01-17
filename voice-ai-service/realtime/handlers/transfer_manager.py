@@ -359,16 +359,43 @@ class TransferManager:
             try:
                 # 1. Garantir conexão ESL
                 if not self._esl.is_connected:
-                    await self._esl.connect()
+                    connected = await self._esl.connect()
+                    if not connected:
+                        logger.error("Failed to connect to ESL for transfer")
+                        return TransferResult(
+                            status=TransferStatus.FAILED,
+                            destination=destination,
+                            error="Falha na conexão ESL",
+                            retries=retries
+                        )
                 
                 # 2. Verificar se A-leg ainda existe
-                if not await self._esl.uuid_exists(self.call_uuid):
-                    return TransferResult(
-                        status=TransferStatus.CANCELLED,
-                        destination=destination,
-                        error="A-leg não existe mais",
-                        retries=retries
-                    )
+                # NOTA: Em algumas configurações, uuid_exists pode falhar devido a
+                # diferenças entre conexões ESL inbound/outbound. Logamos mas continuamos.
+                a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
+                logger.debug(
+                    f"A-leg check: uuid={self.call_uuid}, exists={a_leg_exists}"
+                )
+                
+                if not a_leg_exists:
+                    # Tentar uma vez mais após pequeno delay (race condition)
+                    await asyncio.sleep(0.1)
+                    a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
+                    logger.debug(f"A-leg recheck after 100ms: exists={a_leg_exists}")
+                    
+                    if not a_leg_exists:
+                        # Verificar se chamador marcou como desconectado
+                        if self._caller_hungup:
+                            return TransferResult(
+                                status=TransferStatus.CANCELLED,
+                                destination=destination,
+                                error="Cliente desligou",
+                                retries=retries
+                            )
+                        # Caso contrário, continuar mesmo assim (pode ser falso negativo)
+                        logger.warning(
+                            f"uuid_exists returned false but proceeding anyway - may be ESL inbound/outbound mismatch"
+                        )
                 
                 # 3. Tocar música de espera
                 await self._start_moh()
