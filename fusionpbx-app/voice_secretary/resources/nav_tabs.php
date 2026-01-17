@@ -50,6 +50,11 @@
 			'path' => 'settings.php',
 			'permission' => 'voice_secretary_edit'
 		],
+		'omniplay_settings' => [
+			'title' => $text['label-omniplay'] ?? '🔗 OmniPlay',
+			'path' => 'omniplay_settings.php',
+			'permission' => 'voice_secretary_edit'
+		],
 	];
 
 //count visible tabs

@@ -26,6 +26,7 @@
 
 //include class
 	require_once "resources/classes/voice_secretary.php";
+	require_once "resources/classes/omniplay_api_client.php";
 
 //get domain_uuid from session
 	$domain_uuid = $_SESSION['domain_uuid'] ?? null;
@@ -38,6 +39,17 @@
 	$secretary_obj = new voice_secretary;
 	$action = 'add';
 	$data = [];
+
+//load OmniPlay integration data
+	$omniplay_client = new OmniPlayAPIClient($domain_uuid, $db);
+	$omniplay_queues = [];
+	$omniplay_users = [];
+	$omniplay_configured = $omniplay_client->isConfigured();
+	
+	if ($omniplay_configured) {
+		$omniplay_queues = $omniplay_client->getQueues();
+		$omniplay_users = $omniplay_client->getUsers();
+	}
 
 //check if editing existing
 	if (isset($_GET['id']) && is_uuid($_GET['id'])) {
@@ -618,11 +630,28 @@
 	echo "<tr class='handoff-option fallback-option'>\n";
 	echo "	<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".($text['label-fallback_queue'] ?? 'Destination Queue')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='number' name='handoff_queue_id' min='1' max='999' value='".escape($data['handoff_queue_id'] ?? '')."' placeholder='Ex: 1' style='width: 80px;' required>\n";
-	echo "		<span style='margin-left: 10px; color: #666;'>ID da fila no OmniPlay</span>\n";
+	
+	if ($omniplay_configured && !empty($omniplay_queues)) {
+		// Dynamic dropdown from OmniPlay
+		echo "		<select class='formfld' name='handoff_queue_id' style='width: 250px;' required>\n";
+		echo "			<option value=''>-- Selecione uma fila --</option>\n";
+		foreach ($omniplay_queues as $queue) {
+			$selected = ($data['handoff_queue_id'] == $queue['id']) ? 'selected' : '';
+			echo "			<option value='".escape($queue['id'])."' {$selected}>".escape($queue['name'])." (ID: ".escape($queue['id']).")</option>\n";
+		}
+		echo "		</select>\n";
+		echo "		<a href='omniplay_settings.php?action=sync' style='margin-left: 10px; font-size: 0.85em;'>🔄 Atualizar lista</a>\n";
+	} else {
+		// Fallback to manual input
+		echo "		<input class='formfld' type='number' name='handoff_queue_id' min='1' max='999' value='".escape($data['handoff_queue_id'] ?? '')."' placeholder='Ex: 1' style='width: 80px;' required>\n";
+		echo "		<span style='margin-left: 10px; color: #666;'>ID da fila no OmniPlay</span>\n";
+		if (!$omniplay_configured) {
+			echo "		<br/><span style='color: #ff6b00; font-size: 0.85em;'>💡 <a href='omniplay_settings.php'>Configure a integração OmniPlay</a> para selecionar filas automaticamente</span>\n";
+		}
+	}
+	
 	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
-		. "<b>⚠️ OBRIGATÓRIO:</b> Defina qual fila do OmniPlay receberá os tickets/callbacks criados.<br/>"
-		. "Para encontrar o ID: <b>OmniPlay → Filas → [Nome da Fila] → ver ID na URL</b> (ex: /queues/3 = ID 3)"
+		. "<b>⚠️ OBRIGATÓRIO:</b> Defina qual fila do OmniPlay receberá os tickets/callbacks criados."
 		. "</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
@@ -631,8 +660,23 @@
 	echo "<tr class='handoff-option fallback-option'>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-fallback_user'] ?? 'Assigned User')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	echo "		<input class='formfld' type='number' name='fallback_user_id' min='1' max='99999' value='".escape($data['fallback_user_id'] ?? '')."' placeholder='(Opcional)' style='width: 80px;'>\n";
-	echo "		<span style='margin-left: 10px; color: #666;'>ID do usuário no OmniPlay</span>\n";
+	
+	if ($omniplay_configured && !empty($omniplay_users)) {
+		// Dynamic dropdown from OmniPlay
+		echo "		<select class='formfld' name='fallback_user_id' style='width: 250px;'>\n";
+		echo "			<option value=''>-- Qualquer atendente da fila --</option>\n";
+		foreach ($omniplay_users as $user) {
+			$selected = ($data['fallback_user_id'] == $user['id']) ? 'selected' : '';
+			$online_status = !empty($user['online']) ? '🟢' : '⚪';
+			echo "			<option value='".escape($user['id'])."' {$selected}>{$online_status} ".escape($user['name'])." (ID: ".escape($user['id']).")</option>\n";
+		}
+		echo "		</select>\n";
+	} else {
+		// Fallback to manual input
+		echo "		<input class='formfld' type='number' name='fallback_user_id' min='1' max='99999' value='".escape($data['fallback_user_id'] ?? '')."' placeholder='(Opcional)' style='width: 80px;'>\n";
+		echo "		<span style='margin-left: 10px; color: #666;'>ID do usuário no OmniPlay</span>\n";
+	}
+	
 	echo "		<br /><span class='vtable-hint' style='color: #555;'>"
 		. "<b>Opcional:</b> Atribuir diretamente a um usuário específico em vez de deixar na fila.<br/>"
 		. "Deixe em branco para que qualquer atendente da fila possa pegar o ticket."
