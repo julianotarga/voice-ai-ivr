@@ -35,6 +35,30 @@ from .handlers.time_condition_checker import (
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_bool(value, default: bool = True) -> bool:
+    """
+    Converte valor para booleano de forma segura.
+    
+    FusionPBX pode salvar booleanos como 'true'/'false' strings.
+    PostgreSQL retorna bool nativo via asyncpg.
+    
+    Args:
+        value: Valor a converter (bool, str, int, None)
+        default: Valor padrão se None
+        
+    Returns:
+        bool
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes", "t")
+    return bool(value)
+
+
 # 20ms @ 16kHz PCM16 mono:
 # 16000 samples/sec * 2 bytes/sample = 32000 bytes/sec
 # 20ms => 640 bytes
@@ -609,13 +633,7 @@ class RealtimeServer:
         # Audio Configuration - extrair valores do banco ANTES de criar o config
         db_warmup_chunks = int(row.get("audio_warmup_chunks") or 15)
         db_warmup_ms = int(row.get("audio_warmup_ms") or 400)
-        db_adaptive_warmup = row.get("audio_adaptive_warmup")
-        if db_adaptive_warmup is None:
-            db_adaptive_warmup = True
-        elif isinstance(db_adaptive_warmup, str):
-            db_adaptive_warmup = db_adaptive_warmup.lower() in ("true", "1", "yes")
-        else:
-            db_adaptive_warmup = bool(db_adaptive_warmup)
+        db_adaptive_warmup = _parse_bool(row.get("audio_adaptive_warmup"), default=True)
         db_jitter_min = int(row.get("jitter_buffer_min") or 100)
         db_jitter_max = int(row.get("jitter_buffer_max") or 300)
         db_jitter_step = int(row.get("jitter_buffer_step") or 40)
@@ -653,17 +671,19 @@ class RealtimeServer:
             barge_in_enabled=barge_in_enabled,
             omniplay_webhook_url=row.get("omniplay_webhook_url"),
             # Handoff OmniPlay config
-            handoff_enabled=bool(row.get("handoff_enabled", True)),
+            handoff_enabled=_parse_bool(row.get("handoff_enabled"), default=True),
             handoff_timeout_ms=int(row.get("handoff_timeout", 30)) * 1000,  # seconds to ms
             handoff_keywords=handoff_keywords,
             handoff_max_ai_turns=int(row.get("max_turns", 20)),
             handoff_queue_id=row.get("handoff_queue_id"),
             omniplay_company_id=row.get("omniplay_company_id"),
             # Fallback Configuration (from database)
+            fallback_ticket_enabled=_parse_bool(row.get("fallback_ticket_enabled"), default=True),
             fallback_action=row.get("fallback_action") or "ticket",
             fallback_user_id=row.get("fallback_user_id"),
             fallback_priority=row.get("fallback_priority") or "medium",
-            fallback_notify_enabled=bool(row.get("fallback_notify_enabled", True)),
+            fallback_notify_enabled=_parse_bool(row.get("fallback_notify_enabled"), default=True),
+            presence_check_enabled=_parse_bool(row.get("presence_check_enabled"), default=True),
             # Audio Configuration
             audio_warmup_chunks=db_warmup_chunks,
             audio_warmup_ms=db_warmup_ms,

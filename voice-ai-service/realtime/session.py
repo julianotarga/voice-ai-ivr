@@ -186,10 +186,12 @@ class RealtimeSessionConfig:
     handoff_queue_id: Optional[int] = None
     omniplay_company_id: Optional[int] = None  # OmniPlay companyId para API
     # Fallback Configuration (quando transferência falha)
+    fallback_ticket_enabled: bool = True  # Habilita criação de ticket de fallback
     fallback_action: str = "ticket"  # ticket, callback, voicemail, none
     fallback_user_id: Optional[int] = None  # User ID para atribuir ticket
     fallback_priority: str = "medium"  # low, medium, high, urgent
     fallback_notify_enabled: bool = True  # Notificar sobre fallback
+    presence_check_enabled: bool = True  # Verificar presença antes de transferir
     # Audio Configuration (per-secretary)
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
     audio_warmup_ms: int = 400  # buffer de warmup em ms
