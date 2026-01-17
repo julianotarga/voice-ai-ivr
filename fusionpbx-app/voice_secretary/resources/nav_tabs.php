@@ -55,6 +55,11 @@
 			'path' => 'omniplay_settings.php',
 			'permission' => 'voice_secretary_edit'
 		],
+		'help' => [
+			'title' => $text['label-help'] ?? '❓ Ajuda',
+			'path' => 'help.php',
+			'permission' => 'voice_secretary_view'
+		],
 	];
 
 //count visible tabs
