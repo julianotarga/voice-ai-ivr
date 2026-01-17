@@ -1177,12 +1177,29 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # ========================================
         # IMPORTANTE: Fazer ANTES de marcar _ended = True e desconectar provider
         # para garantir que a conexão ESL Outbound ainda esteja ativa
+        #
+        # IMPORTANTE (handoff): em transfer_success NÃO devemos hangup do A-leg.
+        # A chamada agora está bridged com o humano; só precisamos encerrar a sessão de IA.
         should_hangup = not (
             reason.startswith("esl_hangup:") or
-            reason in ("hangup", "connection_closed", "caller_hangup")
+            reason in ("hangup", "connection_closed", "caller_hangup", "transfer_success")
         )
         
         hangup_success = False
+
+        # Em transfer_success, tentar parar o mod_audio_stream de forma limpa.
+        # Isso remove o "BUG" de áudio sem derrubar o bridge (A-leg <-> B-leg).
+        if reason == "transfer_success":
+            try:
+                from .esl import get_esl_adapter
+                adapter = get_esl_adapter(self.call_uuid)
+                await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to stop uuid_audio_stream on transfer_success: {e}",
+                    extra={"call_uuid": self.call_uuid}
+                )
+
         if should_hangup:
             try:
                 from .esl import get_esl_adapter
