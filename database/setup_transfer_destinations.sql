@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS v_voice_transfer_destinations (
     is_default BOOLEAN DEFAULT false,
     
     -- Auditoria
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     
     -- Constraints
     CONSTRAINT chk_destination_type CHECK (destination_type IN (
@@ -60,9 +60,16 @@ CREATE INDEX IF NOT EXISTS idx_vtd_domain ON v_voice_transfer_destinations(domai
 CREATE INDEX IF NOT EXISTS idx_vtd_secretary ON v_voice_transfer_destinations(secretary_uuid);
 CREATE INDEX IF NOT EXISTS idx_vtd_enabled ON v_voice_transfer_destinations(domain_uuid, is_enabled) WHERE is_enabled = true;
 
+-- Índice único para garantir apenas um default por domain
+DROP INDEX IF EXISTS idx_vtd_default_unique;
+CREATE UNIQUE INDEX idx_vtd_default_unique 
+    ON v_voice_transfer_destinations(domain_uuid) 
+    WHERE is_default = true AND is_enabled = true;
+
 -- Foreign Keys (se tabelas existirem)
 DO $$ 
 BEGIN
+    -- FK para domain
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'v_domains') THEN
         IF NOT EXISTS (
             SELECT 1 FROM information_schema.table_constraints 
@@ -76,9 +83,24 @@ BEGIN
             ON DELETE CASCADE;
         END IF;
     END IF;
+    
+    -- FK para secretary (opcional)
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'v_voice_secretaries') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE constraint_name = 'fk_vtd_secretary' 
+            AND table_name = 'v_voice_transfer_destinations'
+        ) THEN
+            ALTER TABLE v_voice_transfer_destinations 
+            ADD CONSTRAINT fk_vtd_secretary 
+            FOREIGN KEY (secretary_uuid) 
+            REFERENCES v_voice_secretaries(voice_secretary_uuid) 
+            ON DELETE SET NULL;
+        END IF;
+    END IF;
+    
+    RAISE NOTICE '✅ Tabela v_voice_transfer_destinations criada/verificada';
 END $$;
-
-RAISE NOTICE '✅ Tabela v_voice_transfer_destinations criada/verificada';
 
 -- ============================================================================
 -- PARTE 2: INSERIR DESTINO VENDAS (Seed)
