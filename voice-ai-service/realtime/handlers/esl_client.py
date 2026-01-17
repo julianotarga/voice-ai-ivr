@@ -852,8 +852,11 @@ class AsyncESLClient:
                     value = value.replace(" ", "_").replace("'", "").replace(",", "")
                 var_parts.append(f"{k}={value}")
             
-            var_string = "{" + ",".join(var_parts) + "}"
-            cmd = f"originate {var_string} {dial_string} {app}"
+            # NOTA: [] são variáveis locais (por leg), {} são globais
+            # Para originate via ESL, [] funciona melhor
+            var_string = "[" + ",".join(var_parts) + "]"
+            # O formato é: originate [vars]dial_string app (SEM espaço entre ] e dial_string)
+            cmd = f"originate {var_string}{dial_string} {app}"
             
             logger.info(f"Originate command: {cmd}")
             logger.debug(f"Originate dial_string: {dial_string}")
