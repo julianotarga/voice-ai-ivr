@@ -10,9 +10,14 @@
  */
 
 // Includes padrão do FusionPBX
-require_once "root.php";
-require_once "resources/require.php";
-require_once "resources/check_auth.php";
+// ✅ FIX: Usar dirname(__DIR__, 2) em vez de root.php (padrão FusionPBX)
+require_once dirname(__DIR__, 2) . "/resources/require.php";
+
+// Check auth (já incluído no require.php, mas garantir)
+if (!isset($_SESSION['domain_uuid'])) {
+	echo "access denied";
+	exit;
+}
 
 // Verificar permissão
 if (!permission_exists('voice_secretary_edit')) {
