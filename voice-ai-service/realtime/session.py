@@ -1159,6 +1159,20 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             return
         
         # ========================================
+        # 0. NOTIFICAR TRANSFER MANAGER SE HOUVER HANGUP
+        # ========================================
+        # Isso seta _caller_hungup = True para que o transfer seja cancelado
+        is_hangup = (
+            reason.startswith("esl_hangup:") or
+            reason in ("hangup", "connection_closed", "caller_hangup")
+        )
+        if is_hangup and self._transfer_manager:
+            try:
+                await self._transfer_manager.handle_caller_hangup()
+            except Exception as e:
+                logger.warning(f"Error notifying transfer manager of hangup: {e}")
+        
+        # ========================================
         # 1. PRIMEIRO: ENCERRAR CHAMADA NO FREESWITCH VIA ESL
         # ========================================
         # IMPORTANTE: Fazer ANTES de marcar _ended = True e desconectar provider

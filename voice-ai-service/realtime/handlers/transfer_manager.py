@@ -552,9 +552,11 @@ class TransferManager:
         answered = False
         
         while asyncio.get_event_loop().time() - start_time < timeout:
-            # Verificar se A-leg ainda existe
-            if not await self._esl.uuid_exists(self.call_uuid):
-                logger.info("A-leg hangup detected during transfer")
+            # Verificar se chamador desligou (flag setado pelo event relay)
+            # IMPORTANTE: NÃO usar uuid_exists aqui pois pode retornar false
+            # incorretamente após o originate (bug de conexão ESL inbound)
+            if self._caller_hungup:
+                logger.info("A-leg hangup detected during transfer (via event relay)")
                 
                 # Matar B-leg
                 await self._esl.uuid_kill(b_leg_uuid)
