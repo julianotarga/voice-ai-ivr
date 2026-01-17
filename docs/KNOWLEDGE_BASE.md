@@ -239,6 +239,26 @@ mcp_context7_query-docs(
 ```
 **Solução:** Verificar se `systemInstruction` está no setup inicial.
 
+### ElevenLabs Function Calls Não Funcionam
+```
+A IA não consegue desligar, transferir ou colocar em espera
+```
+**Solução:** O ElevenLabs **NÃO recebe function calls via API**. Configure as funções diretamente no painel:
+
+1. Acesse [elevenlabs.io/app/conversational-ai](https://elevenlabs.io/app/conversational-ai)
+2. Edite o Agent
+3. Na aba "Tools/Functions", adicione:
+
+| Função | Descrição |
+|--------|-----------|
+| `request_handoff` | Transfere para humano. Params: `destination` (required), `reason` |
+| `end_call` | Encerra a chamada. Params: `reason` (optional) |
+| `hold_call` | Coloca em espera. Sem parâmetros |
+| `unhold_call` | Retira da espera. Sem parâmetros |
+| `check_extension_available` | Verifica ramal. Params: `extension` (required) |
+
+> **Nota:** OpenAI Realtime e Gemini Live recebem function calls automaticamente via API.
+
 ---
 
 ## 🔗 Links Rápidos

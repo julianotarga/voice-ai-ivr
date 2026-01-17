@@ -569,6 +569,73 @@ curl http://localhost:8100/health  <span class="comment"># API Principal</span>
 			<p><strong>OpenAI:</strong> alloy, echo, fable, onyx, nova, shimmer</p>
 			<p><strong>ElevenLabs:</strong> Crie vozes customizadas no painel ElevenLabs</p>
 		</div>
+		
+		<!-- ElevenLabs Function Calls Configuration -->
+		<div class="warning-box" style="border-left-color: #ff9800; background: #fff3e0;">
+			<h4>🔧 IMPORTANTE: Configurar Function Calls no ElevenLabs</h4>
+			<p>O ElevenLabs <strong>NÃO recebe function calls via API</strong> - você precisa configurar as funções diretamente no painel do ElevenLabs!</p>
+		</div>
+		
+		<div class="step-box">
+			<h4><span class="step-number">3</span> Configurar Functions no ElevenLabs</h4>
+			<p>Para que a secretária possa desligar, transferir e colocar em espera, siga estes passos:</p>
+			
+			<ol style="line-height: 2;">
+				<li>Acesse <a href="https://elevenlabs.io/app/conversational-ai" target="_blank"><strong>elevenlabs.io/app/conversational-ai</strong></a></li>
+				<li>Clique no seu <strong>Agent</strong> configurado</li>
+				<li>Vá na aba <strong>"Tools"</strong> ou <strong>"Functions"</strong></li>
+				<li>Adicione as seguintes funções:</li>
+			</ol>
+			
+			<table class="config-table">
+				<tr>
+					<th>Nome da Função</th>
+					<th>Descrição</th>
+					<th>Parâmetros</th>
+				</tr>
+				<tr>
+					<td><code>request_handoff</code></td>
+					<td>Transfere a chamada para um atendente humano, departamento ou pessoa específica. Use quando o cliente pedir para falar com alguém ou quando não souber resolver.</td>
+					<td>
+						<code>destination</code> (string, required): Nome da pessoa, departamento ou "qualquer atendente"<br>
+						<code>reason</code> (string, optional): Motivo do pedido
+					</td>
+				</tr>
+				<tr>
+					<td><code>end_call</code></td>
+					<td>Encerra a chamada telefônica. Use quando a conversa chegou ao fim, o cliente se despediu, ou quando todas as dúvidas foram resolvidas.</td>
+					<td>
+						<code>reason</code> (string, optional): Motivo do encerramento
+					</td>
+				</tr>
+				<tr>
+					<td><code>hold_call</code></td>
+					<td>Coloca o cliente em espera com música. Use quando precisar verificar algo ou consultar informações. Avise o cliente antes.</td>
+					<td>
+						<em>(nenhum parâmetro)</em>
+					</td>
+				</tr>
+				<tr>
+					<td><code>unhold_call</code></td>
+					<td>Retira o cliente da espera. Use após verificar as informações necessárias.</td>
+					<td>
+						<em>(nenhum parâmetro)</em>
+					</td>
+				</tr>
+				<tr>
+					<td><code>check_extension_available</code></td>
+					<td>Verifica se um ramal ou atendente está disponível para transferência. Use antes de prometer ao cliente que vai transferir.</td>
+					<td>
+						<code>extension</code> (string, required): Número do ramal (ex: "1001")
+					</td>
+				</tr>
+			</table>
+		</div>
+		
+		<div class="info-box" style="border-left-color: #4caf50; background: #e8f5e9;">
+			<h4>✅ OpenAI e Gemini: Automático!</h4>
+			<p>Para <strong>OpenAI Realtime</strong> e <strong>Gemini Live</strong>, as function calls são enviadas automaticamente via API. Não é necessário configurar manualmente.</p>
+		</div>
 	</div>
 </div>
 

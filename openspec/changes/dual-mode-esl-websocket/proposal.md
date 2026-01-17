@@ -252,6 +252,89 @@ ESL_PASSWORD=ClueCon
 - [ ] Zero regressão no modo WebSocket only
 - [ ] Testes passando
 
+## ⚠️ Configuração de Function Calls por Provider
+
+### OpenAI Realtime e Gemini Live
+**Configuração automática via API.** As tools são enviadas no `session.update` (OpenAI) ou `setup` (Gemini).
+
+### ElevenLabs Conversational AI
+**⚠️ REQUER CONFIGURAÇÃO MANUAL NO PAINEL!**
+
+O ElevenLabs não recebe function calls via API WebSocket. É necessário configurar as funções diretamente no painel:
+
+1. Acesse [elevenlabs.io/app/conversational-ai](https://elevenlabs.io/app/conversational-ai)
+2. Edite o Agent configurado
+3. Na aba "Tools/Functions", adicione:
+
+| Função | Descrição | Parâmetros |
+|--------|-----------|------------|
+| `request_handoff` | Transfere a chamada para um atendente humano, departamento ou pessoa específica | `destination` (string, required), `reason` (string, optional) |
+| `end_call` | Encerra a chamada telefônica | `reason` (string, optional) |
+| `hold_call` | Coloca o cliente em espera com música | *(nenhum)* |
+| `unhold_call` | Retira o cliente da espera | *(nenhum)* |
+| `check_extension_available` | Verifica se um ramal está disponível | `extension` (string, required) |
+
+### Descrições Recomendadas para ElevenLabs
+
+```json
+{
+  "name": "request_handoff",
+  "description": "Transfere a chamada para um atendente humano, departamento ou pessoa específica. Use quando o cliente pedir para falar com alguém ou quando não souber resolver.",
+  "parameters": {
+    "destination": {
+      "type": "string",
+      "description": "Nome da pessoa, departamento ou 'qualquer atendente'. Exemplos: 'Jeni', 'financeiro', 'suporte'"
+    },
+    "reason": {
+      "type": "string", 
+      "description": "Motivo pelo qual o cliente quer falar com alguém"
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "end_call",
+  "description": "Encerra a chamada telefônica. Use quando a conversa chegou ao fim, o cliente se despediu, ou quando todas as dúvidas foram resolvidas e você já deu tchau.",
+  "parameters": {
+    "reason": {
+      "type": "string",
+      "description": "Motivo do encerramento: 'cliente_despediu', 'atendimento_concluido', 'timeout'"
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "hold_call",
+  "description": "Coloca o cliente em espera com música. Use quando precisar verificar algo ou consultar informações. Lembre-se de avisar o cliente antes de colocar em espera.",
+  "parameters": {}
+}
+```
+
+```json
+{
+  "name": "unhold_call",
+  "description": "Retira o cliente da espera. Use após verificar as informações necessárias.",
+  "parameters": {}
+}
+```
+
+```json
+{
+  "name": "check_extension_available",
+  "description": "Verifica se um ramal ou atendente está disponível para transferência. Use antes de prometer ao cliente que vai transferir para alguém específico.",
+  "parameters": {
+    "extension": {
+      "type": "string",
+      "description": "Número do ramal para verificar (ex: '1001', '200')"
+    }
+  }
+}
+```
+
 ## Referências
 
 - [mod_audio_stream](https://github.com/amigniter/mod_audio_stream)
