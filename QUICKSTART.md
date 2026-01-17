@@ -6,6 +6,20 @@
 
 ---
 
+## 🎯 DECISÃO DEFINITIVA
+
+| Aspecto | Decisão |
+|---------|---------|
+| **Onde criar dialplan?** | **Dialplan → Dialplan Manager** |
+| **Contexto** | Nome do domínio (ex: `ativo.netplay.net.br`) |
+| **Áudio** | `mod_audio_stream` via WebSocket (porta 8085) |
+| **Controle** | ESL via `socket` (porta 8022) |
+| **Script Lua?** | ❌ **NÃO USAR** |
+
+> ⚠️ **IMPORTANTE:** Esta é a única arquitetura suportada. O script Lua não permite controle via ESL (transferências, hold, callbacks).
+
+---
+
 ## 📋 Índice
 
 1. [Visão Geral da Arquitetura](#1-visão-geral-da-arquitetura)

@@ -901,6 +901,34 @@ Tenha um ótimo dia!
 		<span class="toggle-icon">▼</span>
 	</div>
 	<div class="help-section-content">
+		
+		<!-- DECISÃO DEFINITIVA -->
+		<div style="background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+			<h4 style="margin: 0 0 15px 0; color: #fff;">🎯 DECISÃO DEFINITIVA</h4>
+			<table style="width: 100%; border-collapse: collapse; color: #fff;">
+				<tr>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><strong>Onde criar dialplan?</strong></td>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><code style="background: #4caf50; color: #fff; padding: 2px 8px; border-radius: 4px;">Dialplan → Dialplan Manager</code></td>
+				</tr>
+				<tr>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><strong>Contexto</strong></td>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">Nome do domínio (ex: <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">ativo.netplay.net.br</code>)</td>
+				</tr>
+				<tr>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><strong>Áudio</strong></td>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">mod_audio_stream</code> via WebSocket (porta 8085)</td>
+				</tr>
+				<tr>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);"><strong>Controle</strong></td>
+					<td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">ESL via <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">socket</code> (porta 8022)</td>
+				</tr>
+				<tr>
+					<td style="padding: 8px;"><strong>Script Lua?</strong></td>
+					<td style="padding: 8px;"><span style="background: #f44336; color: #fff; padding: 2px 8px; border-radius: 4px;">❌ NÃO USAR</span> - Não suporta ESL</td>
+				</tr>
+			</table>
+		</div>
+		
 		<p>O dialplan conecta as chamadas ao Voice AI Service. Usamos a <strong>Arquitetura Híbrida</strong>:</p>
 		<ul>
 			<li><strong>ESL (porta 8022)</strong> → Controle da chamada (transfer, hangup, hold)</li>

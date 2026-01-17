@@ -1,12 +1,38 @@
 # Arquitetura Híbrida: ESL + WebSocket (mod_audio_stream)
 
+---
+
+## 🎯 DECISÃO DEFINITIVA
+
+| Aspecto | Decisão |
+|---------|---------|
+| **Onde criar dialplan?** | **Dialplan → Dialplan Manager** |
+| **Contexto** | Nome do domínio (ex: `ativo.netplay.net.br`) |
+| **Áudio** | `mod_audio_stream` via WebSocket (porta 8085) |
+| **Controle** | ESL via `socket` (porta 8022) |
+| **Script Lua?** | ❌ **NÃO USAR** - Não suporta ESL para controle |
+
+### Por que ESL é necessário?
+
+| Funcionalidade | Sem ESL | Com ESL |
+|----------------|---------|---------|
+| Transferir para ramal/fila | ❌ | ✅ `uuid_transfer` |
+| Colocar em espera | ❌ | ✅ `uuid_hold` |
+| Monitorar status de ramais | ❌ | ✅ `show registrations` |
+| Originar callbacks | ❌ | ✅ `originate` |
+| Tocar áudio/música | ❌ | ✅ `uuid_broadcast` |
+
+**O script `voice_secretary.lua` NÃO suporta estas funcionalidades.**
+
+---
+
 ## Resumo
 
-Este documento descreve a arquitetura recomendada para o Voice AI IVR, utilizando:
-- **ESL (Event Socket Library)** para controle de chamada
+Este documento descreve a arquitetura **DEFINITIVA** para o Voice AI IVR:
+- **ESL (Event Socket Library)** para controle de chamada (transferências, hold, callbacks)
 - **mod_audio_stream (WebSocket)** para transporte de áudio
 
-Esta combinação oferece o melhor dos dois mundos: controle granular via ESL e compatibilidade universal com NAT via WebSocket.
+Esta combinação oferece controle granular via ESL e compatibilidade universal com NAT via WebSocket.
 
 > ⚠️ **IMPORTANTE:** `mod_audio_stream` é um módulo de terceiros, **NÃO é padrão** do FreeSWITCH/FusionPBX. Consulte a seção de instalação.
 
