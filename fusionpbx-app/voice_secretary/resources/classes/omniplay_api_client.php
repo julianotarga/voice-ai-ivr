@@ -36,21 +36,29 @@ class OmniPlayAPIClient {
     
     /**
      * Carrega configurações do banco de dados
+     * 
+     * ✅ FIX: Tratamento de exceção caso tabela não exista (migration não rodada)
      */
     private function loadSettings() {
-        $sql = "SELECT omniplay_api_url, omniplay_api_token, omniplay_company_id 
-                FROM v_voice_omniplay_settings 
-                WHERE domain_uuid = :domain_uuid 
-                LIMIT 1";
-        
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([':domain_uuid' => $this->domain_uuid]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($row) {
-            $this->api_url = rtrim($row['omniplay_api_url'] ?? '', '/');
-            $this->api_token = $row['omniplay_api_token'] ?? null;
-            $this->company_id = $row['omniplay_company_id'] ?? null;
+        try {
+            $sql = "SELECT omniplay_api_url, omniplay_api_token, omniplay_company_id 
+                    FROM v_voice_omniplay_settings 
+                    WHERE domain_uuid = :domain_uuid 
+                    LIMIT 1";
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute([':domain_uuid' => $this->domain_uuid]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($row) {
+                $this->api_url = rtrim($row['omniplay_api_url'] ?? '', '/');
+                $this->api_token = $row['omniplay_api_token'] ?? null;
+                $this->company_id = $row['omniplay_company_id'] ?? null;
+            }
+        } catch (PDOException $e) {
+            // Tabela pode não existir ainda (migration não rodada)
+            // Silenciosamente falha - isConfigured() retornará false
+            error_log("OmniPlay loadSettings error (table may not exist): " . $e->getMessage());
         }
     }
     
@@ -244,29 +252,34 @@ class OmniPlayAPIClient {
      * @return array|null
      */
     private function getFromCache($key) {
-        $cache_key = "omniplay_{$this->domain_uuid}_{$key}";
-        
-        // ✅ FIX: PostgreSQL INTERVAL precisa de aspas simples ao redor do valor
-        // Usamos interpolação segura pois $this->cache_ttl é int definido internamente
-        $ttl = (int) $this->cache_ttl;  // Garantir que é int
-        
-        $sql = "SELECT cache_data, cached_at 
-                FROM v_voice_omniplay_cache 
-                WHERE domain_uuid = :domain_uuid 
-                  AND cache_key = :cache_key
-                  AND cached_at > NOW() - INTERVAL '{$ttl} seconds'
-                LIMIT 1";
-        
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':domain_uuid' => $this->domain_uuid,
-            ':cache_key' => $cache_key
-        ]);
-        
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($row && isset($row['cache_data'])) {
-            return json_decode($row['cache_data'], true);
+        try {
+            $cache_key = "omniplay_{$this->domain_uuid}_{$key}";
+            
+            // ✅ FIX: PostgreSQL INTERVAL precisa de aspas simples ao redor do valor
+            // Usamos interpolação segura pois $this->cache_ttl é int definido internamente
+            $ttl = (int) $this->cache_ttl;  // Garantir que é int
+            
+            $sql = "SELECT cache_data, cached_at 
+                    FROM v_voice_omniplay_cache 
+                    WHERE domain_uuid = :domain_uuid 
+                      AND cache_key = :cache_key
+                      AND cached_at > NOW() - INTERVAL '{$ttl} seconds'
+                    LIMIT 1";
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute([
+                ':domain_uuid' => $this->domain_uuid,
+                ':cache_key' => $cache_key
+            ]);
+            
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($row && isset($row['cache_data'])) {
+                return json_decode($row['cache_data'], true);
+            }
+        } catch (PDOException $e) {
+            // Cache table may not exist yet
+            error_log("OmniPlay cache read error: " . $e->getMessage());
         }
         
         return null;
@@ -306,15 +319,20 @@ class OmniPlayAPIClient {
      * @param string|null $key Chave específica ou null para limpar tudo
      */
     public function clearCache($key = null) {
-        if ($key) {
-            $cache_key = "omniplay_{$this->domain_uuid}_{$key}";
-            $sql = "DELETE FROM v_voice_omniplay_cache WHERE domain_uuid = :domain_uuid AND cache_key = :cache_key";
-            $stmt = $this->pdo->prepare($sql);
-            $stmt->execute([':domain_uuid' => $this->domain_uuid, ':cache_key' => $cache_key]);
-        } else {
-            $sql = "DELETE FROM v_voice_omniplay_cache WHERE domain_uuid = :domain_uuid";
-            $stmt = $this->pdo->prepare($sql);
-            $stmt->execute([':domain_uuid' => $this->domain_uuid]);
+        try {
+            if ($key) {
+                $cache_key = "omniplay_{$this->domain_uuid}_{$key}";
+                $sql = "DELETE FROM v_voice_omniplay_cache WHERE domain_uuid = :domain_uuid AND cache_key = :cache_key";
+                $stmt = $this->pdo->prepare($sql);
+                $stmt->execute([':domain_uuid' => $this->domain_uuid, ':cache_key' => $cache_key]);
+            } else {
+                $sql = "DELETE FROM v_voice_omniplay_cache WHERE domain_uuid = :domain_uuid";
+                $stmt = $this->pdo->prepare($sql);
+                $stmt->execute([':domain_uuid' => $this->domain_uuid]);
+            }
+        } catch (PDOException $e) {
+            // Cache table may not exist yet - not critical
+            error_log("OmniPlay cache clear error: " . $e->getMessage());
         }
     }
     

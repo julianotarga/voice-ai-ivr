@@ -64,6 +64,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
 	// Remover barra final da URL
 	$omniplay_api_url = rtrim($omniplay_api_url, '/');
 	
+	// ✅ FIX: Validar sync_interval_minutes (1-60)
+	if ($sync_interval_minutes < 1) {
+		$sync_interval_minutes = 1;
+	} elseif ($sync_interval_minutes > 60) {
+		$sync_interval_minutes = 60;
+	}
+	
 	if ($settings) {
 		// Atualizar
 		$sql = "UPDATE v_voice_omniplay_settings SET 
@@ -107,7 +114,16 @@ if ($action === 'test') {
 		$result = $client->testConnection();
 		
 		if ($result) {
-			message::add("✅ Conexão OK! Empresa ID: " . ($result['companyId'] ?? 'N/A'), 'positive');
+			$company_id = $result['companyId'] ?? null;
+			
+			// ✅ FIX: Auto-preencher company_id após conexão bem-sucedida
+			if ($company_id) {
+				$sql = "UPDATE v_voice_omniplay_settings SET omniplay_company_id = :company_id WHERE domain_uuid = :domain_uuid";
+				$stmt = $db->prepare($sql);
+				$stmt->execute([':company_id' => $company_id, ':domain_uuid' => $domain_uuid]);
+			}
+			
+			message::add("✅ Conexão OK! Empresa ID: " . ($company_id ?? 'N/A') . " (salvo automaticamente)", 'positive');
 		} else {
 			message::add("❌ Falha na conexão: " . $client->getLastError(), 'negative');
 		}
@@ -129,12 +145,23 @@ if ($action === 'sync') {
 		$queue_count = count($data['queues'] ?? []);
 		$user_count = count($data['users'] ?? []);
 		
-		// Atualizar last_sync_at
-		$sql = "UPDATE v_voice_omniplay_settings SET last_sync_at = NOW(), last_sync_error = NULL WHERE domain_uuid = :domain_uuid";
-		$stmt = $db->prepare($sql);
-		$stmt->execute([':domain_uuid' => $domain_uuid]);
-		
-		message::add("✅ Sincronização concluída! {$queue_count} filas, {$user_count} usuários.", 'positive');
+		// ✅ FIX: Verificar se realmente obteve dados ou se houve erro
+		if ($queue_count === 0 && $user_count === 0 && $data['company'] === null) {
+			// Provavelmente houve erro
+			$error = $client->getLastError() ?: 'Nenhum dado retornado';
+			$sql = "UPDATE v_voice_omniplay_settings SET last_sync_error = :error WHERE domain_uuid = :domain_uuid";
+			$stmt = $db->prepare($sql);
+			$stmt->execute([':error' => $error, ':domain_uuid' => $domain_uuid]);
+			
+			message::add("⚠️ Sincronização concluída mas sem dados. Verifique a conexão: {$error}", 'warning');
+		} else {
+			// Atualizar last_sync_at
+			$sql = "UPDATE v_voice_omniplay_settings SET last_sync_at = NOW(), last_sync_error = NULL WHERE domain_uuid = :domain_uuid";
+			$stmt = $db->prepare($sql);
+			$stmt->execute([':domain_uuid' => $domain_uuid]);
+			
+			message::add("✅ Sincronização concluída! {$queue_count} filas, {$user_count} usuários.", 'positive');
+		}
 	}
 	
 	header("Location: omniplay_settings.php");
@@ -151,12 +178,14 @@ $stmt = $db->prepare("SELECT * FROM v_voice_omniplay_settings WHERE domain_uuid 
 $stmt->execute([':domain_uuid' => $domain_uuid]);
 $settings = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Incluir navegação
-require_once "resources/nav_tabs.php";
+// ✅ FIX: $current_page DEVE ser definido ANTES de incluir nav_tabs.php
 $current_page = 'omniplay_settings';
 
-// Cabeçalho
+// Cabeçalho (nav_tabs.php é incluído dentro de secretary_header ou após header)
 require_once "resources/header.php";
+
+// Incluir navegação APÓS o header
+require_once "resources/nav_tabs.php";
 
 // Breadcrumb
 echo "<b class='heading'><a href='voice_secretaries.php'>".$text['title-voice_secretaries']."</a> » Integração OmniPlay</b><br><br>";
@@ -311,19 +340,23 @@ $token_name = $token->create($_SERVER['PHP_SELF']);
 					<div class="help-text">URL base da API do OmniPlay (sem barra no final)</div>
 				</td>
 			</tr>
-			<tr>
-				<td valign="top" class="vncellreq">Token de API</td>
-				<td class="vtable">
-					<input type="password" class="formfld" name="omniplay_api_token" 
-						value="<?php echo htmlspecialchars($settings['omniplay_api_token'] ?? ''); ?>"
-						placeholder="voice_xxxxxxxxxxxxxxxx" style="width: 400px;" 
-						id="api_token_field">
-					<button type="button" onclick="toggleTokenVisibility()" class="btn btn-default btn-sm" style="margin-left: 5px;">
-						👁️ Ver
-					</button>
-					<div class="help-text">Token gerado no OmniPlay (começa com "voice_")</div>
-				</td>
-			</tr>
+		<tr>
+			<td valign="top" class="vncellreq">Token de API</td>
+			<td class="vtable">
+				<input type="password" class="formfld" name="omniplay_api_token" 
+					value="<?php echo htmlspecialchars($settings['omniplay_api_token'] ?? ''); ?>"
+					placeholder="voice_xxxxxxxxxxxxxxxx" style="width: 400px;" 
+					id="api_token_field" autocomplete="off">
+				<button type="button" onclick="toggleTokenVisibility()" class="btn btn-default btn-sm" style="margin-left: 5px;">
+					👁️ Ver
+				</button>
+				<div class="help-text">Token gerado no OmniPlay (começa com "voice_")</div>
+				<div class="help-text" style="color: #c62828; margin-top: 5px;">
+					⚠️ <strong>Segurança:</strong> Este token é armazenado localmente para fazer chamadas à API. 
+					Se precisar revogar acesso, gere um novo token no OmniPlay (o anterior será invalidado).
+				</div>
+			</td>
+		</tr>
 			<tr>
 				<td valign="top" class="vncell">ID da Empresa</td>
 				<td class="vtable">
