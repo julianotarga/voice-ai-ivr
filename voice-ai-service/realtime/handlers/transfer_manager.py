@@ -646,6 +646,10 @@ class TransferManager:
             # (humano já atendeu - originate síncrono retornou +OK)
             # NOTA: Mantemos o MOH no cliente, apenas falamos com o humano
             
+            # Aguardar para garantir que eventos ESL do originate foram processados
+            # Isso evita race condition no socket quando uuid_playback é chamado
+            await asyncio.sleep(1.0)
+            
             logger.info(f"B-leg answered, playing announcement: {b_leg_uuid}")
             
             # 7. Tocar anúncio para o humano via ElevenLabs TTS (mesma voz da IA)
@@ -670,9 +674,17 @@ class TransferManager:
             
             if audio_path:
                 logger.info(f"Playing ElevenLabs announcement: {audio_path}")
+                
+                # Reconectar ESL para garantir socket limpo (evita race condition)
+                try:
+                    await self._esl.disconnect()
+                    await asyncio.sleep(0.1)
+                    await self._esl.connect()
+                except Exception as e:
+                    logger.warning(f"ESL reconnect failed, continuing: {e}")
+                
                 await self._esl.uuid_playback(b_leg_uuid, audio_path)
                 # Aguardar um pouco para o áudio começar a tocar
-                # Evita race condition com uuid_exists no wait_for_reject_or_timeout
                 await asyncio.sleep(0.5)
             else:
                 # Fallback: mod_flite (voz robótica)
