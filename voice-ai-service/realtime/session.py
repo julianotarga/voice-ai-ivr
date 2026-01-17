@@ -1126,6 +1126,39 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if self._ended:
             return
         
+        # ========================================
+        # 1. PRIMEIRO: ENCERRAR CHAMADA NO FREESWITCH VIA ESL
+        # ========================================
+        # IMPORTANTE: Fazer ANTES de marcar _ended = True e desconectar provider
+        # para garantir que a conexão ESL Outbound ainda esteja ativa
+        should_hangup = not (
+            reason.startswith("esl_hangup:") or
+            reason in ("hangup", "connection_closed", "caller_hangup")
+        )
+        
+        hangup_success = False
+        if should_hangup:
+            try:
+                from .esl import get_esl_adapter
+                adapter = get_esl_adapter(self.call_uuid)
+                
+                # Encerrar a chamada IMEDIATAMENTE
+                # (não parar audio_stream - o hangup já faz isso)
+                hangup_success = await adapter.uuid_kill(self.call_uuid, "NORMAL_CLEARING")
+                if hangup_success:
+                    logger.info(f"Call terminated via ESL: {self.call_uuid}")
+                else:
+                    logger.warning(f"Failed to terminate call via ESL: {self.call_uuid}")
+                    
+            except Exception as e:
+                logger.error(f"Error terminating call via ESL: {e}", extra={
+                    "call_uuid": self.call_uuid,
+                    "error": str(e),
+                })
+        
+        # ========================================
+        # 2. DEPOIS: Marcar sessão como ended e limpar recursos
+        # ========================================
         self._ended = True
         
         for task in [self._event_task, self._timeout_task]:
@@ -1142,38 +1175,6 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         self._metrics.session_ended(self.call_uuid, reason)
         await self._save_conversation(reason)
         
-        # ========================================
-        # ENCERRAR CHAMADA NO FREESWITCH VIA ESL
-        # ========================================
-        # Apenas encerrar via ESL se a sessão está sendo finalizada pela IA
-        # Se o motivo começar com "esl_hangup:" ou for "hangup"/"caller_hangup",
-        # o FreeSWITCH já desligou - não precisamos enviar hangup
-        should_hangup = not (
-            reason.startswith("esl_hangup:") or
-            reason in ("hangup", "connection_closed", "caller_hangup")
-        )
-        
-        if should_hangup:
-            try:
-                from .esl import get_esl_adapter
-                adapter = get_esl_adapter(self.call_uuid)
-                
-                # 1. Parar o audio stream primeiro
-                await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
-                
-                # 2. Encerrar a chamada
-                success = await adapter.uuid_kill(self.call_uuid, "NORMAL_CLEARING")
-                if success:
-                    logger.info(f"Call terminated via ESL: {self.call_uuid}")
-                else:
-                    logger.warning(f"Failed to terminate call via ESL: {self.call_uuid}")
-                    
-            except Exception as e:
-                logger.error(f"Error terminating call via ESL: {e}", extra={
-                    "call_uuid": self.call_uuid,
-                    "error": str(e),
-                })
-        
         if self._on_session_end:
             await self._on_session_end(reason)
         
@@ -1182,6 +1183,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "domain_uuid": self.domain_uuid,
             "reason": reason,
             "hangup_sent": should_hangup,
+            "hangup_success": hangup_success,
         })
     
     # =========================================================================
