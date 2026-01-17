@@ -9,6 +9,8 @@ Referências:
 
 import asyncio
 import logging
+import os
+import audioop
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -247,6 +249,7 @@ class RealtimeSession:
         self._ending_call = False  # True quando detectamos farewell, bloqueia novo áudio
         self._user_speaking = False
         self._assistant_speaking = False
+        self._last_barge_in_ts = 0.0
         self._pending_audio_bytes = 0  # Audio bytes da resposta ATUAL (reset a cada nova resposta)
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
         self._farewell_response_started = False  # True quando o áudio de despedida começou
@@ -588,6 +591,33 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # e ser interpretado como fala, fazendo o agente gerar respostas sozinho.
         if self._transfer_in_progress:
             return
+
+        # Barge-in local (mais natural): se o caller começou a falar enquanto o
+        # assistente está falando, interromper imediatamente e limpar buffer.
+        #
+        # Isso reduz a dependência do timing do provider (ex: ElevenLabs "interruption"),
+        # que pode chegar tarde, fazendo o caller ouvir o agente por mais tempo.
+        if self.config.barge_in_enabled and self._assistant_speaking and audio_bytes:
+            try:
+                rms = audioop.rms(audio_bytes, 2)  # PCM16 => width=2
+                rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "450"))
+                cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "0.5"))
+                now = time.time()
+                if rms >= rms_threshold and (now - self._last_barge_in_ts) >= cooldown_s:
+                    self._last_barge_in_ts = now
+                    await self.interrupt()
+                    if self._on_barge_in:
+                        try:
+                            await self._on_barge_in(self.call_uuid)
+                            self._metrics.record_barge_in(self.call_uuid)
+                        except Exception:
+                            logger.debug(
+                                "Failed to clear playback on local barge-in",
+                                extra={"call_uuid": self.call_uuid}
+                            )
+            except Exception:
+                # Nunca deixar barge-in quebrar o fluxo de áudio
+                pass
         
         # IMPORTANTE: Bloquear áudio do usuário após farewell detectado
         # para evitar que a IA continue conversando
@@ -796,14 +826,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
             self._speech_start_time = time.time()
+            # Se o usuário começou a falar, tentar interromper e limpar playback pendente.
+            # (Mesmo que _assistant_speaking esteja brevemente fora de sincronia.)
             if self._assistant_speaking:
                 await self.interrupt()
-                if self.config.barge_in_enabled and self._on_barge_in:
-                    try:
-                        await self._on_barge_in(self.call_uuid)
-                        self._metrics.record_barge_in(self.call_uuid)
-                    except Exception:
-                        logger.debug("Failed to clear playback on barge-in", extra={"call_uuid": self.call_uuid})
+            if self.config.barge_in_enabled and self._on_barge_in:
+                try:
+                    await self._on_barge_in(self.call_uuid)
+                    self._metrics.record_barge_in(self.call_uuid)
+                except Exception:
+                    logger.debug("Failed to clear playback on barge-in", extra={"call_uuid": self.call_uuid})
         
         elif event.type == ProviderEventType.SPEECH_STOPPED:
             self._user_speaking = False
