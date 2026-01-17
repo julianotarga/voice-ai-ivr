@@ -26,6 +26,7 @@ from .config_loader import (
     get_config_loader,
     build_transfer_context,
     build_transfer_tools_schema,
+    validate_transfer_config,
 )
 from .handlers.time_condition_checker import (
     get_time_condition_checker,
@@ -503,6 +504,26 @@ class RealtimeServer:
         # Parse handoff keywords from comma-separated string
         handoff_keywords_str = row.get("handoff_keywords") or "atendente,humano,pessoa,operador"
         handoff_keywords = [k.strip() for k in handoff_keywords_str.split(",") if k.strip()]
+        
+        # Validar configurações de transferência para detectar conflitos
+        # Ref: voice-ai-ivr/docs/TRANSFER_SETTINGS_VS_RULES.md
+        transfer_extension = row.get("transfer_extension") or "200"
+        if config_loader and transfer_rules:
+            config_warnings = validate_transfer_config(
+                handoff_keywords=handoff_keywords,
+                transfer_extension=transfer_extension,
+                transfer_rules=transfer_rules,
+                domain_uuid=domain_uuid,
+                secretary_uuid=secretary_uuid,
+            )
+            if config_warnings:
+                # Log individual warnings para facilitar debug
+                for warning in config_warnings:
+                    logger.warning(warning, extra={
+                        "call_uuid": call_uuid,
+                        "domain_uuid": domain_uuid,
+                        "secretary_uuid": secretary_uuid,
+                    })
         
         # Audio Configuration - extrair valores do banco ANTES de criar o config
         db_warmup_chunks = int(row.get("audio_warmup_chunks") or 15)

@@ -897,3 +897,92 @@ async def load_secretary_config(
         "language": config.language,
         "provider_config": config.realtime_provider_config,
     }
+
+
+def validate_transfer_config(
+    handoff_keywords: List[str],
+    transfer_extension: str,
+    transfer_rules: List[TransferRule],
+    domain_uuid: str,
+    secretary_uuid: str,
+) -> List[str]:
+    """
+    Valida se há conflitos entre Transfer Settings e Transfer Rules.
+    
+    Ref: voice-ai-ivr/docs/TRANSFER_SETTINGS_VS_RULES.md
+    
+    Args:
+        handoff_keywords: Keywords de handoff da Secretary
+        transfer_extension: Ramal padrão de transferência da Secretary  
+        transfer_rules: Lista de Transfer Rules configuradas
+        domain_uuid: UUID do tenant
+        secretary_uuid: UUID da secretária
+    
+    Returns:
+        Lista de warnings (vazio se nenhum conflito)
+    """
+    warnings: List[str] = []
+    
+    # Normalizar keywords para lowercase
+    handoff_keywords_lower = {kw.lower().strip() for kw in handoff_keywords if kw.strip()}
+    
+    # Coletar todas as keywords das transfer rules
+    rule_keywords: Dict[str, str] = {}  # keyword -> department_name
+    rule_extensions: Dict[str, str] = {}  # extension -> department_name
+    
+    for rule in transfer_rules:
+        rule_extensions[rule.transfer_extension] = rule.department_name
+        
+        for kw in rule.intent_keywords:
+            kw_lower = kw.lower().strip()
+            if kw_lower:
+                rule_keywords[kw_lower] = rule.department_name
+    
+    # Check 1: Keywords sobrepostas
+    overlapping = handoff_keywords_lower & set(rule_keywords.keys())
+    if overlapping:
+        for kw in overlapping:
+            dept = rule_keywords[kw]
+            warnings.append(
+                f"⚠️ CONFLITO: Keyword '{kw}' está em Handoff Keywords E em Transfer Rule '{dept}'. "
+                f"Isso fará o handoff ir para o ramal padrão ({transfer_extension}) em vez do departamento."
+            )
+    
+    # Check 2: Transfer Extension igual a algum departamento
+    if transfer_extension in rule_extensions:
+        dept = rule_extensions[transfer_extension]
+        warnings.append(
+            f"⚠️ AVISO: Transfer Extension ({transfer_extension}) é igual ao ramal de '{dept}'. "
+            f"Considere usar um ramal de recepção/geral para handoff genérico."
+        )
+    
+    # Check 3: Handoff keywords contêm nomes de departamentos
+    dept_names_lower = {rule.department_name.lower() for rule in transfer_rules}
+    dept_in_keywords = handoff_keywords_lower & dept_names_lower
+    if dept_in_keywords:
+        for dept in dept_in_keywords:
+            warnings.append(
+                f"⚠️ CONFLITO: Nome de departamento '{dept}' está em Handoff Keywords. "
+                f"Isso ignorará a Transfer Rule e usará o ramal padrão."
+            )
+    
+    # Log warnings
+    if warnings:
+        logger.warning(
+            f"Transfer config validation found {len(warnings)} issues",
+            extra={
+                "domain_uuid": domain_uuid,
+                "secretary_uuid": secretary_uuid,
+                "warnings": warnings,
+            }
+        )
+    else:
+        logger.debug(
+            "Transfer config validation passed",
+            extra={
+                "domain_uuid": domain_uuid,
+                "secretary_uuid": secretary_uuid,
+            }
+        )
+    
+    return warnings
