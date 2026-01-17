@@ -298,6 +298,19 @@ Navegue até: **FusionPBX → Applications → Voice Secretary**
 
 ## 7. FASE 5: Criar Dialplan
 
+### 🏗️ Arquitetura Híbrida (Recomendada)
+
+O Voice AI usa uma **arquitetura híbrida** com dois componentes:
+
+| Componente | Porta | Função |
+|------------|-------|--------|
+| **ESL Outbound** | 8022 | Controle de chamada (transfer, hangup, etc.) |
+| **mod_audio_stream** | 8085 | Transporte de áudio (WebSocket) |
+
+Esta combinação resolve problemas de NAT e permite controle granular.
+
+> 📚 Documentação completa: `docs/HYBRID_ARCHITECTURE.md`
+
 ### 7.1 Via Interface FusionPBX (Recomendado)
 
 1. Acesse **Dialplan → Dialplan Manager**
@@ -306,27 +319,42 @@ Navegue até: **FusionPBX → Applications → Voice Secretary**
 
 | Campo | Valor |
 |-------|-------|
-| **Name** | `voice_ai_esl_8000` |
+| **Name** | `voice_ai_hybrid_8000` |
 | **Number** | `8000` |
 | **Context** | `${domain_name}` |
 | **Order** | `5` |
 | **Enabled** | `true` |
 | **Continue** | `false` ⚠️ CRÍTICO |
-| **Description** | `Voice AI ESL - Secretária Virtual` |
+| **Description** | `Voice AI Híbrido - ESL + WebSocket` |
 
 4. Na seção **Dialplan Details**, adicione na ordem:
 
-| Tag | Type | Data |
-|-----|------|------|
-| condition | field | `destination_number` |
-| condition | expression | `^8000$` |
-| action | set | `domain_uuid=${domain_uuid}` |
-| action | set | `secretary_uuid=COLE_UUID_AQUI` |
-| action | set | `absolute_codec_string=PCMU` |
-| action | answer | *(vazio)* |
-| action | socket | `127.0.0.1:8022 async full` |
+| Tag | Type | Data | Descrição |
+|-----|------|------|-----------|
+| condition | field | `destination_number` | Condição de match |
+| condition | expression | `^8000$` | Ramal 8000 |
+| action | set | `VOICE_AI_SECRETARY_UUID=COLE_UUID_AQUI` | UUID da secretária |
+| action | set | `VOICE_AI_DOMAIN_UUID=${domain_uuid}` | UUID do domínio |
+| action | set | `absolute_codec_string=PCMU` | Forçar codec |
+| action | answer | *(vazio)* | Atender chamada |
+| action | socket | `127.0.0.1:8022 async full` | **ESL: Controle** |
+| action | audio_stream | `ws://127.0.0.1:8085/ws start both` | **WebSocket: Áudio** |
+| action | park | *(vazio)* | Manter chamada ativa |
 
 5. Clique em **Save**
+
+### ⚠️ Verificar mod_audio_stream
+
+```bash
+# Verificar se módulo está carregado
+fs_cli -x "module_exists mod_audio_stream"
+
+# Se retornar "false", carregar o módulo
+fs_cli -x "load mod_audio_stream"
+
+# Para carregar automaticamente no boot, adicione em modules.conf.xml:
+# <load module="mod_audio_stream"/>
+```
 
 ### 7.2 Recarregar FreeSWITCH
 
@@ -365,7 +393,12 @@ fs_cli -x "show dialplan" | grep voice_ai
 
 ### 8.2 Atualizar Dialplan com UUID
 
-Volte ao dialplan criado e substitua `COLE_UUID_AQUI` pelo UUID real.
+Volte ao dialplan criado e substitua `COLE_UUID_AQUI` pelo UUID real da secretária.
+
+> **Exemplo:** Se o UUID for `dc923a2f-b88a-4a2f-8029-d6e0c06893c5`, a action fica:
+> ```
+> set | VOICE_AI_SECRETARY_UUID=dc923a2f-b88a-4a2f-8029-d6e0c06893c5
+> ```
 
 ### 8.3 Configurar Provider de IA
 
