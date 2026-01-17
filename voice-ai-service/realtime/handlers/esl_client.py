@@ -841,7 +841,14 @@ class AsyncESLClient:
                 all_vars.update(variables)
             
             # Formatar string de variáveis
-            var_parts = [f"{k}={v}" for k, v in all_vars.items()]
+            # IMPORTANTE: Valores devem estar entre aspas simples para suportar espaços
+            # Ex: origination_caller_id_name='Secretaria Virtual'
+            var_parts = []
+            for k, v in all_vars.items():
+                # Escapar aspas simples dentro do valor
+                escaped_v = str(v).replace("'", "\\'")
+                var_parts.append(f"{k}='{escaped_v}'")
+            
             var_string = "{" + ",".join(var_parts) + "}"
             
             # Construir comando com espaço entre variáveis e dial_string
