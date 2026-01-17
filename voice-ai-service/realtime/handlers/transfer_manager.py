@@ -419,6 +419,7 @@ class TransferManager:
                     timeout=timeout,
                     variables={
                         "ignore_early_media": "true",
+                        "hangup_after_bridge": "true",  # Documentação oficial: desliga após bridge encerrar
                         "origination_caller_id_number": self.caller_id,
                         "origination_caller_id_name": "Secretaria Virtual"
                     }
@@ -435,75 +436,58 @@ class TransferManager:
                 
                 self._b_leg_uuid = b_leg_uuid
                 
-                # 6. Monitorar resultado
-                result = await self._monitor_transfer_leg(
-                    b_leg_uuid=b_leg_uuid,
-                    destination=destination,
-                    timeout=timeout + 5  # Buffer de 5 segundos
+                # 6. IMPORTANTE: api originate é SÍNCRONO!
+                # Se retornou +OK, significa que o B-leg JÁ FOI ATENDIDO
+                # Não precisamos monitorar CHANNEL_ANSWER - ir direto para bridge!
+                # 
+                # Ref: https://developer.signalwire.com/freeswitch/Originate
+                # "api originate" bloqueia até o destino atender ou falhar
+                
+                logger.info(f"B-leg answered (originate success): {b_leg_uuid}")
+                
+                # 7. Parar MOH antes do bridge
+                await self._stop_moh()
+                
+                # 8. Criar bridge IMEDIATAMENTE (B-leg já está atendida)
+                bridge_success = await self._esl.uuid_bridge(
+                    self.call_uuid,
+                    b_leg_uuid
                 )
                 
-                # 7. Processar resultado
-                if result.status == TransferStatus.ANSWERED:
-                    # Tentar criar bridge
-                    bridge_success = await self._esl.uuid_bridge(
-                        self.call_uuid,
-                        b_leg_uuid
+                if bridge_success:
+                    duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                    final_result = TransferResult(
+                        status=TransferStatus.SUCCESS,
+                        destination=destination,
+                        b_leg_uuid=b_leg_uuid,
+                        duration_ms=duration,
+                        retries=retries
                     )
                     
-                    if bridge_success:
-                        duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-                        final_result = TransferResult(
-                            status=TransferStatus.SUCCESS,
-                            destination=destination,
-                            b_leg_uuid=b_leg_uuid,
-                            duration_ms=duration,
-                            retries=retries
-                        )
-                        
-                        logger.info(
-                            f"Transfer successful: bridge established",
-                            extra={
-                                "call_uuid": self.call_uuid,
-                                "b_leg_uuid": b_leg_uuid,
-                                "destination": destination.name
-                            }
-                        )
-                        
-                        if self._on_transfer_complete:
-                            await self._on_transfer_complete(final_result)
-                        
-                        return final_result
-                    else:
-                        # Bridge falhou - matar B-leg
-                        await self._esl.uuid_kill(b_leg_uuid)
-                        await self._stop_moh()
-                        
-                        return TransferResult(
-                            status=TransferStatus.FAILED,
-                            destination=destination,
-                            error="Falha ao criar bridge",
-                            retries=retries
-                        )
-                
-                elif result.status == TransferStatus.BUSY and retries < max_retries - 1:
-                    # Tentar novamente após delay
-                    retries += 1
-                    await asyncio.sleep(destination.retry_delay_seconds)
-                    continue
-                
-                else:
-                    # Outros status - parar música e retornar
-                    await self._stop_moh()
-                    
-                    duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-                    result.duration_ms = duration
-                    result.retries = retries
+                    logger.info(
+                        f"Transfer successful: bridge established",
+                        extra={
+                            "call_uuid": self.call_uuid,
+                            "b_leg_uuid": b_leg_uuid,
+                            "destination": destination.name
+                        }
+                    )
                     
                     if self._on_transfer_complete:
-                        await self._on_transfer_complete(result)
+                        await self._on_transfer_complete(final_result)
                     
-                    return result
+                    return final_result
+                else:
+                    # Bridge falhou - matar B-leg
+                    await self._esl.uuid_kill(b_leg_uuid)
                     
+                    return TransferResult(
+                        status=TransferStatus.FAILED,
+                        destination=destination,
+                        error="Falha ao criar bridge",
+                        retries=retries
+                    )
+            
             except asyncio.CancelledError:
                 # Tarefa cancelada
                 if self._b_leg_uuid:
