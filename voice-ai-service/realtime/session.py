@@ -606,8 +606,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 rms = audioop.rms(audio_bytes, 2)  # PCM16 => width=2
                 rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "450"))
                 cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "0.5"))
+                # Evita falsos positivos por ruído: exige N frames consecutivos acima do limiar
+                required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "3"))
                 now = time.time()
-                if rms >= rms_threshold and (now - self._last_barge_in_ts) >= cooldown_s:
+                if rms >= rms_threshold:
+                    self._local_barge_hits = getattr(self, "_local_barge_hits", 0) + 1
+                else:
+                    self._local_barge_hits = 0
+                if (
+                    self._local_barge_hits >= required_hits and
+                    (now - self._last_barge_in_ts) >= cooldown_s
+                ):
+                    self._local_barge_hits = 0
                     self._last_barge_in_ts = now
                     await self.interrupt()
                     if self._on_barge_in:
@@ -1660,6 +1670,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 #
                 # Espera curta e robusta: aguarda o provider terminar a fala atual,
                 # com timeout para não travar se o provider não sinalizar corretamente.
+                # Primeiro, aguardar o anúncio COMEÇAR (senão podemos entrar em modo transfer
+                # e mutar antes do primeiro áudio chegar).
+                waited_start = 0.0
+                max_wait_start = 1.2
+                while not self._assistant_speaking and waited_start < max_wait_start and not self._ended:
+                    await asyncio.sleep(0.05)
+                    waited_start += 0.05
+
                 waited = 0.0
                 max_wait = 6.0
                 while self._assistant_speaking and waited < max_wait and not self._ended:
