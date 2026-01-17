@@ -1054,7 +1054,7 @@ fs_cli -x "module_exists mod_audio_stream"
 					<td><strong>3</strong></td>
 					<td>action</td>
 					<td><code>set</code></td>
-					<td><code style="font-size: 10px;">api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mono 16k</code></td>
+					<td><code style="font-size: 10px;">api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k</code></td>
 					<td>🎙️ Configura streaming (executa após answer)</td>
 				</tr>
 				<tr style="background: #e8f5e9;">
@@ -1149,7 +1149,7 @@ fs_cli -x "show dialplan" | grep voice_ai
     
     <span class="comment">&lt;!-- 2. Configurar streaming via api_on_answer (ANTES do answer!) --&gt;</span>
     <span class="comment">&lt;!-- O comando será executado APÓS o answer, automaticamente --&gt;</span>
-    &lt;action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mono 16k"/&gt;
+    &lt;action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/&gt;
     
     <span class="comment">&lt;!-- 3. Atender a chamada (dispara api_on_answer) --&gt;</span>
     &lt;action application="answer"/&gt;

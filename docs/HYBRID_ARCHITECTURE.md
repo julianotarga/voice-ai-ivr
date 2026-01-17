@@ -249,7 +249,7 @@ Adicione as seguintes ações **na ordem exata**:
 |-------|-----|------|------|--------|
 | 1 | action | `set` | `VOICE_AI_SECRETARY_UUID=SEU-UUID-AQUI` | 🔑 Identifica a secretária |
 | 2 | action | `set` | `VOICE_AI_DOMAIN_UUID=${domain_uuid}` | 🏢 Passa o domínio |
-| 3 | action | `set` | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mono 16k` | 🎙️ Configura streaming (executa após answer) |
+| 3 | action | `set` | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k` | 🎙️ Configura streaming (executa após answer) |
 | 4 | action | `answer` | *(vazio)* | 📞 Atende a chamada (dispara api_on_answer) |
 | 5 | action | `socket` | `127.0.0.1:8022 async full` | 🔌 Conecta ESL (controle) |
 | 6 | action | `park` | *(vazio)* | ⏸️ Mantém chamada ativa |
@@ -277,7 +277,7 @@ O FusionPBX gera automaticamente este XML:
     
     <!-- 2. Configurar streaming via api_on_answer -->
     <!-- Este comando será executado APÓS o answer -->
-    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mono 16k"/>
+    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/>
     
     <!-- 3. Atender a chamada (dispara api_on_answer automaticamente) -->
     <action application="answer"/>
@@ -307,7 +307,7 @@ Exemplo de uso:
 ```xml
 <action application="set" data="STREAM_BUFFER_SIZE=20"/>
 <action application="set" data="STREAM_PLAYBACK=true"/>
-<action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mono 16k"/>
+<action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/>
 <action application="answer"/>
 ```
 

@@ -376,10 +376,9 @@ Esta combinação resolve problemas de NAT e permite controle granular.
 | condition | expression | `^8000$` | Ramal 8000 |
 | action | set | `VOICE_AI_SECRETARY_UUID=COLE_UUID_AQUI` | UUID da secretária |
 | action | set | `VOICE_AI_DOMAIN_UUID=${domain_uuid}` | UUID do domínio |
-| action | set | `absolute_codec_string=PCMU` | Forçar codec |
-| action | answer | *(vazio)* | Atender chamada |
+| action | set | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k` | **WebSocket: Áudio** |
+| action | answer | *(vazio)* | Atender chamada (dispara api_on_answer) |
 | action | socket | `127.0.0.1:8022 async full` | **ESL: Controle** |
-| action | audio_stream | `ws://127.0.0.1:8085/ws start both` | **WebSocket: Áudio** |
 | action | park | *(vazio)* | Manter chamada ativa |
 
 5. Clique em **Save**

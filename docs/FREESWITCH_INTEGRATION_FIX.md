@@ -18,8 +18,11 @@ A integração entre FusionPBX/FreeSWITCH e o container Voice AI Realtime aprese
 O campo `dialplan_xml` na tabela `v_dialplans` continha `audio_stream` como application, mas `audio_stream` **não é uma application válida** do FreeSWITCH - é apenas uma **API** (`uuid_audio_stream`).
 
 ```xml
-<!-- ERRADO - estava no banco -->
+<!-- ERRADO - estava no banco (path /ws/ e audio_stream como application) -->
 <action application="audio_stream" data="ws://127.0.0.1:8085/ws/${domain_uuid}/${secretary_uuid}/${uuid}"/>
+
+<!-- CORRETO - usar api_on_answer com uuid_audio_stream -->
+<action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/stream/${VOICE_AI_SECRETARY_UUID}/${uuid}/${caller_id_number} mono 16k"/>
 ```
 
 ### Solução
@@ -127,21 +130,22 @@ WARNING - Invalid path: /ws/96f6142d-02b1-49fa-8bcb-f98658bb831f/dc923a2f-b88a-4
 O servidor `voice-ai-realtime` esperava um path diferente.
 
 ### Path Esperado pelo Servidor
-Conforme código em `/app/realtime/server.py`:
+Conforme código em `/voice-ai-service/realtime/server.py`:
 ```python
-# URL Pattern: ws://bridge:8085/stream/{domain_uuid}/{call_uuid}
+# URL Pattern: /stream/{secretary_uuid}/{call_uuid}/{caller_id}
+# caller_id é opcional
 ```
 
 ### Solução
 ```lua
--- ERRADO
+-- ERRADO (path /ws/ não existe)
 local ws_url = "ws://127.0.0.1:8085/ws/" .. domain_uuid .. "/" .. secretary_uuid .. "/" .. call_uuid
 
--- CORRETO  
-local ws_url = "ws://127.0.0.1:8085/stream/" .. domain_uuid .. "/" .. call_uuid
+-- CORRETO (/stream/{secretary_uuid}/{call_uuid}/{caller_id})
+local ws_url = "ws://127.0.0.1:8085/stream/" .. secretary_uuid .. "/" .. call_uuid .. "/" .. caller_id
 ```
 
-**Nota:** O `secretary_uuid` **não faz parte do path** - apenas `domain_uuid` e `call_uuid`.
+**Nota:** O path é `/stream/{secretary_uuid}/{call_uuid}/{caller_id}`. O `domain_uuid` NÃO faz parte do path - apenas `secretary_uuid`, `call_uuid` e opcionalmente `caller_id`.
 
 ---
 
