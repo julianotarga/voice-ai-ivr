@@ -41,14 +41,26 @@
 	$data = [];
 
 //load OmniPlay integration data
-	$omniplay_client = new OmniPlayAPIClient($domain_uuid, $db);
+	// ✅ FIX: No FusionPBX, a conexão PDO está em $database->db (não $db)
 	$omniplay_queues = [];
 	$omniplay_users = [];
-	$omniplay_configured = $omniplay_client->isConfigured();
+	$omniplay_configured = false;
+	$omniplay_client = null;
 	
-	if ($omniplay_configured) {
-		$omniplay_queues = $omniplay_client->getQueues();
-		$omniplay_users = $omniplay_client->getUsers();
+	// Verificar se temos conexão com banco de dados
+	if (isset($database) && is_object($database) && isset($database->db)) {
+		try {
+			$omniplay_client = new OmniPlayAPIClient($domain_uuid, $database->db);
+			$omniplay_configured = $omniplay_client->isConfigured();
+			
+			if ($omniplay_configured) {
+				$omniplay_queues = $omniplay_client->getQueues();
+				$omniplay_users = $omniplay_client->getUsers();
+			}
+		} catch (Exception $e) {
+			// OmniPlay não configurado ainda - não bloquear página
+			error_log("OmniPlay client initialization error: " . $e->getMessage());
+		}
 	}
 
 //check if editing existing

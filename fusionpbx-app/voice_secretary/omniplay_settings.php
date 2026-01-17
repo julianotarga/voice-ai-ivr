@@ -31,11 +31,20 @@ require_once "resources/classes/omniplay_api_client.php";
 $domain_uuid = $_SESSION['domain_uuid'];
 $action = $_REQUEST['action'] ?? '';
 
+// ✅ FIX: No FusionPBX, a conexão PDO está em $database->db (não $db)
+$db = $database->db;
+
 // Buscar configurações atuais
-$sql = "SELECT * FROM v_voice_omniplay_settings WHERE domain_uuid = :domain_uuid LIMIT 1";
-$stmt = $db->prepare($sql);
-$stmt->execute([':domain_uuid' => $domain_uuid]);
-$settings = $stmt->fetch(PDO::FETCH_ASSOC);
+$settings = [];
+try {
+	$sql = "SELECT * FROM v_voice_omniplay_settings WHERE domain_uuid = :domain_uuid LIMIT 1";
+	$stmt = $db->prepare($sql);
+	$stmt->execute([':domain_uuid' => $domain_uuid]);
+	$settings = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+} catch (PDOException $e) {
+	// Tabela pode não existir ainda (migration não rodada)
+	error_log("OmniPlay settings table may not exist: " . $e->getMessage());
+}
 
 // Processar formulário
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
@@ -71,62 +80,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
 		$sync_interval_minutes = 60;
 	}
 	
-	if ($settings) {
-		// Atualizar
-		$sql = "UPDATE v_voice_omniplay_settings SET 
-			omniplay_api_url = :omniplay_api_url,
-			omniplay_api_token = :omniplay_api_token,
-			omniplay_company_id = :omniplay_company_id,
-			auto_sync_enabled = :auto_sync_enabled,
-			sync_interval_minutes = :sync_interval_minutes,
-			updated_at = NOW()
-			WHERE domain_uuid = :domain_uuid";
-	} else {
-		// Inserir
-		$sql = "INSERT INTO v_voice_omniplay_settings 
-			(omniplay_setting_uuid, domain_uuid, omniplay_api_url, omniplay_api_token, omniplay_company_id, auto_sync_enabled, sync_interval_minutes)
-			VALUES 
-			(gen_random_uuid(), :domain_uuid, :omniplay_api_url, :omniplay_api_token, :omniplay_company_id, :auto_sync_enabled, :sync_interval_minutes)";
+	try {
+		if (!empty($settings)) {
+			// Atualizar
+			$sql = "UPDATE v_voice_omniplay_settings SET 
+				omniplay_api_url = :omniplay_api_url,
+				omniplay_api_token = :omniplay_api_token,
+				omniplay_company_id = :omniplay_company_id,
+				auto_sync_enabled = :auto_sync_enabled,
+				sync_interval_minutes = :sync_interval_minutes,
+				updated_at = NOW()
+				WHERE domain_uuid = :domain_uuid";
+		} else {
+			// Inserir
+			$sql = "INSERT INTO v_voice_omniplay_settings 
+				(omniplay_setting_uuid, domain_uuid, omniplay_api_url, omniplay_api_token, omniplay_company_id, auto_sync_enabled, sync_interval_minutes)
+				VALUES 
+				(gen_random_uuid(), :domain_uuid, :omniplay_api_url, :omniplay_api_token, :omniplay_company_id, :auto_sync_enabled, :sync_interval_minutes)";
+		}
+		
+		$stmt = $db->prepare($sql);
+		$stmt->execute([
+			':domain_uuid' => $domain_uuid,
+			':omniplay_api_url' => $omniplay_api_url ?: null,
+			':omniplay_api_token' => $omniplay_api_token ?: null,
+			':omniplay_company_id' => $omniplay_company_id,
+			':auto_sync_enabled' => $auto_sync_enabled,
+			':sync_interval_minutes' => $sync_interval_minutes
+		]);
+		
+		message::add("Configurações salvas com sucesso!", 'positive');
+	} catch (PDOException $e) {
+		error_log("OmniPlay settings save error: " . $e->getMessage());
+		message::add("Erro ao salvar: A tabela de configurações pode não existir. Execute as migrations primeiro.", 'negative');
 	}
 	
-	$stmt = $db->prepare($sql);
-	$stmt->execute([
-		':domain_uuid' => $domain_uuid,
-		':omniplay_api_url' => $omniplay_api_url ?: null,
-		':omniplay_api_token' => $omniplay_api_token ?: null,
-		':omniplay_company_id' => $omniplay_company_id,
-		':auto_sync_enabled' => $auto_sync_enabled,
-		':sync_interval_minutes' => $sync_interval_minutes
-	]);
-	
-	message::add("Configurações salvas com sucesso!", 'positive');
 	header("Location: omniplay_settings.php");
 	exit;
 }
 
 // Ação: Testar conexão
 if ($action === 'test') {
-	$client = new OmniPlayAPIClient($domain_uuid, $db);
-	
-	if (!$client->isConfigured()) {
-		message::add("Configure a URL e o Token primeiro.", 'negative');
-	} else {
-		$result = $client->testConnection();
+	try {
+		$client = new OmniPlayAPIClient($domain_uuid, $db);
 		
-		if ($result) {
-			$company_id = $result['companyId'] ?? null;
-			
-			// ✅ FIX: Auto-preencher company_id após conexão bem-sucedida
-			if ($company_id) {
-				$sql = "UPDATE v_voice_omniplay_settings SET omniplay_company_id = :company_id WHERE domain_uuid = :domain_uuid";
-				$stmt = $db->prepare($sql);
-				$stmt->execute([':company_id' => $company_id, ':domain_uuid' => $domain_uuid]);
-			}
-			
-			message::add("✅ Conexão OK! Empresa ID: " . ($company_id ?? 'N/A') . " (salvo automaticamente)", 'positive');
+		if (!$client->isConfigured()) {
+			message::add("Configure a URL e o Token primeiro.", 'negative');
 		} else {
-			message::add("❌ Falha na conexão: " . $client->getLastError(), 'negative');
+			$result = $client->testConnection();
+			
+			if ($result) {
+				$company_id = $result['companyId'] ?? null;
+				
+				// ✅ FIX: Auto-preencher company_id após conexão bem-sucedida
+				if ($company_id) {
+					try {
+						$sql = "UPDATE v_voice_omniplay_settings SET omniplay_company_id = :company_id WHERE domain_uuid = :domain_uuid";
+						$stmt = $db->prepare($sql);
+						$stmt->execute([':company_id' => $company_id, ':domain_uuid' => $domain_uuid]);
+					} catch (PDOException $e) {
+						error_log("OmniPlay update company_id error: " . $e->getMessage());
+					}
+				}
+				
+				message::add("✅ Conexão OK! Empresa ID: " . ($company_id ?? 'N/A') . " (salvo automaticamente)", 'positive');
+			} else {
+				message::add("❌ Falha na conexão: " . $client->getLastError(), 'negative');
+			}
 		}
+	} catch (Exception $e) {
+		message::add("Erro ao testar conexão: " . $e->getMessage(), 'negative');
 	}
 	
 	header("Location: omniplay_settings.php");
@@ -135,33 +158,45 @@ if ($action === 'test') {
 
 // Ação: Forçar sincronização
 if ($action === 'sync') {
-	$client = new OmniPlayAPIClient($domain_uuid, $db);
-	
-	if (!$client->isConfigured()) {
-		message::add("Configure a URL e o Token primeiro.", 'negative');
-	} else {
-		$data = $client->forceSync();
+	try {
+		$client = new OmniPlayAPIClient($domain_uuid, $db);
 		
-		$queue_count = count($data['queues'] ?? []);
-		$user_count = count($data['users'] ?? []);
-		
-		// ✅ FIX: Verificar se realmente obteve dados ou se houve erro
-		if ($queue_count === 0 && $user_count === 0 && $data['company'] === null) {
-			// Provavelmente houve erro
-			$error = $client->getLastError() ?: 'Nenhum dado retornado';
-			$sql = "UPDATE v_voice_omniplay_settings SET last_sync_error = :error WHERE domain_uuid = :domain_uuid";
-			$stmt = $db->prepare($sql);
-			$stmt->execute([':error' => $error, ':domain_uuid' => $domain_uuid]);
-			
-			message::add("⚠️ Sincronização concluída mas sem dados. Verifique a conexão: {$error}", 'warning');
+		if (!$client->isConfigured()) {
+			message::add("Configure a URL e o Token primeiro.", 'negative');
 		} else {
-			// Atualizar last_sync_at
-			$sql = "UPDATE v_voice_omniplay_settings SET last_sync_at = NOW(), last_sync_error = NULL WHERE domain_uuid = :domain_uuid";
-			$stmt = $db->prepare($sql);
-			$stmt->execute([':domain_uuid' => $domain_uuid]);
+			$data = $client->forceSync();
 			
-			message::add("✅ Sincronização concluída! {$queue_count} filas, {$user_count} usuários.", 'positive');
+			$queue_count = count($data['queues'] ?? []);
+			$user_count = count($data['users'] ?? []);
+			
+			// ✅ FIX: Verificar se realmente obteve dados ou se houve erro
+			if ($queue_count === 0 && $user_count === 0 && $data['company'] === null) {
+				// Provavelmente houve erro
+				$error = $client->getLastError() ?: 'Nenhum dado retornado';
+				try {
+					$sql = "UPDATE v_voice_omniplay_settings SET last_sync_error = :error WHERE domain_uuid = :domain_uuid";
+					$stmt = $db->prepare($sql);
+					$stmt->execute([':error' => $error, ':domain_uuid' => $domain_uuid]);
+				} catch (PDOException $e) {
+					error_log("OmniPlay sync error update failed: " . $e->getMessage());
+				}
+				
+				message::add("⚠️ Sincronização concluída mas sem dados. Verifique a conexão: {$error}", 'warning');
+			} else {
+				// Atualizar last_sync_at
+				try {
+					$sql = "UPDATE v_voice_omniplay_settings SET last_sync_at = NOW(), last_sync_error = NULL WHERE domain_uuid = :domain_uuid";
+					$stmt = $db->prepare($sql);
+					$stmt->execute([':domain_uuid' => $domain_uuid]);
+				} catch (PDOException $e) {
+					error_log("OmniPlay sync timestamp update failed: " . $e->getMessage());
+				}
+				
+				message::add("✅ Sincronização concluída! {$queue_count} filas, {$user_count} usuários.", 'positive');
+			}
 		}
+	} catch (Exception $e) {
+		message::add("Erro na sincronização: " . $e->getMessage(), 'negative');
 	}
 	
 	header("Location: omniplay_settings.php");
@@ -169,14 +204,27 @@ if ($action === 'sync') {
 }
 
 // Buscar dados para exibição
-$client = new OmniPlayAPIClient($domain_uuid, $db);
-$queues = $client->isConfigured() ? $client->getQueues() : [];
-$users = $client->isConfigured() ? $client->getUsers() : [];
+$client = null;
+$queues = [];
+$users = [];
+
+try {
+	$client = new OmniPlayAPIClient($domain_uuid, $db);
+	$queues = $client->isConfigured() ? $client->getQueues() : [];
+	$users = $client->isConfigured() ? $client->getUsers() : [];
+} catch (Exception $e) {
+	error_log("OmniPlay client init for display: " . $e->getMessage());
+}
 
 // Recarregar settings após ações
-$stmt = $db->prepare("SELECT * FROM v_voice_omniplay_settings WHERE domain_uuid = :domain_uuid LIMIT 1");
-$stmt->execute([':domain_uuid' => $domain_uuid]);
-$settings = $stmt->fetch(PDO::FETCH_ASSOC);
+try {
+	$stmt = $db->prepare("SELECT * FROM v_voice_omniplay_settings WHERE domain_uuid = :domain_uuid LIMIT 1");
+	$stmt->execute([':domain_uuid' => $domain_uuid]);
+	$settings = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+} catch (PDOException $e) {
+	// Tabela pode não existir
+	$settings = [];
+}
 
 // ✅ FIX: $current_page DEVE ser definido ANTES de incluir nav_tabs.php
 $current_page = 'omniplay_settings';
@@ -396,7 +444,7 @@ $token_name = $token->create($_SERVER['PHP_SELF']);
 <div class="omniplay-card">
 	<h3>📊 Status da Integração</h3>
 	
-	<?php if ($client->isConfigured()): ?>
+	<?php if ($client && $client->isConfigured()): ?>
 		<p>
 			<span class="omniplay-status connected">✅ Configurado</span>
 			<?php if (!empty($settings['last_sync_at'])): ?>
