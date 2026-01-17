@@ -496,6 +496,41 @@ class RealtimeServer:
                     "call_uuid": call_uuid,
                 })
         
+        # ========================================
+        # ADICIONAR FERRAMENTAS OBRIGATÓRIAS
+        # ========================================
+        # Importar definições de ferramentas
+        from .session import HANDOFF_FUNCTION_DEFINITION, END_CALL_FUNCTION_DEFINITION
+        
+        # Inicializar tools se não existir
+        if not tools:
+            tools = []
+        
+        # Verificar nomes existentes
+        tool_names = []
+        for t in tools:
+            if isinstance(t, dict):
+                # Formato pode ser {"type": "function", "name": ...} ou {"function": {"name": ...}}
+                name = t.get("name") or (t.get("function") or {}).get("name")
+                if name:
+                    tool_names.append(name)
+        
+        # Adicionar request_handoff se não existir
+        if "request_handoff" not in tool_names:
+            tools.append(HANDOFF_FUNCTION_DEFINITION)
+            logger.debug("Added request_handoff tool", extra={"call_uuid": call_uuid})
+        
+        # Adicionar end_call se não existir
+        if "end_call" not in tool_names:
+            tools.append(END_CALL_FUNCTION_DEFINITION)
+            logger.debug("Added end_call tool", extra={"call_uuid": call_uuid})
+        
+        logger.info("Session tools configured", extra={
+            "call_uuid": call_uuid,
+            "tool_count": len(tools),
+            "tool_names": [t.get("name") or (t.get("function") or {}).get("name") for t in tools if isinstance(t, dict)],
+        })
+        
         # Combinar system_prompt base + transfer_context
         final_system_prompt = system_prompt_base
         if transfer_context:

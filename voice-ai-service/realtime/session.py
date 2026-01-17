@@ -38,7 +38,7 @@ from .handlers.transfer_destination_loader import TransferDestination
 logger = logging.getLogger(__name__)
 
 
-# Function call definition para o LLM usar handoff inteligente
+# Function call definitions para o LLM
 HANDOFF_FUNCTION_DEFINITION = {
     "type": "function",
     "name": "request_handoff",
@@ -62,6 +62,26 @@ HANDOFF_FUNCTION_DEFINITION = {
             }
         },
         "required": ["destination"]
+    }
+}
+
+END_CALL_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "end_call",
+    "description": (
+        "Encerra a chamada telefônica. "
+        "Use quando a conversa chegou ao fim, o cliente se despediu, "
+        "ou quando todas as dúvidas foram resolvidas e você já deu tchau."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Motivo do encerramento: 'cliente_despediu', 'atendimento_concluido', 'timeout'"
+            }
+        },
+        "required": []
     }
 }
 
@@ -632,6 +652,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 if self._on_transcript:
                     await self._on_transcript("user", event.transcript)
                 
+                # Check for farewell keyword (user said goodbye)
+                if self._check_farewell_keyword(event.transcript, "user"):
+                    logger.info("User said goodbye, scheduling call end", extra={
+                        "call_uuid": self.call_uuid,
+                        "text": event.transcript[:50],
+                    })
+                    # Aguardar a resposta do assistente antes de encerrar
+                    asyncio.create_task(self._delayed_stop(5.0, "user_farewell"))
+                    return
+                
                 # Check for handoff keyword
                 if self._handoff_handler and not self._handoff_result:
                     self._handoff_handler.increment_turn()
@@ -741,6 +771,45 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # NÃO bloquear o event loop - handoff roda em background
             asyncio.create_task(self._initiate_handoff(reason=f"keyword_match:{keyword}"))
             return True
+        return False
+    
+    # Keywords de despedida para detecção automática
+    FAREWELL_KEYWORDS = [
+        # Português
+        "tchau", "adeus", "até logo", "até mais", "até breve",
+        "até a próxima", "falou", "valeu", "obrigado, tchau",
+        "era isso", "era só isso", "é só isso", "só isso mesmo",
+        "não preciso de mais nada", "tudo certo", "pode desligar",
+        "vou desligar", "vou encerrar", "encerre a ligação",
+        # Inglês
+        "bye", "goodbye", "see you", "take care", "thanks bye",
+    ]
+    
+    def _check_farewell_keyword(self, text: str, source: str) -> bool:
+        """
+        Verifica se o texto contém keyword de despedida.
+        
+        Args:
+            text: Texto para verificar
+            source: "user" ou "assistant"
+        
+        Returns:
+            True se despedida detectada
+        """
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        
+        # Verificar keywords de despedida
+        for keyword in self.FAREWELL_KEYWORDS:
+            if keyword in text_lower:
+                logger.debug(f"Farewell keyword detected: '{keyword}' in {source} text", extra={
+                    "call_uuid": self.call_uuid,
+                    "source": source,
+                })
+                return True
+        
         return False
     
     async def _initiate_handoff(self, reason: str) -> None:
@@ -871,6 +940,45 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         self._metrics.session_ended(self.call_uuid, reason)
         await self._save_conversation(reason)
         
+        # ========================================
+        # ENCERRAR CHAMADA NO FREESWITCH VIA ESL
+        # ========================================
+        # Apenas encerrar via ESL se a sessão está sendo finalizada pela IA
+        # Se o motivo for "hangup" ou "connection_closed", o FreeSWITCH já sabe
+        should_hangup = reason not in ("hangup", "connection_closed", "caller_hangup")
+        
+        if should_hangup:
+            try:
+                from .handlers.esl_client import get_esl_client
+                esl = get_esl_client()
+                
+                # Conectar ao ESL se não estiver conectado
+                if not esl._connected:
+                    await esl.connect()
+                
+                if esl._connected:
+                    # 1. Parar o audio stream primeiro
+                    try:
+                        await esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
+                        logger.debug(f"Audio stream stopped for {self.call_uuid}")
+                    except Exception as e:
+                        logger.debug(f"Could not stop audio stream (may be already stopped): {e}")
+                    
+                    # 2. Encerrar a chamada
+                    success = await esl.uuid_kill(self.call_uuid, "NORMAL_CLEARING")
+                    if success:
+                        logger.info(f"Call terminated via ESL: {self.call_uuid}")
+                    else:
+                        logger.warning(f"Failed to terminate call via ESL: {self.call_uuid}")
+                else:
+                    logger.warning(f"ESL not connected, cannot terminate call: {self.call_uuid}")
+                    
+            except Exception as e:
+                logger.error(f"Error terminating call via ESL: {e}", extra={
+                    "call_uuid": self.call_uuid,
+                    "error": str(e),
+                })
+        
         if self._on_session_end:
             await self._on_session_end(reason)
         
@@ -878,6 +986,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "call_uuid": self.call_uuid,
             "domain_uuid": self.domain_uuid,
             "reason": reason,
+            "hangup_sent": should_hangup,
         })
     
     async def _save_conversation(self, resolution: str) -> None:
