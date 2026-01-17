@@ -150,8 +150,19 @@ class VoiceAIApplication:
         data = self.session.session_data or {}
         
         self._caller_id = data.get("Caller-Caller-ID-Number", "unknown")
-        self._domain_uuid = data.get("variable_domain_uuid")
-        self._secretary_uuid = data.get("variable_secretary_uuid")
+        
+        # ✅ FIX: Suportar múltiplos nomes de variáveis
+        # O dialplan pode usar VOICE_AI_DOMAIN_UUID ou domain_uuid
+        self._domain_uuid = (
+            data.get("variable_VOICE_AI_DOMAIN_UUID") or
+            data.get("variable_domain_uuid") or
+            data.get("variable_voiceai_domain_uuid")
+        )
+        self._secretary_uuid = (
+            data.get("variable_VOICE_AI_SECRETARY_UUID") or
+            data.get("variable_secretary_uuid") or
+            data.get("variable_voiceai_secretary_uuid")
+        )
         
         # Extrair info de mídia para RTP
         self._remote_media_ip = data.get("variable_remote_media_ip")
