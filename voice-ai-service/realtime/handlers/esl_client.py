@@ -958,59 +958,55 @@ class AsyncESLClient:
         self,
         uuid: str,
         text: str,
-        lang: str = "en"
+        voice: str = "kal"
     ) -> bool:
         """
         Fala texto para um canal usando mod_flite (text-to-speech) do FreeSWITCH.
         
-        NOTA: mod_flite é mais confiável que mod_say para TTS.
-        Usa voz robótica mas funciona em qualquer instalação.
-        
-        Fallback: Se flite não funcionar, tenta speak (Cepstral/eSpeak).
+        Usa a aplicação 'speak' que é mais confiável via uuid_broadcast.
         
         Args:
             uuid: UUID do canal
             text: Texto a falar
-            lang: Idioma (não usado pelo flite, mas mantido para compatibilidade)
+            voice: Voz do flite (kal, slt, rms, awb)
         
         Returns:
             True se comando enviado com sucesso
         """
         try:
-            # Escapar caracteres especiais
-            text_escaped = text.replace("'", "").replace('"', "").replace("\n", " ").replace("|", " ")
+            # Escapar caracteres especiais que podem quebrar o comando
+            text_escaped = (
+                text
+                .replace("'", "")
+                .replace('"', "")
+                .replace("\n", " ")
+                .replace("|", " ")
+                .replace("\\", "")
+            )
             
-            # Tentar mod_flite primeiro (mais comum)
-            # Formato: uuid_broadcast <uuid> flite://<text> aleg
+            # Método 1: uuid_broadcast com speak (formato: flite|voice|text)
+            # Este é o formato mais confiável para mod_flite
             result = await self.execute_api(
-                f"uuid_broadcast {uuid} 'flite://{text_escaped}' aleg"
+                f"uuid_broadcast {uuid} speak::flite|{voice}|{text_escaped} aleg"
             )
             
             if "+OK" in result:
-                logger.debug(f"uuid_say (flite) success: {uuid} - {text[:50]}...")
+                logger.info(f"uuid_say (speak::flite) success: {uuid}")
                 return True
             
-            # Fallback: tentar speak (Cepstral/eSpeak)
+            logger.debug(f"speak::flite failed: {result}, trying alternative...")
+            
+            # Método 2: playback com protocolo tts
             result = await self.execute_api(
-                f"uuid_broadcast {uuid} 'speak:{text_escaped}' aleg"
+                f"uuid_broadcast {uuid} 'tts://flite|{voice}|{text_escaped}' aleg"
             )
             
             if "+OK" in result:
-                logger.debug(f"uuid_say (speak) success: {uuid} - {text[:50]}...")
+                logger.info(f"uuid_say (tts://) success: {uuid}")
                 return True
             
-            # Fallback final: tentar say (mod_say)
-            result = await self.execute_api(
-                f"uuid_broadcast {uuid} 'say:en:name:pronounced:{text_escaped}' aleg"
-            )
-            
-            success = "+OK" in result
-            if success:
-                logger.debug(f"uuid_say (say) success: {uuid} - {text[:50]}...")
-            else:
-                logger.warning(f"uuid_say failed all methods: {result}")
-            
-            return success
+            logger.warning(f"uuid_say failed all methods: {result}")
+            return False
             
         except Exception as e:
             logger.error(f"uuid_say error: {e}")
