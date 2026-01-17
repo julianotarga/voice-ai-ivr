@@ -680,6 +680,85 @@ class AsyncESLClient:
             logger.error(f"uuid_kill error: {e}")
             return False
     
+    async def uuid_hold(self, uuid: str, on: bool = True) -> bool:
+        """
+        Coloca ou retira chamada da espera.
+        
+        Args:
+            uuid: UUID da chamada
+            on: True para colocar em espera, False para retirar
+        
+        Returns:
+            True se sucesso
+        """
+        try:
+            if on:
+                result = await self.execute_api(f"uuid_hold {uuid}")
+            else:
+                result = await self.execute_api(f"uuid_hold off {uuid}")
+            
+            success = "+OK" in result
+            if success:
+                logger.info(f"uuid_hold {'on' if on else 'off'}: {uuid}")
+            else:
+                logger.warning(f"uuid_hold failed: {result}")
+            
+            return success
+        except Exception as e:
+            logger.error(f"uuid_hold error: {e}")
+            return False
+    
+    async def uuid_fileman(
+        self,
+        uuid: str,
+        command: str,
+        args: str = ""
+    ) -> bool:
+        """
+        Controla playback de arquivos (pause, resume, seek, etc).
+        
+        Args:
+            uuid: UUID da chamada
+            command: Comando (pause, truncate, restart, seek, speed, volume, etc)
+            args: Argumentos do comando
+        
+        Returns:
+            True se sucesso
+        """
+        try:
+            cmd = f"uuid_fileman {uuid} {command}"
+            if args:
+                cmd += f" {args}"
+            result = await self.execute_api(cmd)
+            return "+OK" in result
+        except Exception as e:
+            logger.error(f"uuid_fileman error: {e}")
+            return False
+    
+    async def uuid_audio(
+        self,
+        uuid: str,
+        action: str,
+        direction: str = "both"
+    ) -> bool:
+        """
+        Controla mute/unmute de áudio.
+        
+        Args:
+            uuid: UUID da chamada
+            action: start ou stop (mute/unmute)
+            direction: read, write, ou both
+        
+        Returns:
+            True se sucesso
+        """
+        try:
+            result = await self.execute_api(f"uuid_audio {uuid} {action} {direction}")
+            return "+OK" in result
+        except Exception as e:
+            logger.error(f"uuid_audio error: {e}")
+            return False
+    
     async def originate(
         self,
         dial_string: str,
