@@ -246,10 +246,16 @@ Adicione as seguintes ações **na ordem exata**:
 |-------|-----|------|------|--------|
 | 1 | action | `set` | `VOICE_AI_SECRETARY_UUID=SEU-UUID-AQUI` | 🔑 Identifica a secretária |
 | 2 | action | `set` | `VOICE_AI_DOMAIN_UUID=${domain_uuid}` | 🏢 Passa o domínio |
-| 3 | action | `answer` | *(vazio)* | 📞 Atende a chamada |
+| 3 | action | `answer` | *(vazio)* | 📞 Atende a chamada (DEVE vir antes do streaming!) |
 | 4 | action | `socket` | `127.0.0.1:8022 async full` | 🔌 Conecta ESL (controle) |
-| 5 | action | `audio_stream` | `ws://127.0.0.1:8085/ws start both` | 🎙️ Inicia stream de áudio |
+| 5 | action | `set` | `api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mixed 16000` | 🎙️ Inicia stream de áudio |
 | 6 | action | `park` | *(vazio)* | ⏸️ Mantém chamada ativa |
+
+> ⚠️ **IMPORTANTE sobre audio_stream:**
+> - O comando correto é `uuid_audio_stream` (não `audio_stream` sozinho)
+> - Deve ser chamado via `api_on_answer` ou `execute_on_answer`
+> - Parâmetros válidos para mix: `mono`, `mixed`, `stereo` (NÃO use `both`!)
+> - Sample rate: `8000` ou `16000` (Hz)
 
 > 💡 **Como obter o UUID da Secretária:** Vá em Voice Secretary → Secretaries, clique para editar, e o UUID está na URL: `/secretary_edit.php?id=UUID-AQUI`
 
@@ -268,24 +274,32 @@ O FusionPBX gera automaticamente este XML:
 ```xml
 <extension name="voice_ai_hybrid_8000">
   <condition field="destination_number" expression="^8000$">
-    <!-- Identificação -->
-    <action application="set" data="VOICE_AI_SECRETARY_UUID=dc923a2f-..."/>
+    <!-- 1. Identificação da secretária e domínio -->
+    <action application="set" data="VOICE_AI_SECRETARY_UUID=dc923a2f-b88a-4a2f-8029-d6e0c06893c5"/>
     <action application="set" data="VOICE_AI_DOMAIN_UUID=${domain_uuid}"/>
     
-    <!-- Atender -->
+    <!-- 2. Atender a chamada ANTES de iniciar streaming -->
     <action application="answer"/>
     
-    <!-- ESL para CONTROLE (transferências, hangup) -->
+    <!-- 3. ESL para CONTROLE (transferências, hangup, hold) -->
     <action application="socket" data="127.0.0.1:8022 async full"/>
     
-    <!-- WebSocket para ÁUDIO -->
-    <action application="audio_stream" data="ws://127.0.0.1:8085/ws start both"/>
+    <!-- 4. WebSocket para ÁUDIO via uuid_audio_stream -->
+    <!-- NOTA: "mixed" = áudio bidirecional, "16000" = sample rate -->
+    <action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mixed 16000"/>
     
-    <!-- Manter ativa -->
+    <!-- 5. Manter chamada ativa enquanto IA processa -->
     <action application="park"/>
   </condition>
 </extension>
 ```
+
+> ⚠️ **Parâmetros do uuid_audio_stream:**
+> - `${uuid}` - UUID da chamada (variável do FreeSWITCH)
+> - `start` - Ação (start/stop)
+> - `ws://127.0.0.1:8085/ws` - URL do WebSocket
+> - `mixed` - Tipo de mix (`mono`, `mixed`, `stereo`)
+> - `16000` - Sample rate em Hz (8000 ou 16000)
 
 ## Vantagens da Arquitetura Híbrida
 

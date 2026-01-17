@@ -1067,8 +1067,8 @@ fs_cli -x "module_exists mod_audio_stream"
 				<tr style="background: #e3f2fd;">
 					<td><strong>5</strong></td>
 					<td>action</td>
-					<td><code>audio_stream</code></td>
-					<td><code>ws://127.0.0.1:8085/ws start both</code></td>
+					<td><code>set</code></td>
+					<td><code style="font-size: 11px;">api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mixed 16000</code></td>
 					<td>🎙️ Inicia streaming de áudio</td>
 				</tr>
 				<tr style="background: #f5f5f5;">
@@ -1147,19 +1147,32 @@ fs_cli -x "show dialplan" | grep voice_ai
     &lt;action application="set" data="VOICE_AI_SECRETARY_UUID=dc923a2f-b88a-4a2f-8029-d6e0c06893c5"/&gt;
     &lt;action application="set" data="VOICE_AI_DOMAIN_UUID=${domain_uuid}"/&gt;
     
-    <span class="comment">&lt;!-- 2. Atender a chamada --&gt;</span>
+    <span class="comment">&lt;!-- 2. Atender a chamada (ANTES do streaming!) --&gt;</span>
     &lt;action application="answer"/&gt;
     
     <span class="comment">&lt;!-- 3. Conectar ESL para CONTROLE (transferências, hangup, etc) --&gt;</span>
     &lt;action application="socket" data="127.0.0.1:8022 async full"/&gt;
     
-    <span class="comment">&lt;!-- 4. Iniciar mod_audio_stream para ÁUDIO (WebSocket) --&gt;</span>
-    &lt;action application="audio_stream" data="ws://127.0.0.1:8085/ws start both"/&gt;
+    <span class="comment">&lt;!-- 4. Iniciar uuid_audio_stream via api_on_answer --&gt;</span>
+    <span class="comment">&lt;!-- Parâmetros: uuid, start, ws-url, mix-type (mono/mixed/stereo), sample-rate --&gt;</span>
+    &lt;action application="set" data="api_on_answer=uuid_audio_stream ${uuid} start ws://127.0.0.1:8085/ws mixed 16000"/&gt;
     
     <span class="comment">&lt;!-- 5. Manter chamada ativa --&gt;</span>
     &lt;action application="park"/&gt;
   &lt;/condition&gt;
 &lt;/extension&gt;
+		</div>
+		
+		<div class="info-box">
+			<h4>📝 Parâmetros do uuid_audio_stream</h4>
+			<table class="config-table">
+				<tr><th>Parâmetro</th><th>Valor</th><th>Descrição</th></tr>
+				<tr><td><code>${uuid}</code></td><td>Variável</td><td>UUID da chamada (automático)</td></tr>
+				<tr><td><code>start</code></td><td>start/stop</td><td>Ação a executar</td></tr>
+				<tr><td><code>ws://...</code></td><td>URL</td><td>Endereço WebSocket do Voice AI</td></tr>
+				<tr><td><code>mixed</code></td><td>mono/mixed/stereo</td><td>Tipo de mix de áudio (NÃO use "both"!)</td></tr>
+				<tr><td><code>16000</code></td><td>8000/16000</td><td>Sample rate em Hz</td></tr>
+			</table>
 		</div>
 		
 		<h4>🔧 Troubleshooting do Dialplan</h4>
