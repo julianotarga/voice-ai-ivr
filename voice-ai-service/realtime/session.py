@@ -234,10 +234,12 @@ class RealtimeSession:
         
         self._started = False
         self._ended = False
+        self._ending_call = False  # True quando detectamos farewell, bloqueia novo áudio
         self._user_speaking = False
         self._assistant_speaking = False
-        self._pending_audio_bytes = 0  # Audio bytes da resposta atual (reset a cada nova resposta)
+        self._pending_audio_bytes = 0  # Audio bytes da resposta ATUAL (reset a cada nova resposta)
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
+        self._farewell_response_started = False  # True quando o áudio de despedida começou
         
         self._transcript: List[TranscriptEntry] = []
         self._current_assistant_text = ""
@@ -571,6 +573,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if not self.is_active or not self._provider:
             return
         
+        # IMPORTANTE: Bloquear áudio do usuário após farewell detectado
+        # para evitar que a IA continue conversando
+        if self._ending_call:
+            return
+        
         self._last_activity = time.time()
         
         if self._resampler and self._resampler.input_resampler.needs_resample:
@@ -683,6 +690,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         elif event.type == ProviderEventType.AUDIO_DELTA:
             self._assistant_speaking = True
+            
+            # Se estamos encerrando e este é o primeiro áudio da resposta de despedida,
+            # resetar o contador para medir apenas o áudio de despedida
+            if self._ending_call and not self._farewell_response_started:
+                self._farewell_response_started = True
+                self._pending_audio_bytes = 0
+                self._response_audio_start_time = time.time()
+                logger.debug("Farewell response audio started, counter reset")
+            
             if event.audio_bytes:
                 logger.info(f"Audio delta received: {len(event.audio_bytes)} bytes", extra={
                     "call_uuid": self.call_uuid,
@@ -729,6 +745,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         "call_uuid": self.call_uuid,
                         "text": event.transcript[:50],
                     })
+                    # Bloquear novo áudio do usuário e preparar para encerrar
+                    self._ending_call = True
+                    self._farewell_response_started = False
+                    # Resetar contador - vamos contar apenas o áudio de despedida
+                    self._pending_audio_bytes = 0
+                    self._response_audio_start_time = time.time()
+                    
                     # Aguardar a resposta do assistente antes de encerrar
                     asyncio.create_task(self._delayed_stop(5.0, "user_farewell"))
                     return
@@ -811,6 +834,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             return {"action": "transfer", "destination": args.get("destination", "")}
         
         elif name == "end_call":
+            self._ending_call = True
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
         
@@ -1025,41 +1049,64 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         IMPORTANTE: Calcula o tempo necessário para o áudio terminar de tocar
         no FreeSWITCH baseado nos bytes enviados e no sample rate.
         
+        Fluxo:
+        1. Espera o primeiro chunk de áudio de despedida chegar
+        2. Espera o assistente terminar de gerar áudio
+        3. Calcula duração do áudio e tempo restante de playback
+        4. Espera o tempo necessário e desliga
+        
         Args:
             delay: Delay mínimo em segundos (usado como fallback)
             reason: Motivo do encerramento
         """
-        # Capturar o momento do farewell
-        farewell_time = time.time()
+        if self._ended:
+            return
         
-        # 1. Esperar o assistente terminar de GERAR áudio (máximo 10s)
-        # _assistant_speaking = False quando recebe TRANSCRIPT_DONE
-        max_wait = 10
-        waited = 0
-        while self._assistant_speaking and waited < max_wait:
-            await asyncio.sleep(0.3)
-            waited += 0.3
+        # 1. Esperar o primeiro chunk de áudio de despedida (máximo 5s)
+        # Isso garante que _pending_audio_bytes e _response_audio_start_time estejam corretos
+        wait_for_response = 0
+        max_wait_response = 5.0
+        while not self._farewell_response_started and wait_for_response < max_wait_response:
+            if self._ended:
+                return
+            await asyncio.sleep(0.1)
+            wait_for_response += 0.1
         
-        if waited > 0:
-            logger.debug(f"Waited {waited:.1f}s for assistant to finish generating audio", extra={
+        if wait_for_response > 0.1:
+            logger.debug(f"Waited {wait_for_response:.1f}s for farewell response to start", extra={
                 "call_uuid": self.call_uuid,
             })
         
-        # 2. Calcular quanto tempo o áudio da resposta atual leva para tocar
+        # 2. Esperar o assistente terminar de GERAR áudio (máximo 10s)
+        # _assistant_speaking = False quando recebe TRANSCRIPT_DONE ou RESPONSE_DONE
+        wait_for_speaking = 0
+        max_wait_speaking = 10.0
+        while self._assistant_speaking and wait_for_speaking < max_wait_speaking:
+            if self._ended:
+                return
+            await asyncio.sleep(0.2)
+            wait_for_speaking += 0.2
+        
+        if wait_for_speaking > 0.1:
+            logger.debug(f"Waited {wait_for_speaking:.1f}s for assistant to finish generating audio", extra={
+                "call_uuid": self.call_uuid,
+            })
+        
+        # 3. Calcular quanto tempo o áudio de despedida leva para tocar
         # PCM 16-bit mono 16kHz = 32000 bytes/s
-        bytes_per_second = self.config.freeswitch_sample_rate * 2  # 16-bit = 2 bytes per sample
+        bytes_per_second = self.config.freeswitch_sample_rate * 2
         audio_duration = self._pending_audio_bytes / bytes_per_second if bytes_per_second > 0 else 0
         
-        # 3. Calcular quanto tempo já passou desde que o áudio começou a ser enviado
+        # 4. Calcular quanto tempo já passou desde que o áudio começou
         if self._response_audio_start_time > 0:
             audio_elapsed = time.time() - self._response_audio_start_time
         else:
-            audio_elapsed = time.time() - farewell_time
+            audio_elapsed = wait_for_response + wait_for_speaking
         
-        # 4. Tempo restante = duração do áudio - tempo já decorrido + buffer
-        remaining = max(0, audio_duration - audio_elapsed) + 1.5
+        # 5. Tempo restante = duração do áudio - tempo já decorrido + buffer de segurança
+        remaining = max(0, audio_duration - audio_elapsed) + 1.0
         
-        # 5. Garantir um mínimo baseado no delay original
+        # 6. Garantir um mínimo (delay / 2) para não desligar muito rápido
         final_wait = max(remaining, delay / 2)
         
         logger.info(f"Playback calculation: {audio_duration:.1f}s audio, "
@@ -1068,10 +1115,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "pending_audio_bytes": self._pending_audio_bytes,
         })
         
-        # 6. Aguardar (máximo 15s para evitar ficar preso)
+        # 7. Aguardar o tempo calculado (máximo 15s para não ficar preso)
         await asyncio.sleep(min(final_wait, 15.0))
         
-        await self.stop(reason)
+        if not self._ended:
+            await self.stop(reason)
     
     async def stop(self, reason: str = "normal") -> None:
         """Encerra a sessão."""

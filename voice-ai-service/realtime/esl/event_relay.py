@@ -534,6 +534,15 @@ class DualModeEventRelay:
             logger.warning(f"[{self._uuid}] Cannot hangup: not connected")
             return False
         
+        # Verificar se a sessão já foi desconectada
+        try:
+            # has_gone_away é True quando o caller já desligou
+            if hasattr(self.session, 'has_gone_away') and self.session.has_gone_away:
+                logger.warning(f"[{self._uuid}] Session already gone, cannot hangup via Outbound")
+                return False
+        except Exception:
+            pass  # Ignorar se não conseguir verificar
+        
         try:
             # Encerrar a chamada usando o método correto do greenswitch
             self.session.hangup(cause)
@@ -541,7 +550,8 @@ class DualModeEventRelay:
             return True
             
         except Exception as e:
-            logger.error(f"[{self._uuid}] Hangup via ESL Outbound failed: {e}")
+            # Se falhar, a sessão provavelmente já foi desconectada
+            logger.warning(f"[{self._uuid}] Hangup via ESL Outbound failed (session may be gone): {e}")
             return False
     
     def execute_api(self, command: str) -> Optional[str]:
