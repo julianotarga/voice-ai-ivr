@@ -264,13 +264,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "instructions": self.config.system_prompt or "",
                 
                 # VAD - Turn Detection (nível superior)
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": self.config.vad_threshold or 0.5,
-                    "prefix_padding_ms": self.config.prefix_padding_ms or 300,
-                    "silence_duration_ms": self.config.silence_duration_ms or 500,
-                    "create_response": True,
-                },
+                # Tipos: "server_vad" (baseado em silêncio) ou "semantic_vad" (mais inteligente)
+                "turn_detection": self._build_vad_config(),
                 
                 # Transcrição do input
                 "input_audio_transcription": {
@@ -286,11 +281,13 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             }
         }
         
-        logger.info(f"Sending session.update (Beta format) - voice={voice}", extra={
+        vad_config = self._build_vad_config()
+        logger.info(f"Sending session.update (Beta format) - voice={voice}, vad={vad_config.get('type')}", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_instructions": bool(self.config.system_prompt),
             "voice": voice,
-            "vad_threshold": self.config.vad_threshold or 0.5,
+            "vad_type": vad_config.get("type"),
+            "vad_eagerness": vad_config.get("eagerness"),
         })
         
         try:
@@ -306,6 +303,44 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             await self.send_text(self.config.first_message)
             # Solicitar resposta do modelo
             await self._ws.send(json.dumps({"type": "response.create"}))
+    
+    def _build_vad_config(self) -> Dict[str, Any]:
+        """
+        Constrói configuração de VAD (Voice Activity Detection).
+        
+        Suporta dois tipos:
+        - server_vad: Baseado em silêncio (threshold, silence_duration_ms)
+        - semantic_vad: Baseado em semântica (eagerness) - MAIS INTELIGENTE
+        
+        semantic_vad entende quando o usuário TERMINOU de falar,
+        não apenas quando fez uma pausa. Melhor para pt-BR e linguagem natural.
+        
+        Ref: https://platform.openai.com/docs/guides/realtime-model-capabilities
+        """
+        vad_type = getattr(self.config, 'vad_type', 'server_vad')
+        
+        if vad_type == "semantic_vad":
+            # semantic_vad: Mais inteligente, entende contexto
+            # eagerness: low (paciente), medium (balanceado), high (rápido)
+            eagerness = getattr(self.config, 'vad_eagerness', 'medium')
+            
+            logger.debug(f"Using semantic_vad with eagerness={eagerness}")
+            
+            return {
+                "type": "semantic_vad",
+                "eagerness": eagerness,
+                "create_response": True,
+            }
+        
+        else:
+            # server_vad: Baseado em silêncio (padrão antigo)
+            return {
+                "type": "server_vad",
+                "threshold": self.config.vad_threshold or 0.5,
+                "prefix_padding_ms": self.config.prefix_padding_ms or 300,
+                "silence_duration_ms": self.config.silence_duration_ms or 500,
+                "create_response": True,
+            }
     
     async def send_audio(self, audio_bytes: bytes) -> None:
         """
