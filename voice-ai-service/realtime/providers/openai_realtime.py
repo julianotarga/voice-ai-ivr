@@ -40,12 +40,28 @@ Server → Client:
 - error: Erros (rate_limit_exceeded, etc.)
 
 === VAD (TURN DETECTION) ===
-API Beta (atual): turn_detection no nível superior
-- type: "server_vad"
-- threshold: 0.5 (0.0-1.0, sensibilidade)
-- prefix_padding_ms: 300 (áudio antes da fala)
-- silence_duration_ms: 200 (silêncio para encerrar turno)
-- create_response: true (auto-responder)
+Dois tipos disponíveis:
+
+1. server_vad (baseado em silêncio):
+   - threshold: 0.5 (0.0-1.0, sensibilidade)
+   - prefix_padding_ms: 300 (áudio antes da fala)
+   - silence_duration_ms: 500 (silêncio para encerrar turno)
+   - create_response: true (auto-responder)
+
+2. semantic_vad (baseado em semântica - RECOMENDADO):
+   - eagerness: "low" | "medium" | "high"
+     - low: Paciente, espera pausas longas
+     - medium: Balanceado (recomendado pt-BR)
+     - high: Responde rápido
+   - create_response: true
+
+3. disabled (push-to-talk):
+   - Não inclui turn_detection no session.update
+   - Requer input_audio_buffer.commit manual
+
+=== DEPRECATION WARNING ===
+A interface Beta (OpenAI-Beta: realtime=v1) será DESCONTINUADA em 27/02/2026.
+Migrar para GA quando disponível. Ref: platform.openai.com/docs/deprecations
 
 === SESSION.UPDATE FORMAT ===
 IMPORTANTE: API Beta usa formato DIFERENTE da documentação GA!
@@ -229,14 +245,20 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         Configura sessão com prompt, voz, VAD, tools.
         
         FORMATO BETA (gpt-4o-realtime-preview):
-        - modalities: ["audio", "text"]
-        - voice: "alloy" (nível superior, não aninhado)
-        - input_audio_format: "pcm16"
-        - output_audio_format: "pcm16"
-        - turn_detection: {...} (nível superior)
-        - instructions: "system prompt"
-        - NÃO TEM session.type!
+        {
+            "type": "session.update",
+            "session": {
+                "modalities": ["audio", "text"],
+                "voice": "alloy",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": {...},
+                "instructions": "system prompt",
+                ...
+            }
+        }
         
+        NOTA: Campos dentro de "session" wrapper, NÃO no nível superior.
         Ref: https://platform.openai.com/docs/api-reference/realtime
         """
         if not self._ws:
@@ -263,10 +285,6 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 # System prompt
                 "instructions": self.config.system_prompt or "",
                 
-                # VAD - Turn Detection (nível superior)
-                # Tipos: "server_vad" (baseado em silêncio) ou "semantic_vad" (mais inteligente)
-                "turn_detection": self._build_vad_config(),
-                
                 # Transcrição do input
                 "input_audio_transcription": {
                     "model": "whisper-1"
@@ -281,13 +299,22 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             }
         }
         
+        # VAD - Turn Detection (nível superior)
+        # Tipos: "server_vad", "semantic_vad" ou None (push-to-talk)
         vad_config = self._build_vad_config()
-        logger.info(f"Sending session.update (Beta format) - voice={voice}, vad={vad_config.get('type')}", extra={
+        if vad_config is not None:
+            session_config["session"]["turn_detection"] = vad_config
+        # Se vad_config é None, não incluímos turn_detection = push-to-talk
+        
+        vad_type = vad_config.get("type") if vad_config else "disabled"
+        vad_eagerness = vad_config.get("eagerness") if vad_config else None
+        
+        logger.info(f"Sending session.update (Beta format) - voice={voice}, vad={vad_type}", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_instructions": bool(self.config.system_prompt),
             "voice": voice,
-            "vad_type": vad_config.get("type"),
-            "vad_eagerness": vad_config.get("eagerness"),
+            "vad_type": vad_type,
+            "vad_eagerness": vad_eagerness,
         })
         
         try:
@@ -315,30 +342,57 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         semantic_vad entende quando o usuário TERMINOU de falar,
         não apenas quando fez uma pausa. Melhor para pt-BR e linguagem natural.
         
+        Parâmetros semantic_vad (conforme docs Jan/2026):
+        - eagerness: "low" | "medium" | "high"
+          - low: Paciente, espera pausas longas antes de responder
+          - medium: Balanceado (recomendado para pt-BR)
+          - high: Responde rápido, pode interromper
+        - create_response: true para responder automaticamente
+        - interrupt_response: true para permitir barge-in
+        
+        Ref: https://platform.openai.com/docs/guides/realtime-transcription
         Ref: https://platform.openai.com/docs/guides/realtime-model-capabilities
         """
         vad_type = getattr(self.config, 'vad_type', 'server_vad')
         
         if vad_type == "semantic_vad":
-            # semantic_vad: Mais inteligente, entende contexto
-            # eagerness: low (paciente), medium (balanceado), high (rápido)
+            # semantic_vad: Mais inteligente, entende contexto semântico
             eagerness = getattr(self.config, 'vad_eagerness', 'medium')
             
-            logger.debug(f"Using semantic_vad with eagerness={eagerness}")
+            # Validar eagerness (deve ser low, medium ou high)
+            valid_eagerness = ["low", "medium", "high"]
+            if eagerness not in valid_eagerness:
+                logger.warning(f"Invalid eagerness '{eagerness}', using 'medium'")
+                eagerness = "medium"
+            
+            logger.info(f"VAD: semantic_vad (eagerness={eagerness})")
             
             return {
                 "type": "semantic_vad",
                 "eagerness": eagerness,
                 "create_response": True,
+                # interrupt_response: permite usuário interromper agente (barge-in)
+                # Importante para experiência natural de conversa
             }
         
+        elif vad_type == "disabled":
+            # Push-to-talk: VAD desabilitado, controle manual
+            logger.info("VAD: disabled (push-to-talk mode)")
+            return None  # Sem turn_detection = push-to-talk
+        
         else:
-            # server_vad: Baseado em silêncio (padrão antigo)
+            # server_vad: Baseado em silêncio (padrão tradicional)
+            threshold = self.config.vad_threshold or 0.5
+            silence_ms = self.config.silence_duration_ms or 500
+            prefix_ms = self.config.prefix_padding_ms or 300
+            
+            logger.info(f"VAD: server_vad (threshold={threshold}, silence={silence_ms}ms)")
+            
             return {
                 "type": "server_vad",
-                "threshold": self.config.vad_threshold or 0.5,
-                "prefix_padding_ms": self.config.prefix_padding_ms or 300,
-                "silence_duration_ms": self.config.silence_duration_ms or 500,
+                "threshold": threshold,
+                "prefix_padding_ms": prefix_ms,
+                "silence_duration_ms": silence_ms,
                 "create_response": True,
             }
     

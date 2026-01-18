@@ -191,31 +191,37 @@ class RealtimeAnnouncementSession:
         """
         Configura a sessão OpenAI Realtime.
         
-        IMPORTANTE: API Beta (gpt-4o-realtime-preview) usa formato diferente!
-        - Campos no nível superior, NÃO aninhados em "session"
+        FORMATO BETA (gpt-4o-realtime-preview):
+        - Campos DENTRO de "session" wrapper
         - Ref: https://platform.openai.com/docs/api-reference/realtime
+        
+        NOTA: Para anúncios curtos, usamos semantic_vad com eagerness=high
+        para responder rapidamente quando o humano aceitar/recusar.
         """
-        # === FORMATO BETA (correto para gpt-4o-realtime-preview) ===
         config = {
             "type": "session.update",
-            # Campos DIRETAMENTE no nível superior, sem "session" wrapper
-            "modalities": ["audio", "text"],
-            "voice": self.voice,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
-                "create_response": True,
-            },
-            "instructions": self.system_prompt,
-            "temperature": 0.7,
-            # Transcrição do input do humano
-            "input_audio_transcription": {
-                "model": "whisper-1"
-            },
+            "session": {
+                "modalities": ["audio", "text"],
+                "voice": self.voice,
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                
+                # semantic_vad para conversa com humano
+                # eagerness=high porque queremos resposta rápida
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "eagerness": "high",
+                    "create_response": True,
+                },
+                
+                "instructions": self.system_prompt,
+                "temperature": 0.7,
+                
+                # Transcrição do input do humano
+                "input_audio_transcription": {
+                    "model": "whisper-1"
+                },
+            }
         }
         
         await self._ws.send(json.dumps(config))
@@ -225,7 +231,7 @@ class RealtimeAnnouncementSession:
             msg = await asyncio.wait_for(self._ws.recv(), timeout=3.0)
             event = json.loads(msg)
             if event.get("type") == "session.updated":
-                logger.info("Session configured for announcement")
+                logger.info("Session configured for announcement (semantic_vad, eagerness=high)")
             elif event.get("type") == "error":
                 error = event.get("error", {})
                 logger.error(f"Session config error: {error}")
