@@ -1295,8 +1295,9 @@ IMPORTANTE:
                 logger.warning(f"Failed to clear playback before MOH: {e}")
             
             # 3. Delay para serialização de comandos ESL
-            # Evita "readuntil() called while another coroutine is already waiting"
-            await asyncio.sleep(0.2)
+            # Estamos simulando atendente humano - não precisa ser rápido
+            # Delay de 0.5s é imperceptível para o usuário e garante estabilidade
+            await asyncio.sleep(0.5)
             
             # 4. Iniciar MOH
             success = await self._esl.uuid_broadcast(
@@ -1351,8 +1352,9 @@ IMPORTANTE:
             finally:
                 self._moh_active = False
         
-        # 2. Pequeno delay para garantir que FreeSWITCH processou
-        await asyncio.sleep(0.1)
+        # 2. Delay para garantir que FreeSWITCH processou
+        # Atendente humano não precisa de latência ultra-baixa
+        await asyncio.sleep(0.3)
         
         # 3. CRÍTICO: Gerenciar audio_stream baseado em _stream_paused
         # Isso garante que o stream é retomado mesmo se MOH falhou ao iniciar
