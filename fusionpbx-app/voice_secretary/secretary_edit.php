@@ -1102,7 +1102,7 @@
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ativar Normalização</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	$input_normalize_enabled = (!isset($data['input_normalize_enabled']) || $data['input_normalize_enabled'] == 'true' || $data['input_normalize_enabled'] === true);
+	$input_normalize_enabled = ($data['input_normalize_enabled'] == 'true' || $data['input_normalize_enabled'] === true);
 	echo "		<input type='checkbox' name='input_normalize_enabled' id='input_normalize_enabled' ".($input_normalize_enabled ? 'checked' : '').">\n";
 	echo "		<label for='input_normalize_enabled'>Habilitar</label>\n";
 	echo "		<br /><span class='vtable-hint'>Aplica ganho limitado antes de enviar o áudio ao provider.</span>\n";
@@ -1152,7 +1152,7 @@
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ativar Fallback</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
-	$silence_fallback_enabled = (!isset($data['silence_fallback_enabled']) || $data['silence_fallback_enabled'] == 'true' || $data['silence_fallback_enabled'] === true);
+	$silence_fallback_enabled = ($data['silence_fallback_enabled'] == 'true' || $data['silence_fallback_enabled'] === true);
 	echo "		<input type='checkbox' name='silence_fallback_enabled' id='silence_fallback_enabled' ".($silence_fallback_enabled ? 'checked' : '').">\n";
 	echo "		<label for='silence_fallback_enabled'>Habilitar</label>\n";
 	echo "	</td>\n";

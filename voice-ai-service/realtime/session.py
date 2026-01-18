@@ -816,6 +816,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             return
         
         self._last_activity = time.time()
+        # Resetar fallback de silêncio ao receber áudio do usuário
+        self._silence_fallback_count = 0
         
         # Bufferizar e enviar em frames fixos (ex: 20ms)
         frame_bytes = int(self.config.freeswitch_sample_rate * 0.02 * 2)  # 20ms PCM16
@@ -1004,6 +1006,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._transcript.append(TranscriptEntry(role="user", text=event.transcript))
                 if self._on_transcript:
                     await self._on_transcript("user", event.transcript)
+                # Resetar fallback de silêncio ao receber transcrição do usuário
+                self._silence_fallback_count = 0
 
                 # Se está no fluxo de callback e cliente quer deixar recado,
                 # marcar estado RECORDING (captura de recado)
