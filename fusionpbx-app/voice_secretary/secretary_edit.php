@@ -76,6 +76,66 @@
 		}
 	}
 
+//defaults recomendados (carregar no UI quando nao houver valor salvo)
+	$defaults = [
+		// Basic
+		'processing_mode' => 'turn_based',
+		'language' => 'pt-BR',
+		'enabled' => 'true',
+		'extension' => '',
+		'idle_timeout_seconds' => 30,
+		'max_duration_seconds' => 600,
+		'max_turns' => 20,
+		// Realtime / VAD
+		'vad_type' => 'semantic_vad',
+		'vad_eagerness' => 'medium',
+		// Guardrails
+		'guardrails_enabled' => 'true',
+		'guardrails_topics' => '',
+		// Transfer / Handoff
+		'transfer_extension' => '200',
+		'transfer_realtime_enabled' => 'false',
+		'transfer_realtime_timeout' => 15,
+		'announcement_tts_provider' => 'elevenlabs',
+		'unbridge_behavior' => 'hangup',
+		'unbridge_resume_message' => '',
+		'handoff_enabled' => 'true',
+		'handoff_keywords' => 'atendente,humano,pessoa,operador',
+		'handoff_timeout' => 30,
+		'handoff_tool_fallback_enabled' => 'false',
+		'handoff_tool_timeout_seconds' => 3,
+		'fallback_ticket_enabled' => 'true',
+		'fallback_action' => 'ticket',
+		'fallback_priority' => 'medium',
+		'fallback_notify_enabled' => 'true',
+		// Audio input normalization
+		'input_normalize_enabled' => 'false',
+		'input_target_rms' => 2000,
+		'input_min_rms' => 300,
+		'input_max_gain' => 3.0,
+		// Call state / silence fallback
+		'call_state_log_enabled' => 'true',
+		'call_state_metrics_enabled' => 'true',
+		'silence_fallback_enabled' => 'false',
+		'silence_fallback_seconds' => 10,
+		'silence_fallback_action' => 'reprompt',
+		'silence_fallback_prompt' => '',
+		'silence_fallback_max_retries' => 2,
+		// Push-to-talk
+		'ptt_rms_threshold' => 0,
+		'ptt_hits' => 2,
+		// Audio config
+		'audio_warmup_chunks' => 15,
+		'audio_warmup_ms' => 400,
+		'audio_adaptive_warmup' => 'true',
+		'jitter_buffer_min' => 100,
+		'jitter_buffer_max' => 300,
+		'jitter_buffer_step' => 40,
+		'stream_buffer_size' => 20,
+	];
+
+	$data = array_merge($defaults, $data ?? []);
+
 //process form submission
 	if ($_SERVER['REQUEST_METHOD'] === 'POST' && count($_POST) > 0) {
 		//validate token
@@ -124,11 +184,16 @@
 			'transfer_realtime_prompt' => str_replace("\r\n", "\n", trim($_POST['transfer_realtime_prompt'] ?? '')),
 			'transfer_realtime_timeout' => intval($_POST['transfer_realtime_timeout'] ?? 15),
 			'announcement_tts_provider' => $_POST['announcement_tts_provider'] ?? 'elevenlabs',
+			'unbridge_behavior' => $_POST['unbridge_behavior'] ?? 'hangup',
+			'unbridge_resume_message' => str_replace("\r\n", "\n", trim($_POST['unbridge_resume_message'] ?? '')),
 			// Input Normalization
 			'input_normalize_enabled' => isset($_POST['input_normalize_enabled']) ? 'true' : 'false',
 			'input_target_rms' => intval($_POST['input_target_rms'] ?? 2000),
 			'input_min_rms' => intval($_POST['input_min_rms'] ?? 300),
 			'input_max_gain' => floatval($_POST['input_max_gain'] ?? 3.0),
+			// Push-to-talk
+			'ptt_rms_threshold' => intval($_POST['ptt_rms_threshold'] ?? 0),
+			'ptt_hits' => intval($_POST['ptt_hits'] ?? 2),
 			// Call State logging/metrics
 			'call_state_log_enabled' => isset($_POST['call_state_log_enabled']) ? 'true' : 'false',
 			'call_state_metrics_enabled' => isset($_POST['call_state_metrics_enabled']) ? 'true' : 'false',
@@ -141,6 +206,8 @@
 			// Handoff OmniPlay settings
 			'handoff_enabled' => isset($_POST['handoff_enabled']) ? 'true' : 'false',
 			'handoff_keywords' => trim($_POST['handoff_keywords'] ?? 'atendente,humano,pessoa,operador'),
+			'handoff_tool_fallback_enabled' => isset($_POST['handoff_tool_fallback_enabled']) ? 'true' : 'false',
+			'handoff_tool_timeout_seconds' => intval($_POST['handoff_tool_timeout_seconds'] ?? 3),
 			'fallback_ticket_enabled' => isset($_POST['fallback_ticket_enabled']) ? 'true' : 'false',
 			'fallback_action' => $_POST['fallback_action'] ?? 'ticket',
 			'handoff_queue_id' => !empty($_POST['handoff_queue_id']) ? intval($_POST['handoff_queue_id']) : null,
@@ -207,11 +274,16 @@
 			$array['voice_secretaries'][0]['transfer_realtime_prompt'] = $form_data['transfer_realtime_prompt'] ?: null;
 			$array['voice_secretaries'][0]['transfer_realtime_timeout'] = $form_data['transfer_realtime_timeout'] ?: 15;
 			$array['voice_secretaries'][0]['announcement_tts_provider'] = $form_data['announcement_tts_provider'] ?: 'elevenlabs';
+			$array['voice_secretaries'][0]['unbridge_behavior'] = $form_data['unbridge_behavior'] ?: 'hangup';
+			$array['voice_secretaries'][0]['unbridge_resume_message'] = $form_data['unbridge_resume_message'] ?: null;
 			// Input Normalization
 			$array['voice_secretaries'][0]['input_normalize_enabled'] = $form_data['input_normalize_enabled'];
 			$array['voice_secretaries'][0]['input_target_rms'] = $form_data['input_target_rms'] ?: 2000;
 			$array['voice_secretaries'][0]['input_min_rms'] = $form_data['input_min_rms'] ?: 300;
 			$array['voice_secretaries'][0]['input_max_gain'] = $form_data['input_max_gain'] ?: 3.0;
+			// Push-to-talk
+			$array['voice_secretaries'][0]['ptt_rms_threshold'] = $form_data['ptt_rms_threshold'] ?: null;
+			$array['voice_secretaries'][0]['ptt_hits'] = $form_data['ptt_hits'] ?: null;
 			// Call State logging/metrics
 			$array['voice_secretaries'][0]['call_state_log_enabled'] = $form_data['call_state_log_enabled'];
 			$array['voice_secretaries'][0]['call_state_metrics_enabled'] = $form_data['call_state_metrics_enabled'];
@@ -224,6 +296,8 @@
 			// Handoff OmniPlay settings
 			$array['voice_secretaries'][0]['handoff_enabled'] = $form_data['handoff_enabled'];
 			$array['voice_secretaries'][0]['handoff_keywords'] = $form_data['handoff_keywords'] ?: null;
+			$array['voice_secretaries'][0]['handoff_tool_fallback_enabled'] = $form_data['handoff_tool_fallback_enabled'];
+			$array['voice_secretaries'][0]['handoff_tool_timeout_seconds'] = $form_data['handoff_tool_timeout_seconds'] ?: 3;
 			$array['voice_secretaries'][0]['fallback_ticket_enabled'] = $form_data['fallback_ticket_enabled'];
 			$array['voice_secretaries'][0]['fallback_action'] = $form_data['fallback_action'] ?: 'ticket';
 			$array['voice_secretaries'][0]['handoff_queue_id'] = $form_data['handoff_queue_id'] ?: null;
@@ -454,6 +528,23 @@
 	echo "			<option value='high' ".($vad_eagerness === 'high' ? 'selected' : '').">⚡ High (Rápido - pode interromper)</option>\n";
 	echo "		</select>\n";
 	echo "		<br /><span class='vtable-hint'>".($text['description-vad_eagerness'] ?? 'Controla quão rápido o agente responde. Low = mais paciente, High = mais rápido.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Push-to-talk tuning (only when VAD disabled)
+	echo "<tr id='ptt_rms_row' class='vad-disabled-option provider-openai provider-gemini' style='display: none;'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>PTT RMS</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='ptt_rms_threshold' min='0' max='5000' value='".intval($data['ptt_rms_threshold'] ?? 0)."' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint'>Limiar de volume para considerar fala (0 = usar padrão).</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr id='ptt_hits_row' class='vad-disabled-option provider-openai provider-gemini' style='display: none;'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>PTT Hits</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='ptt_hits' min='1' max='20' value='".intval($data['ptt_hits'] ?? 2)."' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint'>Frames consecutivos acima do RMS para detectar fala.</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 	
@@ -839,6 +930,30 @@
 	echo "	</td>\n";
 	echo "</tr>\n";
 
+	// Unbridge Behavior
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Comportamento pós-atendente</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$unbridge_behavior = $data['unbridge_behavior'] ?? 'hangup';
+	echo "		<select class='formfld' name='unbridge_behavior' id='unbridge_behavior' onchange='toggleUnbridgeOptions()'>\n";
+	echo "			<option value='hangup' ".($unbridge_behavior === 'hangup' ? 'selected' : '').">Encerrar ligação</option>\n";
+	echo "			<option value='resume' ".($unbridge_behavior === 'resume' ? 'selected' : '').">Retomar com a secretária</option>\n";
+	echo "		</select>\n";
+	echo "		<br /><span class='vtable-hint'>"
+	. "Se o atendente desligar após o bridge, escolha se o bot deve retomar ou encerrar."
+	. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Unbridge Resume Message
+	echo "<tr class='unbridge-option' style='display: none;'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Mensagem ao retomar</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$unbridge_msg = str_replace("\r\n", "\n", str_replace("\r", "", $data['unbridge_resume_message'] ?? ''));
+	echo "		<textarea class='formfld' name='unbridge_resume_message' rows='2' style='width: 100%;' placeholder='A ligação com o atendente foi encerrada. Posso ajudar?'>".escape(trim($unbridge_msg))."</textarea>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
 	echo "<tr>\n";
 	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>".($text['label-presence_check'] ?? 'Check Extension Presence')."</td>\n";
 	echo "	<td class='vtable' align='left'>\n";
@@ -882,6 +997,27 @@
 		. "<b>⚠️ NÃO inclua nomes de departamentos!</b> Use apenas termos genéricos como: <code>atendente, humano, pessoa, operador, recepcionista</code>. "
 		. "Nomes de departamentos (vendas, financeiro, suporte) devem estar nas <b>Regras de Transferência</b>."
 		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Handoff Tool Fallback Enabled
+	echo "<tr class='handoff-option'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Fallback do Tool</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$handoff_tool_fallback_enabled = ($data['handoff_tool_fallback_enabled'] == 'true' || $data['handoff_tool_fallback_enabled'] === true);
+	echo "		<input type='checkbox' name='handoff_tool_fallback_enabled' id='handoff_tool_fallback_enabled' ".($handoff_tool_fallback_enabled ? 'checked' : '').">\n";
+	echo "		<label for='handoff_tool_fallback_enabled'>Habilitar</label>\n";
+	echo "		<br /><span class='vtable-hint'>Se o LLM não chamar <code>request_handoff</code>, inicia transferência automaticamente.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Handoff Tool Timeout
+	echo "<tr class='handoff-option'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Timeout do Tool</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='handoff_tool_timeout_seconds' min='1' max='10' value='".intval($data['handoff_tool_timeout_seconds'] ?? 3)."' style='width: 80px;'>\n";
+	echo "		<span style='margin-left: 5px;'>s</span>\n";
+	echo "		<br /><span class='vtable-hint'>Tempo para esperar o tool antes do fallback automático.</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 
@@ -1335,6 +1471,19 @@ function toggleVadEagerness() {
 		var isVadVisible = vadTypeRow && vadTypeRow.style.display !== 'none';
 		eagerRow.style.display = (isVadVisible && vadType === 'semantic_vad') ? '' : 'none';
 	}
+	
+	togglePttOptions();
+}
+
+function togglePttOptions() {
+	var vadType = document.getElementById('vad_type')?.value || 'semantic_vad';
+	var rows = document.querySelectorAll('.vad-disabled-option');
+	rows.forEach(function(row) {
+		// Only show when VAD is disabled and row is visible by provider
+		var vadTypeRow = document.getElementById('vad_type_row');
+		var isVadVisible = vadTypeRow && vadTypeRow.style.display !== 'none';
+		row.style.display = (isVadVisible && vadType === 'disabled') ? '' : 'none';
+	});
 }
 
 function toggleGuardrailsOptions() {
@@ -1386,12 +1535,20 @@ function toggleFallbackOptions() {
 	});
 }
 
+function toggleUnbridgeOptions() {
+	var behavior = document.getElementById('unbridge_behavior')?.value || 'hangup';
+	document.querySelectorAll('.unbridge-option').forEach(function(row) {
+		row.style.display = (behavior === 'resume') ? '' : 'none';
+	});
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
 	toggleRealtimeProvider();
 	toggleTransferRealtimeOptions();
 	toggleHandoffOptions();
 	toggleFallbackOptions();
+	toggleUnbridgeOptions();
 });
 
 async function loadTtsVoices(silent) {

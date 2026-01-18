@@ -145,8 +145,8 @@ google-genai>=0.3.0
 # ESL Client - "Battle proven FreeSWITCH ESL with Gevent"
 greenswitch>=0.0.9
 gevent>=24.2.1
-# Nota: audioop já está incluído no Python 3.11
-# Para Python 3.13+ usar: audioop-lts>=0.2.1
+# Nota: audioop foi removido - agora usamos numpy para cálculos de áudio
+# numpy já está listado acima (>=1.26.0)
 
 # ============================================
 # DEVELOPMENT

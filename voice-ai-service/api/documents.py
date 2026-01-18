@@ -58,20 +58,47 @@ async def upload_document(request: DocumentUploadRequest) -> DocumentUploadRespo
         )
     
     try:
-        # TODO: Implement document processing
-        # 1. Extract text from file (PDF, DOCX, TXT)
-        # 2. Split into chunks
-        # 3. Generate embeddings
-        # 4. Store in vector database (filtered by domain_uuid)
-        
+        if not request.content and not request.file_path:
+            raise HTTPException(
+                status_code=400,
+                detail="content or file_path is required to upload a document",
+            )
+
+        # TODO: Implement full document processing (chunking + embeddings)
+        # For now, persist metadata and raw content for later processing.
         document_id = uuid4()
-        chunk_count = 0  # TODO: Count actual chunks
-        
+
+        pool = await db.get_pool()
+        await pool.execute(
+            """
+            INSERT INTO v_voice_documents (
+                voice_document_uuid,
+                domain_uuid,
+                voice_secretary_uuid,
+                document_name,
+                document_type,
+                file_path,
+                content,
+                chunk_count,
+                processing_status,
+                is_enabled
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 'pending', true)
+            """,
+            document_id,
+            request.domain_uuid,
+            request.secretary_id,
+            request.document_name,
+            request.document_type,
+            request.file_path,
+            request.content,
+        )
+
         return DocumentUploadResponse(
             document_id=document_id,
             document_name=request.document_name,
-            chunk_count=chunk_count,
-            status="processed",
+            chunk_count=0,
+            status="pending",
         )
         
     except ValueError as e:
@@ -98,11 +125,50 @@ async def list_documents(domain_uuid: UUID):
             detail="domain_uuid is required for multi-tenant isolation",
         )
     
-    # TODO: Query database filtered by domain_uuid
-    return {
-        "documents": [],
-        "total": 0,
-    }
+    try:
+        pool = await db.get_pool()
+        rows = await pool.fetch(
+            """
+            SELECT
+                voice_document_uuid,
+                voice_secretary_uuid,
+                document_name,
+                document_type,
+                file_path,
+                file_size,
+                mime_type,
+                chunk_count,
+                processing_status,
+                is_enabled,
+                insert_date,
+                update_date
+            FROM v_voice_documents
+            WHERE domain_uuid = $1
+            ORDER BY insert_date DESC
+            """,
+            domain_uuid,
+        )
+        documents = [
+            {
+                "document_id": str(row["voice_document_uuid"]),
+                "secretary_id": str(row["voice_secretary_uuid"]) if row["voice_secretary_uuid"] else None,
+                "document_name": row["document_name"],
+                "document_type": row["document_type"],
+                "file_path": row["file_path"],
+                "file_size": row["file_size"],
+                "mime_type": row["mime_type"],
+                "chunk_count": row["chunk_count"],
+                "processing_status": row["processing_status"],
+                "is_enabled": row["is_enabled"],
+                "insert_date": row["insert_date"],
+                "update_date": row["update_date"],
+            }
+            for row in rows
+        ]
+        return {"documents": documents, "total": len(documents)}
+    except Exception as e:
+        logger.error("Failed to list documents", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
 
 
 @router.get("/documents/{document_id}/chunks", response_model=ChunksResponse)
@@ -145,9 +211,9 @@ async def get_document_chunks(
         # First, verify document exists and belongs to domain
         document = await pool.fetchrow(
             """
-            SELECT document_uuid, document_name, processing_status
+            SELECT voice_document_uuid, document_name, processing_status
             FROM v_voice_documents
-            WHERE document_uuid = $1 AND domain_uuid = $2
+            WHERE voice_document_uuid = $1 AND domain_uuid = $2
             """,
             document_id,
             domain_uuid,
@@ -163,13 +229,16 @@ async def get_document_chunks(
         chunks = await pool.fetch(
             """
             SELECT 
-                chunk_uuid,
-                chunk_index,
-                content,
-                token_count
-            FROM v_voice_document_chunks
-            WHERE document_uuid = $1 AND domain_uuid = $2
-            ORDER BY chunk_index
+                c.chunk_uuid,
+                c.chunk_index,
+                c.content,
+                c.token_count
+            FROM v_voice_document_chunks c
+            JOIN v_voice_documents d
+              ON d.voice_document_uuid = c.voice_document_uuid
+            WHERE c.voice_document_uuid = $1
+              AND d.domain_uuid = $2
+            ORDER BY c.chunk_index
             LIMIT $3 OFFSET $4
             """,
             document_id,
@@ -181,8 +250,12 @@ async def get_document_chunks(
         # Get total count
         total = await pool.fetchval(
             """
-            SELECT COUNT(*) FROM v_voice_document_chunks
-            WHERE document_uuid = $1 AND domain_uuid = $2
+            SELECT COUNT(*)
+            FROM v_voice_document_chunks c
+            JOIN v_voice_documents d
+              ON d.voice_document_uuid = c.voice_document_uuid
+            WHERE c.voice_document_uuid = $1
+              AND d.domain_uuid = $2
             """,
             document_id,
             domain_uuid,
@@ -242,7 +315,7 @@ async def delete_document(document_id: UUID, domain_uuid: UUID):
         result = await pool.execute(
             """
             DELETE FROM v_voice_documents
-            WHERE document_uuid = $1 AND domain_uuid = $2
+            WHERE voice_document_uuid = $1 AND domain_uuid = $2
             """,
             document_id,
             domain_uuid,

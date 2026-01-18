@@ -37,6 +37,9 @@ $domain_uuid = $_SESSION['domain_uuid'];
 $action = $_REQUEST['action'] ?? '';
 
 // ✅ FIX: No FusionPBX, a conexão PDO está em $database->db (não $db)
+if (!isset($database) || !is_object($database)) {
+	$database = new database;
+}
 $db = $database->db;
 
 // Buscar configurações atuais
@@ -110,7 +113,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
 			':omniplay_api_url' => $omniplay_api_url ?: null,
 			':omniplay_api_token' => $omniplay_api_token ?: null,
 			':omniplay_company_id' => $omniplay_company_id,
-			':auto_sync_enabled' => $auto_sync_enabled,
+			// PostgreSQL boolean: converter PHP bool para string 't' ou 'f'
+			':auto_sync_enabled' => $auto_sync_enabled ? 't' : 'f',
 			':sync_interval_minutes' => $sync_interval_minutes
 		]);
 		
@@ -250,7 +254,7 @@ if (class_exists('message')) {
 
 // CSRF Token
 $token = new token;
-$token_name = $token->create($_SERVER['PHP_SELF']);
+$token_data = $token->create($_SERVER['PHP_SELF']);
 ?>
 
 <style>
@@ -378,7 +382,7 @@ $token_name = $token->create($_SERVER['PHP_SELF']);
 </div>
 
 <form method="post" action="">
-	<input type="hidden" name="<?php echo $token_name; ?>" value="">
+	<input type="hidden" name="<?php echo $token_data['name']; ?>" value="<?php echo $token_data['hash']; ?>">
 	
 	<div class="omniplay-card">
 		<h3>🔗 Configurações de Conexão</h3>

@@ -37,6 +37,7 @@ class SessionMetrics:
     response_latencies: list = field(default_factory=list)
     playback_underruns: int = 0
     barge_in_count: int = 0
+    reconnect_count: int = 0
     health_score: float = 100.0
     
     @property
@@ -175,6 +176,12 @@ class RealtimeMetrics:
         metrics = self._sessions.get(call_uuid)
         if metrics:
             metrics.barge_in_count += 1
+
+    def record_reconnect(self, call_uuid: str) -> None:
+        """Registra reconexão de sessão (ex: expiração OpenAI 60min)."""
+        metrics = self._sessions.get(call_uuid)
+        if metrics:
+            metrics.reconnect_count += 1
 
     def update_health_score(self, call_uuid: str, score: float) -> None:
         metrics = self._sessions.get(call_uuid)

@@ -436,6 +436,32 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         logger.debug(f"Audio chunk sent to OpenAI: {len(audio_bytes)} bytes", extra={
             "domain_uuid": self.config.domain_uuid,
         })
+
+    async def commit_audio_buffer(self) -> None:
+        """Commit manual do buffer de áudio (necessário quando VAD está desabilitado)."""
+        if not self._ws:
+            raise RuntimeError("Not connected")
+
+        await self._ws.send(json.dumps({
+            "type": "input_audio_buffer.commit"
+        }))
+        logger.debug("Audio buffer committed", extra={
+            "domain_uuid": self.config.domain_uuid,
+        })
+
+    async def request_response(self) -> None:
+        """Solicita resposta do modelo (útil para push-to-talk)."""
+        if not self._ws:
+            raise RuntimeError("Not connected")
+        if not self._response_active:
+            await self._ws.send(json.dumps({"type": "response.create"}))
+            logger.debug("Response requested from OpenAI", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
+        else:
+            logger.debug("Response already active; skipping response.create", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
     
     async def send_text(self, text: str, request_response: bool = True) -> None:
         """
@@ -486,6 +512,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             logger.debug("Interrupt signal sent to OpenAI", extra={
                 "domain_uuid": self.config.domain_uuid,
             })
+            # Otimista: marcar como não ativa para evitar response.create concorrente
+            self._response_active = False
     
     async def send_function_result(
         self,

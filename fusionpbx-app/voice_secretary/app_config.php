@@ -303,6 +303,24 @@ $apps[$x]['db'][1]['fields'][$y]['type'] = "numeric";
 $apps[$x]['db'][1]['fields'][$y]['default'] = "20";
 $y++;
 
+// Unbridge behavior
+$apps[$x]['db'][1]['fields'][$y]['name'] = "unbridge_behavior";
+$apps[$x]['db'][1]['fields'][$y]['type'] = "text";
+$apps[$x]['db'][1]['fields'][$y]['default'] = "hangup";
+$y++;
+$apps[$x]['db'][1]['fields'][$y]['name'] = "unbridge_resume_message";
+$apps[$x]['db'][1]['fields'][$y]['type'] = "text";
+$y++;
+
+// Push-to-talk tuning
+$apps[$x]['db'][1]['fields'][$y]['name'] = "ptt_rms_threshold";
+$apps[$x]['db'][1]['fields'][$y]['type'] = "numeric";
+$y++;
+$apps[$x]['db'][1]['fields'][$y]['name'] = "ptt_hits";
+$apps[$x]['db'][1]['fields'][$y]['type'] = "numeric";
+$apps[$x]['db'][1]['fields'][$y]['default'] = "2";
+$y++;
+
 $apps[$x]['db'][1]['fields'][$y]['name'] = "enabled";
 $apps[$x]['db'][1]['fields'][$y]['type'] = "boolean";
 $apps[$x]['db'][1]['fields'][$y]['default'] = "true";

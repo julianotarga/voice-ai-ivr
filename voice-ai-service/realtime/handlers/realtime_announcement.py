@@ -17,8 +17,10 @@ from typing import Optional
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.server import ServerConnection
 
 from .esl_client import AsyncESLClient
+from ..utils.resampler import Resampler, AudioBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,16 @@ class RealtimeAnnouncementSession:
         # WebSocket URL para receber áudio do FreeSWITCH
         self._audio_ws_server: Optional[asyncio.Server] = None
         self._audio_ws_port: int = 0
+        self._fs_ws: Optional[ServerConnection] = None
+        self._fs_connected = asyncio.Event()
+        self._fs_sender_task: Optional[asyncio.Task] = None
+        self._fs_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
+        self._fs_rawaudio_sent = False
+        
+        # Resamplers: FS 16kHz <-> OpenAI 24kHz
+        self._resampler_in = Resampler(16000, 24000)
+        self._resampler_out = Resampler(24000, 16000)
+        self._fs_audio_buffer = AudioBuffer(warmup_ms=300, sample_rate=16000)
     
     async def run(self, timeout: float = 15.0) -> AnnouncementResult:
         """
@@ -272,25 +284,50 @@ class RealtimeAnnouncementSession:
         - Ou usar FreeSWITCH com WebRTC + SRTP
         """
         try:
-            # Inicializar buffer de áudio para output
+            # Inicializar buffer de áudio para fallback TTS
             self._audio_buffer = bytearray()
             self._human_transcript = ""
             
-            logger.warning(
-                f"Audio stream for B-leg: {self.b_leg_uuid} - SEMI-DUPLEX mode",
+            # 1) Subir WS server local para receber áudio do B-leg
+            host = os.getenv("REALTIME_BLEG_STREAM_HOST", "127.0.0.1")
+            self._audio_ws_server = await websockets.serve(
+                self._handle_fs_ws,
+                host,
+                0,
+                max_size=None,
+            )
+            if not self._audio_ws_server.sockets:
+                raise RuntimeError("Failed to allocate port for B-leg audio WS")
+            
+            self._audio_ws_port = self._audio_ws_server.sockets[0].getsockname()[1]
+            ws_url = f"ws://{host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
+            
+            # 2) Iniciar mod_audio_stream no B-leg
+            cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
+            response = await self.esl.execute_api(cmd)
+            logger.info(
+                "B-leg audio stream started",
                 extra={
-                    "limitation": "Human audio input not streamed to OpenAI",
-                    "workaround": "Using text patterns + timeout for decision",
-                }
+                    "b_leg_uuid": self.b_leg_uuid,
+                    "ws_url": ws_url,
+                    "esl_response": response,
+                },
             )
             
-            # TODO (Fase 2): Implementar stream bidirecional completo
-            # 1. Criar WebSocket server local na porta dinâmica
-            # 2. Conectar mod_audio_stream do B-leg a esse server:
-            #    await self.esl.execute_api(
-            #        f"uuid_audio_stream {self.b_leg_uuid} start ws://localhost:PORT mono 16k"
-            #    )
-            # 3. Fazer bridge de áudio WS <-> OpenAI Realtime
+            # 3) Aguardar conexão do FreeSWITCH
+            try:
+                await asyncio.wait_for(self._fs_connected.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "B-leg audio stream did not connect, fallback to semi-duplex",
+                    extra={"b_leg_uuid": self.b_leg_uuid},
+                )
+                return
+            
+            logger.info(
+                "B-leg audio stream connected (FULL-DUPLEX)",
+                extra={"b_leg_uuid": self.b_leg_uuid},
+            )
             
         except Exception as e:
             logger.error(f"Failed to initialize audio stream: {e}")
@@ -338,7 +375,10 @@ class RealtimeAnnouncementSession:
             audio_b64 = event.get("delta", "")
             if audio_b64:
                 audio_bytes = base64.b64decode(audio_b64)
-                await self._play_audio(audio_bytes)
+                if self._fs_ws:
+                    await self._enqueue_audio_to_freeswitch(audio_bytes)
+                else:
+                    await self._play_audio(audio_bytes)
         
         # Transcrição do HUMANO (input) - IMPORTANTE: é aqui que detectamos aceite/recusa
         elif etype == "conversation.item.input_audio_transcription.completed":
@@ -535,4 +575,116 @@ class RealtimeAnnouncementSession:
                 pass
             self._ws = None
         
+        if self._fs_sender_task:
+            self._fs_sender_task.cancel()
+            self._fs_sender_task = None
+        
+        if self._fs_ws:
+            try:
+                await self._fs_ws.close()
+            except Exception:
+                pass
+            self._fs_ws = None
+        
+        if self._audio_ws_server:
+            self._audio_ws_server.close()
+            try:
+                await self._audio_ws_server.wait_closed()
+            except Exception:
+                pass
+            self._audio_ws_server = None
+        
+        # Opcional: parar stream no B-leg (pode derrubar canal em alguns ambientes)
+        if os.getenv("REALTIME_BLEG_STREAM_STOP", "false").lower() in ("1", "true", "yes"):
+            try:
+                await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
+            except Exception:
+                pass
+        
         logger.debug("Realtime announcement session cleaned up")
+
+    async def _handle_fs_ws(self, websocket: ServerConnection) -> None:
+        """Recebe áudio do FreeSWITCH (B-leg) e envia ao OpenAI."""
+        if self._fs_ws:
+            await websocket.close(1008, "Already connected")
+            return
+        
+        self._fs_ws = websocket
+        self._fs_connected.set()
+        self._fs_rawaudio_sent = False
+        self._fs_sender_task = asyncio.create_task(self._fs_sender_loop())
+        
+        try:
+            async for message in websocket:
+                if isinstance(message, bytes):
+                    await self._handle_fs_audio(message)
+                elif isinstance(message, str):
+                    try:
+                        data = json.loads(message)
+                        if data.get("type") == "metadata":
+                            logger.debug("B-leg metadata received", extra={"b_leg_uuid": self.b_leg_uuid})
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.info(f"B-leg ws closed: {e}")
+        finally:
+            if self._fs_sender_task:
+                self._fs_sender_task.cancel()
+                self._fs_sender_task = None
+
+    async def _handle_fs_audio(self, audio_bytes: bytes) -> None:
+        """Resample 16kHz -> 24kHz e envia ao OpenAI."""
+        if not audio_bytes or not self._ws:
+            return
+        try:
+            audio_24k = self._resampler_in.process(audio_bytes)
+        except Exception:
+            audio_24k = audio_bytes
+        
+        payload = {
+            "type": "input_audio_buffer.append",
+            "audio": base64.b64encode(audio_24k).decode("utf-8"),
+        }
+        try:
+            await self._ws.send(json.dumps(payload))
+        except Exception:
+            pass
+
+    async def _enqueue_audio_to_freeswitch(self, audio_bytes: bytes) -> None:
+        """Enfileira áudio do OpenAI para o FreeSWITCH (24kHz -> 16kHz)."""
+        if not audio_bytes:
+            return
+        try:
+            audio_16k = self._resampler_out.process(audio_bytes)
+        except Exception:
+            audio_16k = audio_bytes
+        
+        audio_16k = self._fs_audio_buffer.add(audio_16k)
+        if not audio_16k:
+            return
+        
+        # Quebrar em chunks de 20ms (640 bytes @16kHz PCM16)
+        chunk_size = 640
+        for i in range(0, len(audio_16k), chunk_size):
+            chunk = audio_16k[i:i + chunk_size]
+            try:
+                await self._fs_audio_queue.put(chunk)
+            except Exception:
+                break
+
+    async def _fs_sender_loop(self) -> None:
+        """Envia áudio para o FreeSWITCH via rawAudio + binário."""
+        if not self._fs_ws:
+            return
+        
+        try:
+            if not self._fs_rawaudio_sent:
+                header = {"type": "rawAudio", "data": {"sampleRate": 16000}}
+                await self._fs_ws.send(json.dumps(header))
+                self._fs_rawaudio_sent = True
+            
+            while self._running and self._fs_ws:
+                chunk = await self._fs_audio_queue.get()
+                await self._fs_ws.send(chunk)
+        except Exception:
+            pass

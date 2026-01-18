@@ -371,6 +371,8 @@ class RealtimeServer:
                     COALESCE(s.handoff_timeout, 30) as handoff_timeout,
                     COALESCE(s.handoff_keywords, 'atendente,humano,pessoa,operador') as handoff_keywords,
                     s.handoff_queue_id,
+                    COALESCE(s.handoff_tool_fallback_enabled, true) as handoff_tool_fallback_enabled,
+                    COALESCE(s.handoff_tool_timeout_seconds, 3) as handoff_tool_timeout_seconds,
                     COALESCE(s.fallback_ticket_enabled, true) as fallback_ticket_enabled,
                     COALESCE(s.presence_check_enabled, true) as presence_check_enabled,
                     s.omniplay_webhook_url,
@@ -397,6 +399,9 @@ class RealtimeServer:
                     -- Call State logging/metrics
                     COALESCE(s.call_state_log_enabled, true) as call_state_log_enabled,
                     COALESCE(s.call_state_metrics_enabled, true) as call_state_metrics_enabled,
+                    -- Unbridge behavior
+                    COALESCE(s.unbridge_behavior, 'hangup') as unbridge_behavior,
+                    s.unbridge_resume_message,
                     -- Silence Fallback
                     COALESCE(s.silence_fallback_enabled, false) as silence_fallback_enabled,
                     COALESCE(s.silence_fallback_seconds, 10) as silence_fallback_seconds,
@@ -411,6 +416,9 @@ class RealtimeServer:
                     s.guardrails_topics,
                     -- Announcement TTS Provider (migration 023)
                     COALESCE(s.announcement_tts_provider, 'elevenlabs') as announcement_tts_provider,
+                    -- Push-to-talk tuning
+                    s.ptt_rms_threshold,
+                    s.ptt_hits,
                     -- Transfer Realtime Mode (migration 022)
                     COALESCE(s.transfer_realtime_enabled, false) as transfer_realtime_enabled,
                     s.transfer_realtime_prompt,
@@ -599,6 +607,8 @@ class RealtimeServer:
             HOLD_CALL_FUNCTION_DEFINITION,
             UNHOLD_CALL_FUNCTION_DEFINITION,
             CHECK_EXTENSION_FUNCTION_DEFINITION,
+            LOOKUP_CUSTOMER_FUNCTION_DEFINITION,
+            CHECK_APPOINTMENT_FUNCTION_DEFINITION,
         )
         
         # Inicializar tools se não existir
@@ -637,6 +647,13 @@ class RealtimeServer:
         
         if "check_extension_available" not in tool_names:
             tools.append(CHECK_EXTENSION_FUNCTION_DEFINITION)
+        
+        # Ferramentas opcionais via webhook OmniPlay
+        if row.get("omniplay_webhook_url"):
+            if "lookup_customer" not in tool_names:
+                tools.append(LOOKUP_CUSTOMER_FUNCTION_DEFINITION)
+            if "check_appointment" not in tool_names:
+                tools.append(CHECK_APPOINTMENT_FUNCTION_DEFINITION)
         
         audio_mode = os.getenv("AUDIO_MODE", "websocket").lower()
         
@@ -694,6 +711,12 @@ class RealtimeServer:
         db_jitter_max = int(row.get("jitter_buffer_max") or 300)
         db_jitter_step = int(row.get("jitter_buffer_step") or 40)
         db_stream_buffer = int(row.get("stream_buffer_size") or 20)  # 20ms default
+        db_ptt_rms = row.get("ptt_rms_threshold")
+        if db_ptt_rms is not None and int(db_ptt_rms) <= 0:
+            db_ptt_rms = None
+        db_ptt_hits = row.get("ptt_hits")
+        if db_ptt_hits is not None and int(db_ptt_hits) <= 0:
+            db_ptt_hits = None
         
         logger.info("Audio config from DB", extra={
             "call_uuid": call_uuid,
@@ -733,6 +756,8 @@ class RealtimeServer:
             handoff_keywords=handoff_keywords,
             handoff_max_ai_turns=int(row.get("max_turns", 20)),
             handoff_queue_id=row.get("handoff_queue_id"),
+            handoff_tool_fallback_enabled=_parse_bool(row.get("handoff_tool_fallback_enabled"), default=True),
+            handoff_tool_timeout_seconds=int(row.get("handoff_tool_timeout_seconds") or 3),
             omniplay_company_id=row.get("omniplay_company_id"),
             # Fallback Configuration (from database)
             fallback_ticket_enabled=_parse_bool(row.get("fallback_ticket_enabled"), default=True),
@@ -769,6 +794,9 @@ class RealtimeServer:
             # Call State logging/metrics
             call_state_log_enabled=_parse_bool(row.get("call_state_log_enabled"), default=True),
             call_state_metrics_enabled=_parse_bool(row.get("call_state_metrics_enabled"), default=True),
+            # Unbridge behavior
+            unbridge_behavior=row.get("unbridge_behavior") or "hangup",
+            unbridge_resume_message=row.get("unbridge_resume_message"),
             # Silence Fallback
             silence_fallback_enabled=_parse_bool(row.get("silence_fallback_enabled"), default=False),
             silence_fallback_seconds=int(row.get("silence_fallback_seconds") or 10),
@@ -787,6 +815,9 @@ class RealtimeServer:
             transfer_realtime_timeout=float(row.get("transfer_realtime_timeout") or 15),
             # Announcement TTS Provider (migration 023)
             announcement_tts_provider=row.get("announcement_tts_provider") or "elevenlabs",
+            # Push-to-talk tuning
+            ptt_rms_threshold=db_ptt_rms,
+            ptt_hits=db_ptt_hits,
         )
         
         logger.debug("Session config created", extra={

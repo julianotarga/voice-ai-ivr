@@ -111,6 +111,30 @@ class PgVectorStore(BaseVectorStore):
             pool: asyncpg pool from database.py
         """
         self.pool = pool
+        self._pgvector_checked = False
+
+    async def _ensure_pgvector_ready(self) -> None:
+        if self._pgvector_checked:
+            return
+        async with self.pool.acquire() as conn:
+            has_ext = await conn.fetchval(
+                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not has_ext:
+                raise RuntimeError("pgvector extension nao instalada (CREATE EXTENSION vector;)")
+            col = await conn.fetchrow(
+                """
+                SELECT data_type, udt_name
+                FROM information_schema.columns
+                WHERE table_name = 'v_voice_document_chunks'
+                  AND column_name = 'embedding'
+                """
+            )
+            if not col or col["udt_name"] != "vector":
+                raise RuntimeError(
+                    "v_voice_document_chunks.embedding precisa ser tipo vector para PgVectorStore"
+                )
+        self._pgvector_checked = True
     
     async def add_embeddings(
         self,
@@ -130,6 +154,8 @@ class PgVectorStore(BaseVectorStore):
         metadata = metadata or [{} for _ in chunks]
         chunk_ids = []
         
+        await self._ensure_pgvector_ready()
+
         async with self.pool.acquire() as conn:
             for i, (chunk, embedding, meta) in enumerate(zip(chunks, embeddings, metadata)):
                 chunk_id = str(uuid.uuid4())
@@ -141,7 +167,7 @@ class PgVectorStore(BaseVectorStore):
                 await conn.execute(
                     """
                     INSERT INTO v_voice_document_chunks
-                    (chunk_uuid, document_uuid, domain_uuid, chunk_index, content, embedding, metadata)
+                    (chunk_uuid, voice_document_uuid, domain_uuid, chunk_index, content, embedding, metadata)
                     VALUES ($1, $2, $3, $4, $5, $6::vector, $7::jsonb)
                     """,
                     chunk_id,
@@ -168,10 +194,12 @@ class PgVectorStore(BaseVectorStore):
         
         embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
         
+        await self._ensure_pgvector_ready()
+
         query = """
             SELECT 
                 chunk_uuid,
-                document_uuid,
+                voice_document_uuid,
                 content,
                 1 - (embedding <=> $1::vector) as similarity,
                 metadata
@@ -182,7 +210,7 @@ class PgVectorStore(BaseVectorStore):
         params = [embedding_str, domain_uuid]
         
         if filter_document_ids:
-            query += " AND document_uuid = ANY($3)"
+            query += " AND voice_document_uuid = ANY($3)"
             params.append(filter_document_ids)
         
         query += " ORDER BY embedding <=> $1::vector LIMIT $" + str(len(params) + 1)
@@ -194,7 +222,7 @@ class PgVectorStore(BaseVectorStore):
         return [
             SearchResult(
                 chunk_id=str(row["chunk_uuid"]),
-                document_id=str(row["document_uuid"]),
+                document_id=str(row["voice_document_uuid"]),
                 content=row["content"],
                 score=float(row["similarity"]),
                 metadata=row["metadata"] or {},
@@ -215,7 +243,7 @@ class PgVectorStore(BaseVectorStore):
             result = await conn.execute(
                 """
                 DELETE FROM v_voice_document_chunks
-                WHERE domain_uuid = $1 AND document_uuid = $2
+                WHERE domain_uuid = $1 AND voice_document_uuid = $2
                 """,
                 domain_uuid,
                 document_id,

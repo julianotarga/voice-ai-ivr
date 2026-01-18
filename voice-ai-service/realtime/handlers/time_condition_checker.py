@@ -392,13 +392,15 @@ class TimeConditionChecker:
                     row["name"]
                 )
                 
+                holidays = await self._load_holidays(conn, time_condition_uuid, timezone)
+                
                 config = TimeConditionConfig(
                     uuid=row["uuid"],
                     name=row["name"],
                     domain_uuid=row["domain_uuid"],
                     timezone=timezone,
                     schedule=schedule,
-                    holidays=[],  # TODO: Carregar de tabela de feriados se existir
+                    holidays=holidays,
                     is_enabled=row["is_enabled"]
                 )
                 
@@ -423,6 +425,68 @@ class TimeConditionChecker:
         except Exception as e:
             logger.error(f"Failed to load time condition: {e}")
             return None
+
+    async def _load_holidays(
+        self,
+        conn: asyncpg.Connection,
+        time_condition_uuid: str,
+        timezone: str
+    ) -> List[datetime]:
+        """
+        Carrega exceções (feriados) da tabela v_time_condition_exceptions.
+        Retorna lista de datetimes (início do dia).
+        """
+        try:
+            table_exists = await conn.fetchval(
+                """
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'v_time_condition_exceptions'
+                LIMIT 1
+                """
+            )
+            if not table_exists:
+                return []
+            
+            rows = await conn.fetch(
+                """
+                SELECT exception_date, exception_type
+                FROM v_time_condition_exceptions
+                WHERE time_condition_uuid = $1::uuid
+                  AND exception_enabled = 'true'
+                """,
+                time_condition_uuid,
+            )
+            
+            holidays: List[datetime] = []
+            tz = None
+            if PYTZ_AVAILABLE and pytz is not None:
+                try:
+                    tz = pytz.timezone(timezone)
+                except Exception:
+                    tz = None
+            
+            for row in rows:
+                if (row.get("exception_type") or "").lower() != "closed":
+                    continue
+                value = row.get("exception_date")
+                if isinstance(value, datetime):
+                    dt = value
+                elif isinstance(value, date):
+                    dt = datetime.combine(value, time(0, 0, 0))
+                else:
+                    try:
+                        dt = datetime.strptime(str(value), "%Y-%m-%d")
+                    except Exception:
+                        continue
+                
+                if tz and dt.tzinfo is None:
+                    dt = tz.localize(dt)
+                holidays.append(dt)
+            
+            return holidays
+        except Exception as e:
+            logger.debug(f"Failed to load holidays: {e}")
+            return []
     
     def _parse_schedule(
         self,

@@ -533,9 +533,12 @@ async def originate_callback(request: OriginateRequest):
         # Dial string para o atendente
         agent_dial = f"user/{request.extension}@{request.domain_uuid}"
         
-        # Dial string para o cliente (via gateway default)
-        # TODO: Configurar gateway correto baseado no domain
-        client_dial = f"sofia/gateway/default/{request.client_number}"
+        # Dial string para o cliente (via gateway configuravel)
+        gateway = (
+            domain_settings.get("default_gateway")
+            or os.getenv("DEFAULT_GATEWAY", "default")
+        )
+        client_dial = f"sofia/gateway/{gateway}/{request.client_number}"
         
         # Comando completo
         # Liga para o atendente primeiro, quando atender faz bridge com cliente

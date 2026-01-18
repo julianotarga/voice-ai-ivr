@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from models.request import ChatRequest
 from models.response import ChatResponse
 from services.provider_manager import provider_manager
+from services.database import db
 from services.llm.base import Message
 
 router = APIRouter()
@@ -61,13 +62,21 @@ async def chat_with_secretary(request: ChatRequest) -> ChatResponse:
         )
     
     try:
-        # TODO: Load secretary config from database based on domain_uuid and secretary_id
-        # For now, use default config
+        secretary_row = await db.get_secretary_config(
+            domain_uuid=request.domain_uuid,
+            secretary_uuid=request.secretary_id,
+        )
+        if not secretary_row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Secretaria nao encontrada ou desabilitada para este dominio",
+            )
+
         secretary_config = {
-            "name": "Ana",
-            "company": "OmniPlay",
-            "personality_prompt": "Seja amigável e prestativa.",
-            "transfer_extension": "200",
+            "name": secretary_row.get("secretary_name") or "Secretaria",
+            "company": secretary_row.get("company_name") or "Empresa",
+            "personality_prompt": secretary_row.get("personality_prompt") or "",
+            "transfer_extension": secretary_row.get("transfer_extension") or "200",
         }
         
         # Get LLM provider from ProviderManager (loads from DB with fallback)

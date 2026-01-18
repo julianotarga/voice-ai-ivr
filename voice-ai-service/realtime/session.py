@@ -10,9 +10,11 @@ Referências:
 import asyncio
 import logging
 import os
-import audioop
 import time
+import aiohttp
 from enum import Enum
+
+import numpy as np
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -148,6 +150,42 @@ CHECK_EXTENSION_FUNCTION_DEFINITION = {
     }
 }
 
+LOOKUP_CUSTOMER_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "lookup_customer",
+    "description": (
+        "Busca informações do cliente (nome, status, histórico) usando CRM/OmniPlay. "
+        "Use quando precisar confirmar dados do cliente."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "phone": {
+                "type": "string",
+                "description": "Telefone do cliente (opcional, padrão caller_id)"
+            }
+        },
+        "required": []
+    }
+}
+
+CHECK_APPOINTMENT_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "check_appointment",
+    "description": (
+        "Verifica compromissos/agendamentos no sistema. "
+        "Use para confirmar datas ou disponibilidade."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "Data ou período (ex: 2026-01-20)"},
+            "customer_name": {"type": "string", "description": "Nome do cliente"}
+        },
+        "required": []
+    }
+}
+
 
 @dataclass
 class TranscriptEntry:
@@ -205,6 +243,9 @@ class RealtimeSessionConfig:
     handoff_max_ai_turns: int = 20
     handoff_queue_id: Optional[int] = None
     omniplay_company_id: Optional[int] = None  # OmniPlay companyId para API
+    # Handoff tool fallback (se LLM não chamar request_handoff)
+    handoff_tool_fallback_enabled: bool = True
+    handoff_tool_timeout_seconds: int = 3
     # Fallback Configuration (quando transferência falha)
     fallback_ticket_enabled: bool = True  # Habilita criação de ticket de fallback
     fallback_action: str = "ticket"  # ticket, callback, voicemail, none
@@ -212,6 +253,9 @@ class RealtimeSessionConfig:
     fallback_priority: str = "medium"  # low, medium, high, urgent
     fallback_notify_enabled: bool = True  # Notificar sobre fallback
     presence_check_enabled: bool = True  # Verificar presença antes de transferir
+    # Unbridge behavior (quando atendente desliga após bridge)
+    unbridge_behavior: str = "hangup"  # hangup | resume
+    unbridge_resume_message: Optional[str] = None
     # Audio Configuration (per-secretary)
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
     audio_warmup_ms: int = 400  # buffer de warmup em ms
@@ -220,6 +264,10 @@ class RealtimeSessionConfig:
     jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
     jitter_buffer_step: int = 40  # FreeSWITCH jitter buffer step (ms)
     stream_buffer_size: int = 20  # mod_audio_stream buffer in MILLISECONDS (not samples!)
+
+    # Push-to-talk (VAD disabled) - ajustes de sensibilidade
+    ptt_rms_threshold: Optional[int] = None
+    ptt_hits: Optional[int] = None
     
     # FASE 1: Intelligent Handoff Configuration
     # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/
@@ -310,6 +358,12 @@ class RealtimeSession:
         self._input_audio_buffer = bytearray()
         self._silence_fallback_count = 0
         self._last_silence_fallback_ts = 0.0
+        self._handoff_fallback_task: Optional[asyncio.Task] = None
+        self._handoff_fallback_destination: Optional[str] = None
+        # Push-to-talk (VAD disabled) local speech detection
+        self._ptt_speaking = False
+        self._ptt_silence_ms = 0
+        self._ptt_voice_hits = 0
         
         self._transcript: List[TranscriptEntry] = []
         self._current_assistant_text = ""
@@ -415,6 +469,49 @@ class RealtimeSession:
             except Exception:
                 pass
 
+    def _cancel_handoff_fallback(self) -> None:
+        if self._handoff_fallback_task and not self._handoff_fallback_task.done():
+            self._handoff_fallback_task.cancel()
+        self._handoff_fallback_task = None
+        self._handoff_fallback_destination = None
+
+    async def _handoff_tool_fallback(self, destination_text: str, reason: str) -> None:
+        """Fallback: se LLM não chamar request_handoff, inicia transferência após timeout."""
+        try:
+            await asyncio.sleep(self.config.handoff_tool_timeout_seconds)
+        except asyncio.CancelledError:
+            return
+        if self._transfer_in_progress or self._ending_call:
+            return
+        if not self._transfer_manager or not self.config.intelligent_handoff_enabled:
+            return
+        # Evitar dupla execução se o tool foi chamado depois
+        if destination_text != self._handoff_fallback_destination:
+            return
+
+        self._set_transfer_in_progress(True, "handoff_tool_fallback")
+        await self._notify_transfer_start()
+        self._handoff_fallback_destination = None
+        try:
+            if self._provider:
+                await self._provider.interrupt()
+        except Exception:
+            pass
+        asyncio.create_task(self._execute_intelligent_handoff(destination_text, reason))
+
+    async def _commit_ptt_audio(self) -> None:
+        """Commit de áudio e request_response quando VAD está desabilitado."""
+        if self._transfer_in_progress or self._ending_call:
+            return
+        if not self._provider:
+            return
+        commit = getattr(self._provider, "commit_audio_buffer", None)
+        request = getattr(self._provider, "request_response", None)
+        if callable(commit):
+            await commit()
+            if callable(request):
+                await request()
+
     def _normalize_pcm16(self, frame: bytes) -> bytes:
         """
         Normaliza áudio PCM16 com ganho limitado.
@@ -427,7 +524,13 @@ class RealtimeSession:
         if not self.config.input_normalize_enabled:
             return frame
 
-        rms = audioop.rms(frame, 2)
+        # Converter PCM16 para numpy array
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+        if len(samples) == 0:
+            return frame
+        
+        # Calcular RMS usando numpy
+        rms = np.sqrt(np.mean(samples ** 2))
         if rms <= 0:
             return frame
 
@@ -442,7 +545,9 @@ class RealtimeSession:
         if gain <= 1.0:
             return frame
 
-        return audioop.mul(frame, 2, gain)
+        # Aplicar ganho e clipar para evitar overflow
+        amplified = np.clip(samples * gain, -32768, 32767).astype(np.int16)
+        return amplified.tobytes()
     
     async def start(self) -> None:
         """Inicia a sessão."""
@@ -785,6 +890,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # e ser interpretado como fala, fazendo o agente gerar respostas sozinho.
         if self._transfer_in_progress:
             return
+        
+        # Em hold, não processar áudio (música de espera / silêncio).
+        if self._on_hold:
+            return
 
         # Barge-in local: se o caller começou a falar enquanto o assistente está
         # falando, interromper e limpar buffer.
@@ -798,7 +907,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # - REALTIME_LOCAL_BARGE_COOLDOWN (default 1.0): cooldown entre interrupções
         if self.config.barge_in_enabled and self._assistant_speaking and audio_bytes:
             try:
-                rms = audioop.rms(audio_bytes, 2)  # PCM16 => width=2
+                # Calcular RMS usando numpy (substituiu audioop deprecated)
+                samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                rms = int(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0
                 rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "1200"))
                 cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "1.0"))
                 required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "15"))
@@ -841,6 +952,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         frame_bytes = int(self.config.freeswitch_sample_rate * 0.02 * 2)  # 20ms PCM16
         if frame_bytes <= 0:
             frame_bytes = 640  # fallback 20ms @ 16kHz
+        frame_ms = int(1000 * (frame_bytes / (self.config.freeswitch_sample_rate * 2)))
+        if frame_ms <= 0:
+            frame_ms = 20
 
         self._input_audio_buffer.extend(audio_bytes)
         while len(self._input_audio_buffer) >= frame_bytes:
@@ -849,6 +963,38 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
 
             # Normalização opcional (ganho limitado)
             frame = self._normalize_pcm16(frame)
+
+            # Push-to-talk (VAD desabilitado): detectar fim de fala localmente
+            if self.config.vad_type == "disabled":
+                try:
+                    # Calcular RMS usando numpy (substituiu audioop deprecated)
+                    ptt_samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+                    rms = int(np.sqrt(np.mean(ptt_samples ** 2))) if len(ptt_samples) > 0 else 0
+                except Exception:
+                    rms = 0
+                ptt_threshold = self.config.ptt_rms_threshold
+                if ptt_threshold is None:
+                    ptt_threshold = int(os.getenv(
+                        "REALTIME_PTT_RMS",
+                        str(self.config.input_min_rms or 300)
+                    ))
+                min_voice_hits = self.config.ptt_hits
+                if min_voice_hits is None:
+                    min_voice_hits = int(os.getenv("REALTIME_PTT_HITS", "2"))
+
+                if rms >= ptt_threshold:
+                    self._ptt_voice_hits += 1
+                    self._ptt_silence_ms = 0
+                    if not self._ptt_speaking and self._ptt_voice_hits >= min_voice_hits:
+                        self._ptt_speaking = True
+                else:
+                    self._ptt_voice_hits = 0
+                    if self._ptt_speaking:
+                        self._ptt_silence_ms += frame_ms
+                        if self._ptt_silence_ms >= self.config.silence_duration_ms:
+                            self._ptt_speaking = False
+                            self._ptt_silence_ms = 0
+                            await self._commit_ptt_audio()
 
             if self._resampler and self._resampler.input_resampler.needs_resample:
                 frame = self._resampler.resample_input(frame)
@@ -867,9 +1013,6 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         - FS_AUDIO_INVERT_PHASE=true (inverte fase: sample *= -1)
         - FS_AUDIO_FORCE_RESAMPLE=24000 (força resample de 24kHz para 16kHz)
         """
-        import os
-        import numpy as np
-        
         if not audio_bytes:
             return
         
@@ -948,6 +1091,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     action = await self._handle_event(event)
                     if action == "fallback":
                         break
+                    if action == "reconnected":
+                        # Reconexão bem-sucedida - sair do for loop para obter novo generator
+                        logger.info("Event loop: reconnected, restarting generator", extra={
+                            "call_uuid": self.call_uuid,
+                        })
+                        break
                     if action == "stop" or self._ended:
                         return
             except asyncio.CancelledError:
@@ -968,7 +1117,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._resampler.reset_output_buffer()
             self._pending_audio_bytes = 0
             self._response_audio_start_time = time.time()
-            logger.debug("Response started, buffer reset for warmup")
+            logger.info("Response started", extra={
+                "call_uuid": self.call_uuid,
+            })
         
         elif event.type == ProviderEventType.AUDIO_DELTA:
             self._assistant_speaking = True
@@ -1069,20 +1220,30 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             and self.config.intelligent_handoff_enabled
                             and not self._transfer_in_progress
                         ):
-                            # Preferir transferência inteligente quando disponível
-                            self._set_transfer_in_progress(True, "max_turns_exceeded")
-                            await self._notify_transfer_start()
-                            try:
-                                if self._provider:
-                                    await self._provider.interrupt()
-                            except Exception:
-                                pass
-                            asyncio.create_task(
-                                self._execute_intelligent_handoff(
-                                    "qualquer atendente",
-                                    "max_turns_exceeded"
+                            if self.config.handoff_tool_fallback_enabled:
+                                self._cancel_handoff_fallback()
+                                self._handoff_fallback_destination = "qualquer atendente"
+                                self._handoff_fallback_task = asyncio.create_task(
+                                    self._handoff_tool_fallback(
+                                        "qualquer atendente",
+                                        "max_turns_exceeded"
+                                    )
                                 )
-                            )
+                            else:
+                                # Preferir transferência inteligente quando disponível
+                                self._set_transfer_in_progress(True, "max_turns_exceeded")
+                                await self._notify_transfer_start()
+                                try:
+                                    if self._provider:
+                                        await self._provider.interrupt()
+                                except Exception:
+                                    pass
+                                asyncio.create_task(
+                                    self._execute_intelligent_handoff(
+                                        "qualquer atendente",
+                                        "max_turns_exceeded"
+                                    )
+                                )
                         else:
                             # NÃO bloquear - handoff legacy em background
                             asyncio.create_task(self._initiate_handoff(reason="max_turns_exceeded"))
@@ -1110,6 +1271,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._assistant_speaking = False
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "response_done")
+            logger.info("Response done", extra={
+                "call_uuid": self.call_uuid,
+            })
             
             if self._speech_start_time:
                 self._metrics.record_latency(self.call_uuid, time.time() - self._speech_start_time)
@@ -1119,6 +1283,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             await self._handle_function_call(event)
         
         elif event.type in (ProviderEventType.ERROR, ProviderEventType.RATE_LIMITED, ProviderEventType.SESSION_ENDED):
+            error_data = event.data.get("error", {})
+            error_code = error_data.get("code", "") if isinstance(error_data, dict) else ""
+            
+            # Reconexão automática para sessão expirando (limite OpenAI de 60min)
+            if error_code == "session_expiring":
+                logger.warning(
+                    "OpenAI session expiring, attempting reconnect",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                if await self._attempt_session_reconnect():
+                    return "reconnected"
+                # Se reconexão falhar, continuar com fallback ou stop
+            
             reason = {
                 ProviderEventType.ERROR: "provider_error",
                 ProviderEventType.RATE_LIMITED: "provider_rate_limited",
@@ -1172,6 +1349,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # FASE 1: Usar TransferManager se disponível
             destination = args.get("destination", "qualquer atendente")
             reason = args.get("reason", "solicitação do cliente")
+            # Cancelar fallback automático quando o tool for chamado
+            self._cancel_handoff_fallback()
             
             if self._transfer_manager and self.config.intelligent_handoff_enabled:
                 # CRÍTICO: Interromper o provider IMEDIATAMENTE para parar de gerar áudio
@@ -1218,7 +1397,41 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             result = await self.check_extension_available(extension)
             return result
         
+        elif name == "lookup_customer":
+            return await self._execute_webhook_function("lookup_customer", args)
+        
+        elif name == "check_appointment":
+            return await self._execute_webhook_function("check_appointment", args)
+        
         return {"error": f"Unknown function: {name}"}
+
+    async def _execute_webhook_function(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Executa function call via webhook OmniPlay (se configurado)."""
+        if not self.config.omniplay_webhook_url:
+            return {"status": "skipped", "reason": "webhook_not_configured"}
+        
+        payload = {
+            "event": f"voice_ai_{name}",
+            "domain_uuid": self.config.domain_uuid,
+            "call_uuid": self.call_uuid,
+            "caller_id": self.caller_id,
+            "secretary_uuid": self.config.secretary_uuid,
+            "args": args or {},
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.config.omniplay_webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {"status": "ok", "data": data}
+                    return {"status": "error", "http_status": resp.status}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
     
     async def _send_text_to_provider(self, text: str) -> None:
         """Envia texto para o provider (TTS)."""
@@ -1241,17 +1454,25 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 and self.config.intelligent_handoff_enabled
                 and not self._transfer_in_progress
             ):
-                self._set_transfer_in_progress(True, f"keyword_match:{keyword}")
-                await self._notify_transfer_start()
-                try:
-                    if self._provider:
-                        await self._provider.interrupt()
-                except Exception:
-                    pass
-                # Usar keyword como destination_text (pode ser genérico)
-                asyncio.create_task(
-                    self._execute_intelligent_handoff(keyword, f"keyword_match:{keyword}")
-                )
+                if self.config.handoff_tool_fallback_enabled:
+                    # Aguardar tool; se não vier, fallback aciona transferência
+                    self._cancel_handoff_fallback()
+                    self._handoff_fallback_destination = keyword
+                    self._handoff_fallback_task = asyncio.create_task(
+                        self._handoff_tool_fallback(keyword, f"keyword_match:{keyword}")
+                    )
+                else:
+                    self._set_transfer_in_progress(True, f"keyword_match:{keyword}")
+                    await self._notify_transfer_start()
+                    try:
+                        if self._provider:
+                            await self._provider.interrupt()
+                    except Exception:
+                        pass
+                    # Usar keyword como destination_text (pode ser genérico)
+                    asyncio.create_task(
+                        self._execute_intelligent_handoff(keyword, f"keyword_match:{keyword}")
+                    )
             else:
                 # NÃO bloquear o event loop - handoff roda em background
                 asyncio.create_task(self._initiate_handoff(reason=f"keyword_match:{keyword}"))
@@ -1394,6 +1615,71 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     await self.stop("max_duration")
                     return
 
+    async def _attempt_session_reconnect(self) -> bool:
+        """
+        Tenta reconectar ao mesmo provider após expiração de sessão (60min OpenAI).
+        
+        A reconexão mantém o estado da conversa (transcript) mas cria nova sessão
+        no backend do provider. Isso evita desconexão abrupta por timeout.
+        
+        Returns:
+            True se reconexão bem-sucedida, False caso contrário
+        """
+        if not self._provider or self._ended:
+            return False
+        
+        logger.info(
+            "Attempting session reconnect before expiry",
+            extra={
+                "call_uuid": self.call_uuid,
+                "provider": self.config.provider_name,
+            }
+        )
+        
+        try:
+            # Desconectar sessão atual
+            await self._provider.disconnect()
+            
+            # Pequeno delay para evitar race condition
+            await asyncio.sleep(0.5)
+            
+            # Reconectar
+            await self._provider.connect()
+            await self._provider.configure()
+            
+            # Resetar estados e buffers
+            self._assistant_speaking = False
+            self._user_speaking = False
+            self._input_audio_buffer.clear()
+            if self._resampler:
+                self._resampler.reset_output_buffer()
+            
+            logger.info(
+                "Session reconnected successfully",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "provider": self.config.provider_name,
+                }
+            )
+            
+            # Registrar métrica
+            try:
+                self._metrics.record_reconnect(self.call_uuid)
+            except Exception:
+                pass
+            
+            return True
+            
+        except Exception as e:
+            logger.error(
+                f"Session reconnect failed: {e}",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "provider": self.config.provider_name,
+                }
+            )
+            return False
+    
     async def _try_fallback(self, reason: str) -> bool:
         """
         Tenta alternar para um provider fallback, se configurado.
@@ -1523,6 +1809,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """Encerra a sessão."""
         if self._ended:
             return
+
+        # Cancelar fallback pendente de handoff
+        self._cancel_handoff_fallback()
         
         # ========================================
         # 0. NOTIFICAR TRANSFER MANAGER SE HOUVER HANGUP
@@ -1746,8 +2035,24 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             )
             self._bridged_to = None
             
-            # TODO: Retomar sessão de IA ou encerrar?
-            # Por ora, encerrar a chamada
+            behavior = (self.config.unbridge_behavior or "hangup").lower()
+            if behavior == "resume":
+                self._set_transfer_in_progress(False, "unbridge_resume")
+                try:
+                    if self._provider and not self._provider.is_connected:
+                        await self._provider.connect()
+                        await self._provider.configure()
+                except Exception:
+                    pass
+                
+                resume_msg = (
+                    self.config.unbridge_resume_message
+                    or "A ligação com o atendente foi encerrada. Posso ajudar em algo mais?"
+                )
+                await self._send_text_to_provider(resume_msg)
+                return
+            
+            # Default: encerrar chamada
             await self.stop("unbridge")
     
     async def handle_hold(self, on_hold: bool) -> None:
@@ -1765,6 +2070,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         # Quando em hold, pausar processamento de áudio
         # (música de espera está tocando para o cliente)
+        if on_hold and self._provider:
+            try:
+                await self._provider.interrupt()
+            except Exception:
+                pass
+            await self._notify_transfer_start()
     
     async def hold_call(self) -> bool:
         """
