@@ -124,6 +124,20 @@
 			'transfer_realtime_prompt' => str_replace("\r\n", "\n", trim($_POST['transfer_realtime_prompt'] ?? '')),
 			'transfer_realtime_timeout' => intval($_POST['transfer_realtime_timeout'] ?? 15),
 			'announcement_tts_provider' => $_POST['announcement_tts_provider'] ?? 'elevenlabs',
+			// Input Normalization
+			'input_normalize_enabled' => isset($_POST['input_normalize_enabled']) ? 'true' : 'false',
+			'input_target_rms' => intval($_POST['input_target_rms'] ?? 2000),
+			'input_min_rms' => intval($_POST['input_min_rms'] ?? 300),
+			'input_max_gain' => floatval($_POST['input_max_gain'] ?? 3.0),
+			// Call State logging/metrics
+			'call_state_log_enabled' => isset($_POST['call_state_log_enabled']) ? 'true' : 'false',
+			'call_state_metrics_enabled' => isset($_POST['call_state_metrics_enabled']) ? 'true' : 'false',
+			// Silence fallback
+			'silence_fallback_enabled' => isset($_POST['silence_fallback_enabled']) ? 'true' : 'false',
+			'silence_fallback_seconds' => intval($_POST['silence_fallback_seconds'] ?? 10),
+			'silence_fallback_action' => $_POST['silence_fallback_action'] ?? 'reprompt',
+			'silence_fallback_prompt' => str_replace("\r\n", "\n", trim($_POST['silence_fallback_prompt'] ?? '')),
+			'silence_fallback_max_retries' => intval($_POST['silence_fallback_max_retries'] ?? 2),
 			// Handoff OmniPlay settings
 			'handoff_enabled' => isset($_POST['handoff_enabled']) ? 'true' : 'false',
 			'handoff_keywords' => trim($_POST['handoff_keywords'] ?? 'atendente,humano,pessoa,operador'),
@@ -193,6 +207,20 @@
 			$array['voice_secretaries'][0]['transfer_realtime_prompt'] = $form_data['transfer_realtime_prompt'] ?: null;
 			$array['voice_secretaries'][0]['transfer_realtime_timeout'] = $form_data['transfer_realtime_timeout'] ?: 15;
 			$array['voice_secretaries'][0]['announcement_tts_provider'] = $form_data['announcement_tts_provider'] ?: 'elevenlabs';
+			// Input Normalization
+			$array['voice_secretaries'][0]['input_normalize_enabled'] = $form_data['input_normalize_enabled'];
+			$array['voice_secretaries'][0]['input_target_rms'] = $form_data['input_target_rms'] ?: 2000;
+			$array['voice_secretaries'][0]['input_min_rms'] = $form_data['input_min_rms'] ?: 300;
+			$array['voice_secretaries'][0]['input_max_gain'] = $form_data['input_max_gain'] ?: 3.0;
+			// Call State logging/metrics
+			$array['voice_secretaries'][0]['call_state_log_enabled'] = $form_data['call_state_log_enabled'];
+			$array['voice_secretaries'][0]['call_state_metrics_enabled'] = $form_data['call_state_metrics_enabled'];
+			// Silence fallback
+			$array['voice_secretaries'][0]['silence_fallback_enabled'] = $form_data['silence_fallback_enabled'];
+			$array['voice_secretaries'][0]['silence_fallback_seconds'] = $form_data['silence_fallback_seconds'] ?: 10;
+			$array['voice_secretaries'][0]['silence_fallback_action'] = $form_data['silence_fallback_action'] ?: 'reprompt';
+			$array['voice_secretaries'][0]['silence_fallback_prompt'] = $form_data['silence_fallback_prompt'] ?: null;
+			$array['voice_secretaries'][0]['silence_fallback_max_retries'] = $form_data['silence_fallback_max_retries'] ?: 2;
 			// Handoff OmniPlay settings
 			$array['voice_secretaries'][0]['handoff_enabled'] = $form_data['handoff_enabled'];
 			$array['voice_secretaries'][0]['handoff_keywords'] = $form_data['handoff_keywords'] ?: null;
@@ -1055,6 +1083,148 @@
 	echo "		<input class='formfld' type='number' name='stream_buffer_size' min='20' max='100' step='20' value='".intval($data['stream_buffer_size'] ?? 20)."' style='width: 80px;'>\n";
 	echo "		<span style='margin-left: 5px;'>ms</span>\n";
 	echo "		<br /><span class='vtable-hint'>".($text['description-stream_buffer'] ?? 'mod_audio_stream buffer size in MILLISECONDS. 20ms = default (recommended). Higher = more stable but higher latency.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// =============================
+	// Input Normalization Section
+	// =============================
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>🎚️ Normalização de Áudio (Input)</b>\n";
+	echo "		<span style='font-size: 0.85em; color: #666; margin-left: 10px;'>"
+		. "Ganho limitado antes de enviar para o Realtime"
+		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Input Normalize Enabled
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ativar Normalização</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$input_normalize_enabled = (!isset($data['input_normalize_enabled']) || $data['input_normalize_enabled'] == 'true' || $data['input_normalize_enabled'] === true);
+	echo "		<input type='checkbox' name='input_normalize_enabled' id='input_normalize_enabled' ".($input_normalize_enabled ? 'checked' : '').">\n";
+	echo "		<label for='input_normalize_enabled'>Habilitar</label>\n";
+	echo "		<br /><span class='vtable-hint'>Aplica ganho limitado antes de enviar o áudio ao provider.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Input Target RMS
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Target RMS</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='input_target_rms' min='500' max='6000' value='".intval($data['input_target_rms'] ?? 2000)."' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint'>RMS alvo para normalização (ex: 2000).</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Input Min RMS
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>RMS Mínimo</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='input_min_rms' min='0' max='3000' value='".intval($data['input_min_rms'] ?? 300)."' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint'>Abaixo disso, não aplica normalização.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Input Max Gain
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ganho Máximo</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='input_max_gain' min='1' max='10' step='0.1' value='".floatval($data['input_max_gain'] ?? 3.0)."' style='width: 80px;'>\n";
+	echo "		<br /><span class='vtable-hint'>Limite de ganho para evitar distorção.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// =============================
+	// Silence Fallback Section
+	// =============================
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>⏱️ Fallback de Silêncio</b>\n";
+	echo "		<span style='font-size: 0.85em; color: #666; margin-left: 10px;'>"
+		. "Reage a silêncio prolongado no state machine"
+		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Silence Fallback Enabled
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ativar Fallback</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$silence_fallback_enabled = (!isset($data['silence_fallback_enabled']) || $data['silence_fallback_enabled'] == 'true' || $data['silence_fallback_enabled'] === true);
+	echo "		<input type='checkbox' name='silence_fallback_enabled' id='silence_fallback_enabled' ".($silence_fallback_enabled ? 'checked' : '').">\n";
+	echo "		<label for='silence_fallback_enabled'>Habilitar</label>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Silence Fallback Seconds
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Tempo de Silêncio</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='silence_fallback_seconds' min='3' max='120' value='".intval($data['silence_fallback_seconds'] ?? 10)."' style='width: 80px;'>\n";
+	echo "		<span style='margin-left: 5px;'>segundos</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Silence Fallback Action
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Ação</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$sf_action = $data['silence_fallback_action'] ?? 'reprompt';
+	echo "		<select class='formfld' name='silence_fallback_action'>\n";
+	echo "			<option value='reprompt' ".($sf_action === 'reprompt' ? 'selected' : '').">Reprompt</option>\n";
+	echo "			<option value='hangup' ".($sf_action === 'hangup' ? 'selected' : '').">Encerrar</option>\n";
+	echo "		</select>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Silence Fallback Prompt
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Mensagem</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$sf_prompt = str_replace("\r\n", "\n", str_replace("\r", "", $data['silence_fallback_prompt'] ?? ''));
+	echo "		<textarea class='formfld' name='silence_fallback_prompt' rows='2' style='width: 100%;' placeholder='Você ainda está aí?'>".escape(trim($sf_prompt))."</textarea>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Silence Fallback Max Retries
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Máx. Tentativas</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<input class='formfld' type='number' name='silence_fallback_max_retries' min='0' max='10' value='".intval($data['silence_fallback_max_retries'] ?? 2)."' style='width: 80px;'>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// =============================
+	// Call State Section
+	// =============================
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #f8f9fa; border-bottom: 1px solid #dee2e6;'>\n";
+	echo "		<b>🧭 Call State</b>\n";
+	echo "		<span style='font-size: 0.85em; color: #666; margin-left: 10px;'>"
+		. "Logs e métricas do state machine"
+		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Call State Log Enabled
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Logs</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$call_state_log_enabled = (!isset($data['call_state_log_enabled']) || $data['call_state_log_enabled'] == 'true' || $data['call_state_log_enabled'] === true);
+	echo "		<input type='checkbox' name='call_state_log_enabled' id='call_state_log_enabled' ".($call_state_log_enabled ? 'checked' : '').">\n";
+	echo "		<label for='call_state_log_enabled'>Habilitar logs</label>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Call State Metrics Enabled
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Métricas</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$call_state_metrics_enabled = (!isset($data['call_state_metrics_enabled']) || $data['call_state_metrics_enabled'] == 'true' || $data['call_state_metrics_enabled'] === true);
+	echo "		<input type='checkbox' name='call_state_metrics_enabled' id='call_state_metrics_enabled' ".($call_state_metrics_enabled ? 'checked' : '').">\n";
+	echo "		<label for='call_state_metrics_enabled'>Habilitar métricas</label>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

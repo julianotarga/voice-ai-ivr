@@ -241,6 +241,23 @@ class RealtimeSessionConfig:
     # ANNOUNCEMENT TTS PROVIDER: Provider para gerar áudio de anúncio
     # 'elevenlabs' (melhor qualidade) ou 'openai' (mais barato)
     announcement_tts_provider: str = "elevenlabs"
+
+    # Input Audio Normalization (opcional)
+    input_normalize_enabled: bool = False
+    input_target_rms: int = 2000
+    input_min_rms: int = 300
+    input_max_gain: float = 3.0
+
+    # Call State logging/metrics
+    call_state_log_enabled: bool = True
+    call_state_metrics_enabled: bool = True
+
+    # Silence Fallback (state machine)
+    silence_fallback_enabled: bool = False
+    silence_fallback_seconds: int = 10
+    silence_fallback_action: str = "reprompt"  # reprompt | hangup
+    silence_fallback_prompt: Optional[str] = None
+    silence_fallback_max_retries: int = 2
     
     # Business Hours (Time Condition)
     # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
@@ -291,6 +308,8 @@ class RealtimeSession:
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
         self._farewell_response_started = False  # True quando o áudio de despedida começou
         self._input_audio_buffer = bytearray()
+        self._silence_fallback_count = 0
+        self._last_silence_fallback_ts = 0.0
         
         self._transcript: List[TranscriptEntry] = []
         self._current_assistant_text = ""
@@ -367,12 +386,18 @@ class RealtimeSession:
             return
         prev = self._call_state
         self._call_state = state
-        logger.debug("Call state changed", extra={
-            "call_uuid": self.call_uuid,
-            "from": prev.value,
-            "to": state.value,
-            "reason": reason,
-        })
+        if self.config.call_state_log_enabled:
+            logger.debug("Call state changed", extra={
+                "call_uuid": self.call_uuid,
+                "from": prev.value,
+                "to": state.value,
+                "reason": reason,
+            })
+        if self.config.call_state_metrics_enabled:
+            try:
+                self._metrics.record_call_state(self.call_uuid, prev.value, state.value)
+            except Exception:
+                pass
 
     def _set_transfer_in_progress(self, in_progress: bool, reason: str = "") -> None:
         """Atualiza flag de transferência e sincroniza estado da chamada."""
@@ -391,16 +416,16 @@ class RealtimeSession:
         if not frame:
             return frame
 
-        if os.getenv("REALTIME_INPUT_NORMALIZE", "false").lower() not in ("1", "true", "yes"):
+        if not self.config.input_normalize_enabled:
             return frame
 
         rms = audioop.rms(frame, 2)
         if rms <= 0:
             return frame
 
-        target_rms = int(os.getenv("REALTIME_INPUT_TARGET_RMS", "2000"))
-        min_rms = int(os.getenv("REALTIME_INPUT_MIN_RMS", "300"))
-        max_gain = float(os.getenv("REALTIME_INPUT_MAX_GAIN", "3.0"))
+        target_rms = int(self.config.input_target_rms or 2000)
+        min_rms = int(self.config.input_min_rms or 300)
+        max_gain = float(self.config.input_max_gain or 3.0)
 
         if rms < min_rms:
             return frame
@@ -418,6 +443,17 @@ class RealtimeSession:
         
         self._started_at = datetime.now()
         self._started = True
+        # Registrar estado inicial (LISTENING)
+        if self.config.call_state_log_enabled:
+            logger.debug("Call state initial", extra={
+                "call_uuid": self.call_uuid,
+                "state": self._call_state.value,
+            })
+        if self.config.call_state_metrics_enabled:
+            try:
+                self._metrics.record_call_state(self.call_uuid, "init", self._call_state.value)
+            except Exception:
+                pass
         
         self._metrics.session_started(
             domain_uuid=self.domain_uuid,
@@ -968,6 +1004,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._transcript.append(TranscriptEntry(role="user", text=event.transcript))
                 if self._on_transcript:
                     await self._on_transcript("user", event.transcript)
+
+                # Se está no fluxo de callback e cliente quer deixar recado,
+                # marcar estado RECORDING (captura de recado)
+                if self._callback_handler:
+                    try:
+                        from .handlers.callback_handler import ResponseAnalyzer
+                        if ResponseAnalyzer.wants_message(event.transcript):
+                            self._set_call_state(CallState.RECORDING, "user_wants_message")
+                    except Exception:
+                        pass
                 
                 # Check for farewell keyword (user said goodbye)
                 if self._check_farewell_keyword(event.transcript, "user"):
@@ -1054,11 +1100,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "function": function_name,
         })
         
+        if function_name == "leave_message":
+            # Estado RECORDING enquanto registra recado
+            self._set_call_state(CallState.RECORDING, "leave_message")
+
         if self._on_function_call:
             result = await self._on_function_call(function_name, function_args)
         else:
             result = await self._execute_function(function_name, function_args)
         
+        if function_name == "leave_message":
+            # Retorna ao estado listening após registrar recado
+            self._set_call_state(CallState.LISTENING, "leave_message_done")
+
         if self._provider:
             await self._provider.send_function_result(function_name, result, call_id)
     
@@ -1244,6 +1298,32 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             await asyncio.sleep(5)
             
             idle_time = time.time() - self._last_activity
+            # Fallback de silêncio (state machine)
+            if (
+                self.config.silence_fallback_enabled
+                and not self._transfer_in_progress
+                and not self._ending_call
+                and self._call_state == CallState.LISTENING
+                and idle_time > self.config.silence_fallback_seconds
+            ):
+                if self._silence_fallback_count >= self.config.silence_fallback_max_retries:
+                    await self.stop("silence_fallback_max_retries")
+                    return
+
+                self._silence_fallback_count += 1
+                self._last_silence_fallback_ts = time.time()
+
+                action = (self.config.silence_fallback_action or "reprompt").lower()
+                if action == "hangup":
+                    await self.stop("silence_fallback_hangup")
+                    return
+
+                # Default: reprompt
+                prompt = self.config.silence_fallback_prompt or "Você ainda está aí?"
+                await self._send_text_to_provider(prompt)
+                # Evitar disparos consecutivos imediatos
+                self._last_activity = time.time()
+
             if idle_time > self.config.idle_timeout_seconds:
                 await self.stop("idle_timeout")
                 return

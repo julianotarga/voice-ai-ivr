@@ -389,6 +389,20 @@ class RealtimeServer:
                     -- Call Timeouts
                     COALESCE(s.idle_timeout_seconds, 30) as idle_timeout_seconds,
                     COALESCE(s.max_duration_seconds, 600) as max_duration_seconds,
+                    -- Input Normalization
+                    COALESCE(s.input_normalize_enabled, false) as input_normalize_enabled,
+                    COALESCE(s.input_target_rms, 2000) as input_target_rms,
+                    COALESCE(s.input_min_rms, 300) as input_min_rms,
+                    COALESCE(s.input_max_gain, 3.0) as input_max_gain,
+                    -- Call State logging/metrics
+                    COALESCE(s.call_state_log_enabled, true) as call_state_log_enabled,
+                    COALESCE(s.call_state_metrics_enabled, true) as call_state_metrics_enabled,
+                    -- Silence Fallback
+                    COALESCE(s.silence_fallback_enabled, false) as silence_fallback_enabled,
+                    COALESCE(s.silence_fallback_seconds, 10) as silence_fallback_seconds,
+                    COALESCE(s.silence_fallback_action, 'reprompt') as silence_fallback_action,
+                    s.silence_fallback_prompt,
+                    COALESCE(s.silence_fallback_max_retries, 2) as silence_fallback_max_retries,
                     -- VAD Configuration (migration 023)
                     COALESCE(s.vad_type, 'semantic_vad') as vad_type,
                     COALESCE(s.vad_eagerness, 'medium') as vad_eagerness,
@@ -747,6 +761,20 @@ class RealtimeServer:
             # Call Timeouts (from database)
             idle_timeout_seconds=int(row.get("idle_timeout_seconds") or 30),
             max_duration_seconds=int(row.get("max_duration_seconds") or 600),
+            # Input Normalization
+            input_normalize_enabled=_parse_bool(row.get("input_normalize_enabled"), default=False),
+            input_target_rms=int(row.get("input_target_rms") or 2000),
+            input_min_rms=int(row.get("input_min_rms") or 300),
+            input_max_gain=float(row.get("input_max_gain") or 3.0),
+            # Call State logging/metrics
+            call_state_log_enabled=_parse_bool(row.get("call_state_log_enabled"), default=True),
+            call_state_metrics_enabled=_parse_bool(row.get("call_state_metrics_enabled"), default=True),
+            # Silence Fallback
+            silence_fallback_enabled=_parse_bool(row.get("silence_fallback_enabled"), default=False),
+            silence_fallback_seconds=int(row.get("silence_fallback_seconds") or 10),
+            silence_fallback_action=row.get("silence_fallback_action") or "reprompt",
+            silence_fallback_prompt=row.get("silence_fallback_prompt"),
+            silence_fallback_max_retries=int(row.get("silence_fallback_max_retries") or 2),
             # VAD Configuration (migration 023)
             vad_type=row.get("vad_type") or "semantic_vad",
             vad_eagerness=row.get("vad_eagerness") or "medium",

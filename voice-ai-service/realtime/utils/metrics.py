@@ -66,6 +66,13 @@ class RealtimeMetrics:
             ['domain_uuid', 'provider'], buckets=[0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 2.0])
         self.active_sessions = Gauge('voice_ai_realtime_active_sessions', 'Active sessions', ['domain_uuid', 'provider'])
         self.health_score = Gauge('voice_ai_realtime_health_score', 'Realtime health score (0-100)', ['domain_uuid', 'provider'])
+
+        # Call State transitions
+        self.call_state_transitions = Counter(
+            'voice_ai_realtime_call_state_transitions_total',
+            'Call state transitions',
+            ['domain_uuid', 'from_state', 'to_state']
+        )
         
         # FASE 6: Métricas de Transfer/Handoff
         self.transfers_total = Counter(
@@ -180,6 +187,26 @@ class RealtimeMetrics:
         metrics = self._sessions.get(call_uuid)
         if metrics:
             metrics.provider = provider
+
+    def record_call_state(self, call_uuid: str, from_state: str, to_state: str) -> None:
+        metrics = self._sessions.get(call_uuid)
+        if not metrics:
+            return
+        if PROMETHEUS_AVAILABLE:
+            self.call_state_transitions.labels(
+                domain_uuid=metrics.domain_uuid,
+                from_state=from_state,
+                to_state=to_state
+            ).inc()
+        logger.debug(
+            "Call state metric recorded",
+            extra={
+                "call_uuid": call_uuid,
+                "domain_uuid": metrics.domain_uuid,
+                "from": from_state,
+                "to": to_state,
+            }
+        )
 
     def get_session_metrics(self, call_uuid: str) -> Optional[SessionMetrics]:
         return self._sessions.get(call_uuid)
