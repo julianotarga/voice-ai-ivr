@@ -243,6 +243,7 @@ class TransferManager:
         on_transfer_complete: Optional[Callable[[TransferResult], Any]] = None,
         domain_settings: Optional[Dict[str, Any]] = None,
         voice_id: Optional[str] = None,
+        announcement_tts_provider: Optional[str] = None,
     ):
         """
         Args:
@@ -256,12 +257,14 @@ class TransferManager:
             on_transfer_complete: Callback quando transferência completar
             domain_settings: Configurações do domínio (lidas de v_voice_secretary_settings)
             voice_id: ID da voz ElevenLabs para anúncios
+            announcement_tts_provider: Provider TTS para anúncios ("elevenlabs" ou "openai")
         """
         self.domain_uuid = domain_uuid
         self.call_uuid = call_uuid
         self.caller_id = caller_id
         self.secretary_uuid = secretary_uuid
         self._voice_id = voice_id
+        self._announcement_tts_provider = announcement_tts_provider or "elevenlabs"
         
         self._esl = esl_client or get_esl_client()
         self._loader = destination_loader or get_destination_loader()
@@ -754,10 +757,10 @@ class TransferManager:
                 extra={"announcement": announcement_with_instructions[:100]}
             )
             
-            # Usar ElevenLabs TTS para gerar áudio com mesma voz da IA
+            # Usar TTS configurado para gerar áudio com mesma voz da IA
             from .announcement_tts import get_announcement_tts
             
-            tts_service = get_announcement_tts()
+            tts_service = get_announcement_tts(provider=self._announcement_tts_provider)
             audio_path = await tts_service.generate_announcement(
                 announcement_with_instructions,
                 voice_id=self._voice_id  # Mesma voz configurada na secretária
@@ -1438,6 +1441,7 @@ async def create_transfer_manager(
     on_transfer_complete: Optional[Callable[[TransferResult], Any]] = None,
     domain_settings: Optional[Dict[str, Any]] = None,
     voice_id: Optional[str] = None,
+    announcement_tts_provider: Optional[str] = None,
 ) -> TransferManager:
     """
     Cria e inicializa TransferManager.
@@ -1454,6 +1458,7 @@ async def create_transfer_manager(
         on_transfer_complete: Callback quando transferência completar
         domain_settings: Configurações do domínio (opcional, carrega do banco se None)
         voice_id: ID da voz ElevenLabs para anúncios de transferência
+        announcement_tts_provider: Provider TTS para anúncios ("elevenlabs" ou "openai")
     """
     # Carregar configurações do banco se não fornecidas
     if domain_settings is None:
@@ -1474,6 +1479,7 @@ async def create_transfer_manager(
         on_transfer_complete=on_transfer_complete,
         domain_settings=domain_settings,
         voice_id=voice_id,
+        announcement_tts_provider=announcement_tts_provider,
     )
     
     # Pré-carregar destinos

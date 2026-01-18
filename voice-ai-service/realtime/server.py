@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
@@ -54,9 +54,38 @@ def _parse_bool(value, default: bool = True) -> bool:
         return default
     if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return value != 0
     if isinstance(value, str):
-        return value.lower() in ("true", "1", "yes", "t")
-    return bool(value)
+        return value.lower() in ('true', '1', 'yes', 't')
+    return default
+
+
+def _parse_guardrails_topics(value) -> Optional[List[str]]:
+    """
+    Converte texto de tópicos proibidos em lista.
+    
+    No frontend, tópicos são separados por newline.
+    Ex: "política\nreligião\nconcorrentes" -> ["política", "religião", "concorrentes"]
+    
+    Args:
+        value: Texto com tópicos (um por linha) ou None
+        
+    Returns:
+        Lista de tópicos ou None
+    """
+    if value is None or value == "":
+        return None
+    
+    if isinstance(value, list):
+        return [str(t).strip() for t in value if str(t).strip()]
+    
+    if isinstance(value, str):
+        # Tópicos separados por newline (formato do frontend)
+        topics = [t.strip() for t in value.split("\n") if t.strip()]
+        return topics if topics else None
+    
+    return None
 
 
 # 20ms @ 16kHz PCM16 mono:
@@ -358,7 +387,19 @@ class RealtimeServer:
                     s.outside_hours_message,
                     -- Call Timeouts
                     COALESCE(s.idle_timeout_seconds, 30) as idle_timeout_seconds,
-                    COALESCE(s.max_duration_seconds, 600) as max_duration_seconds
+                    COALESCE(s.max_duration_seconds, 600) as max_duration_seconds,
+                    -- VAD Configuration (migration 023)
+                    COALESCE(s.vad_type, 'semantic_vad') as vad_type,
+                    COALESCE(s.vad_eagerness, 'medium') as vad_eagerness,
+                    -- Guardrails Configuration (migration 023)
+                    COALESCE(s.guardrails_enabled, true) as guardrails_enabled,
+                    s.guardrails_topics,
+                    -- Announcement TTS Provider (migration 023)
+                    COALESCE(s.announcement_tts_provider, 'elevenlabs') as announcement_tts_provider,
+                    -- Transfer Realtime Mode (migration 022)
+                    COALESCE(s.transfer_realtime_enabled, false) as transfer_realtime_enabled,
+                    s.transfer_realtime_prompt,
+                    COALESCE(s.transfer_realtime_timeout, 15) as transfer_realtime_timeout
                 FROM v_voice_secretaries s
                 LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
                 WHERE s.voice_secretary_uuid = $1::uuid
@@ -705,6 +746,18 @@ class RealtimeServer:
             # Call Timeouts (from database)
             idle_timeout_seconds=int(row.get("idle_timeout_seconds") or 30),
             max_duration_seconds=int(row.get("max_duration_seconds") or 600),
+            # VAD Configuration (migration 023)
+            vad_type=row.get("vad_type") or "semantic_vad",
+            vad_eagerness=row.get("vad_eagerness") or "medium",
+            # Guardrails Configuration (migration 023)
+            guardrails_enabled=_parse_bool(row.get("guardrails_enabled"), default=True),
+            guardrails_topics=_parse_guardrails_topics(row.get("guardrails_topics")),
+            # Transfer Realtime Mode (migration 022)
+            transfer_realtime_enabled=_parse_bool(row.get("transfer_realtime_enabled"), default=False),
+            transfer_realtime_prompt=row.get("transfer_realtime_prompt"),
+            transfer_realtime_timeout=float(row.get("transfer_realtime_timeout") or 15),
+            # Announcement TTS Provider (migration 023)
+            announcement_tts_provider=row.get("announcement_tts_provider") or "elevenlabs",
         )
         
         logger.debug("Session config created", extra={

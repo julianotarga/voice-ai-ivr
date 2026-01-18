@@ -230,6 +230,10 @@ class RealtimeSessionConfig:
     transfer_realtime_prompt: Optional[str] = None  # Prompt para conversa com humano
     transfer_realtime_timeout: float = 15.0  # Timeout de conversa com humano
     
+    # ANNOUNCEMENT TTS PROVIDER: Provider para gerar áudio de anúncio
+    # 'elevenlabs' (melhor qualidade) ou 'openai' (mais barato)
+    announcement_tts_provider: str = "elevenlabs"
+    
     # Business Hours (Time Condition)
     # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
     is_outside_business_hours: bool = False  # True se chamada recebida fora do horário
@@ -415,6 +419,7 @@ class RealtimeSession:
                 on_resume=self._on_transfer_resume,
                 on_transfer_complete=self._on_transfer_complete,
                 voice_id=self.config.voice_id,  # Mesma voz da IA para anúncios
+                announcement_tts_provider=self.config.announcement_tts_provider,
             )
             
             logger.info("TransferManager initialized", extra={
