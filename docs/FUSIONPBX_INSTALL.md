@@ -4,8 +4,67 @@
 
 1. **FusionPBX instalado** (versão 5.x ou superior)
 2. **PostgreSQL** configurado e acessível
-3. **Voice AI Service** rodando (Docker)
-4. **Migrations executadas** no banco de dados
+3. **pgvector** instalado (para RAG/busca semântica de documentos)
+4. **Voice AI Service** rodando (Docker)
+5. **Migrations executadas** no banco de dados
+
+---
+
+## Instalação do pgvector (Obrigatório para RAG)
+
+A extensão **pgvector** é necessária para a funcionalidade de busca semântica em documentos (RAG - Retrieval Augmented Generation).
+
+### Opção 1: Compilar do código fonte (recomendado)
+
+```bash
+# Instalar dependências
+sudo apt update
+sudo apt install -y postgresql-server-dev-all build-essential git
+
+# Clonar e compilar pgvector (versão mais recente)
+cd /tmp
+git clone https://github.com/pgvector/pgvector.git
+cd pgvector
+make
+sudo make install
+
+# Reiniciar PostgreSQL
+sudo systemctl restart postgresql
+```
+
+### Opção 2: Usando pacote apt (se disponível)
+
+```bash
+# Para PostgreSQL 15
+sudo apt install postgresql-15-pgvector
+
+# Para PostgreSQL 16
+sudo apt install postgresql-16-pgvector
+
+# Para PostgreSQL 17+
+# Use a Opção 1 (compilar do fonte)
+```
+
+### Verificar instalação
+
+```bash
+sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;" fusionpbx
+```
+
+Se retornar `CREATE EXTENSION`, a instalação foi bem-sucedida.
+
+### Troubleshooting pgvector
+
+| Erro | Solução |
+|------|---------|
+| `extension "vector" is not available` | Instale o pgvector (Opção 1 acima) |
+| `too few arguments to function 'vacuum_delay_point'` | Use a versão mais recente do pgvector (main branch) |
+| `type "vector" does not exist` | Execute `CREATE EXTENSION vector;` no banco |
+
+> **Nota:** PostgreSQL 18+ requer a versão mais recente do pgvector (main branch)
+> pois houve mudanças na API interna. Sempre use `git clone` sem especificar versão.
+
+---
 
 ## Método 1: Script Automático (Recomendado)
 
@@ -118,6 +177,25 @@ Deve mostrar:
  public | v_voice_messages        | table | fusionpbx
  public | v_voice_secretaries     | table | fusionpbx
  public | v_voice_transfer_rules  | table | fusionpbx
+```
+
+### Verificar pgvector
+
+```bash
+sudo -u postgres psql fusionpbx -c "\dx vector"
+```
+
+Deve mostrar:
+```
+                     List of installed extensions
+  Name   | Version |   Schema   |         Description          
+---------+---------+------------+------------------------------
+ vector  | 0.7.4   | public     | vector data type and ivfflat and hnsw access methods
+```
+
+Se não aparecer, execute:
+```bash
+sudo -u postgres psql fusionpbx -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
 ### Verificar menu
