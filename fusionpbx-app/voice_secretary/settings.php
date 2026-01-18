@@ -279,7 +279,7 @@ $defaults = [
 
 //helper function for checkbox checked state
 function is_checked($value) {
-	return ($value === 'true' || $value === true || $value === '1' || $value === 1) ? 'checked' : '';
+	return ($value === 'true' || $value === 't' || $value === true || $value === '1' || $value === 1) ? 'checked' : '';
 }
 
 //show the content

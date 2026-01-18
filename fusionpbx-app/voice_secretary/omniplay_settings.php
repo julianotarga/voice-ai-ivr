@@ -68,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
 	$omniplay_api_url = trim($_POST['omniplay_api_url'] ?? '');
 	$omniplay_api_token = trim($_POST['omniplay_api_token'] ?? '');
 	$omniplay_company_id = !empty($_POST['omniplay_company_id']) ? intval($_POST['omniplay_company_id']) : null;
-	$auto_sync_enabled = isset($_POST['auto_sync_enabled']) ? true : false;
+	$auto_sync_enabled = isset($_POST['auto_sync_enabled']) ? 't' : 'f';  // PostgreSQL boolean
 	$sync_interval_minutes = intval($_POST['sync_interval_minutes'] ?? 5);
 	
 	// Validar URL
@@ -426,8 +426,9 @@ $token_data = $token->create($_SERVER['PHP_SELF']);
 			<tr>
 				<td valign="top" class="vncell">Sincronização Automática</td>
 				<td class="vtable">
+					<?php $sync_enabled = ($settings['auto_sync_enabled'] ?? '') === 't' || $settings['auto_sync_enabled'] === 'true' || $settings['auto_sync_enabled'] === true; ?>
 					<input type="checkbox" name="auto_sync_enabled" value="1" 
-						<?php echo (!empty($settings['auto_sync_enabled']) ? 'checked' : ''); ?>>
+						<?php echo ($sync_enabled ? 'checked' : ''); ?>>
 					Habilitar sincronização automática
 					
 					<span style="margin-left: 20px;">
