@@ -989,8 +989,10 @@ class AsyncESLClient:
         if not error_result:
             return None
         
-        # Remover prefixo -ERR
+        # Remover prefixo -ERR e limpar whitespace/newlines
         clean = error_result.replace("-ERR", "").strip()
+        # Remover quebras de linha e espaços extras
+        clean = " ".join(clean.split())
         
         # Lista de hangup causes conhecidos do FreeSWITCH
         # Ref: https://freeswitch.org/confluence/display/FREESWITCH/Hangup+Cause+Code+Table

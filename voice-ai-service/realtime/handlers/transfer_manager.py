@@ -194,7 +194,12 @@ class TransferResult:
     
     @property
     def should_offer_callback(self) -> bool:
-        """Retorna True se deve oferecer callback/recado."""
+        """
+        Retorna True se deve oferecer callback/recado.
+        
+        Inclui falhas técnicas para garantir que o cliente
+        sempre tenha uma alternativa quando a transferência falhar.
+        """
         return self.status in [
             TransferStatus.BUSY,
             TransferStatus.NO_ANSWER,
@@ -202,6 +207,7 @@ class TransferResult:
             TransferStatus.OFFLINE,
             TransferStatus.REJECTED,
             TransferStatus.UNAVAILABLE,
+            TransferStatus.FAILED,  # Falhas técnicas também devem oferecer alternativa
         ]
 
 
@@ -482,6 +488,17 @@ class TransferManager:
                         retries=retries
                     )
                 
+                # Verificar se UUID foi retornado (sanity check)
+                if not originate_result.uuid:
+                    await self._stop_moh()
+                    logger.error("Originate succeeded but no UUID returned - this is unexpected")
+                    return TransferResult(
+                        status=TransferStatus.FAILED,
+                        destination=destination,
+                        error="Originate retornou sucesso sem UUID",
+                        retries=retries
+                    )
+                
                 b_leg_uuid = originate_result.uuid
                 self._b_leg_uuid = b_leg_uuid
                 
@@ -703,6 +720,16 @@ class TransferManager:
                     error=originate_result.error_message,
                 )
             
+            # Verificar se UUID foi retornado (sanity check)
+            if not originate_result.uuid:
+                await self._stop_moh()
+                logger.error("Originate succeeded but no UUID returned - this is unexpected")
+                return TransferResult(
+                    status=TransferStatus.FAILED,
+                    destination=destination,
+                    error="Originate retornou sucesso sem UUID",
+                )
+            
             b_leg_uuid = originate_result.uuid
             self._b_leg_uuid = b_leg_uuid
             
@@ -719,7 +746,7 @@ class TransferManager:
             # 7. Tocar anúncio para o humano via ElevenLabs TTS (mesma voz da IA)
             announcement_with_instructions = (
                 f"{announcement}. "
-                "Press 2 to reject, or wait to accept."
+                "Pressione 2 para recusar, ou aguarde para aceitar."
             )
             
             logger.info(
@@ -981,11 +1008,29 @@ class TransferManager:
                 logger.debug(f"MOH started for {self.call_uuid}")
     
     async def _stop_moh(self) -> None:
-        """Para música de espera."""
+        """
+        Para música de espera.
+        
+        Robusto: sempre marca como inativo e trata exceções
+        para garantir que o cliente não fique preso em espera.
+        """
         if self._moh_active:
-            await self._esl.uuid_break(self.call_uuid)
-            self._moh_active = False
-            logger.debug(f"MOH stopped for {self.call_uuid}")
+            try:
+                await self._esl.uuid_break(self.call_uuid)
+                logger.debug(f"MOH stopped for {self.call_uuid}")
+            except Exception as e:
+                logger.warning(f"Failed to stop MOH (uuid_break): {e}")
+                # Tentar reconectar e parar novamente
+                try:
+                    if not self._esl.is_connected:
+                        await self._esl.connect()
+                    await self._esl.uuid_break(self.call_uuid)
+                    logger.debug(f"MOH stopped for {self.call_uuid} (after reconnect)")
+                except Exception as e2:
+                    logger.error(f"Failed to stop MOH even after reconnect: {e2}")
+            finally:
+                # Sempre marcar como inativo para não ficar em loop
+                self._moh_active = False
     
     async def stop_moh_and_resume(self) -> None:
         """Para música e sinaliza para retomar Voice AI."""
