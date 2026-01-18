@@ -403,7 +403,7 @@ class voice_ai_provider {
                 ['name' => 'simple_mode', 'label' => 'Simple Mode', 'type' => 'select', 'options' => ['true', 'false'], 'default' => 'true'],
                 ['name' => 'api_key', 'label' => 'API Key', 'type' => 'password'],
                 ['name' => 'model', 'label' => 'Model', 'type' => 'select', 'options' => ['gpt-4o-realtime-preview', 'gpt-4o-realtime-preview-2024-12-17', 'gpt-4o-mini-realtime-preview', 'gpt-4o-mini-realtime-preview-2024-12-17'], 'default' => 'gpt-4o-realtime-preview'],
-                ['name' => 'voice', 'label' => 'Voice', 'type' => 'select', 'options' => ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse']],
+                ['name' => 'voice', 'label' => 'Voice', 'type' => 'select', 'options' => ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']],
                 ['name' => 'vad_threshold', 'label' => 'VAD Threshold (0-1)', 'type' => 'number', 'step' => '0.05', 'min' => '0', 'max' => '1', 'default' => '0.5'],
                 ['name' => 'silence_duration_ms', 'label' => 'Silence Duration (ms)', 'type' => 'number', 'step' => '50', 'min' => '100', 'max' => '3000', 'default' => '500'],
                 ['name' => 'prefix_padding_ms', 'label' => 'Prefix Padding (ms)', 'type' => 'number', 'step' => '50', 'min' => '0', 'max' => '1000', 'default' => '300'],
