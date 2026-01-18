@@ -121,8 +121,8 @@
 			'description' => trim($_POST['description'] ?? '') ?: null,
 			'working_hours' => $working_hours ? json_encode($working_hours) : null,
 			'priority' => intval($_POST['priority'] ?? 100),
-			'is_enabled' => isset($_POST['is_enabled']) ? true : false,
-			'is_default' => isset($_POST['is_default']) ? true : false,
+			'is_enabled' => isset($_POST['is_enabled']) ? 't' : 'f',  // PostgreSQL boolean
+			'is_default' => isset($_POST['is_default']) ? 't' : 'f',  // PostgreSQL boolean
 			'secretary_uuid' => !empty($_POST['secretary_uuid']) ? $_POST['secretary_uuid'] : null,
 		];
 		
@@ -147,9 +147,9 @@
 			}
 		} else {
 			// Verificar se está marcando como default
-			if ($form_data['is_default']) {
+			if ($form_data['is_default'] === 't') {
 				// Remover default de outros
-				$sql = "UPDATE v_voice_transfer_destinations SET is_default = false WHERE domain_uuid = :domain_uuid AND is_default = true";
+				$sql = "UPDATE v_voice_transfer_destinations SET is_default = 'f' WHERE domain_uuid = :domain_uuid AND is_default = 't'";
 				$parameters['domain_uuid'] = $domain_uuid;
 				$database->execute($sql, $parameters);
 				unset($parameters);
