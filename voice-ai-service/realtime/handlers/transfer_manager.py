@@ -892,6 +892,277 @@ class TransferManager:
                 error=str(e),
             )
     
+    # =========================================================================
+    # ANNOUNCED TRANSFER REALTIME: Conversa por voz com o humano
+    # Opção premium que usa OpenAI Realtime para anunciar ao humano
+    # =========================================================================
+    
+    async def execute_announced_transfer_realtime(
+        self,
+        destination: TransferDestination,
+        announcement: str,
+        caller_context: str,
+        realtime_prompt: Optional[str] = None,
+        ring_timeout: int = 30,
+        conversation_timeout: float = 15.0,
+    ) -> TransferResult:
+        """
+        Executa transferência com conversa Realtime com o humano.
+        
+        Diferente do anúncio TTS, aqui o agente IA conversa por voz com
+        o humano, permitindo respostas naturais como:
+        - "Pode passar"
+        - "Estou ocupado, pede pra ligar daqui 5 minutos"
+        - "Do que se trata?"
+        
+        Fluxo:
+        1. MOH no cliente (A-leg)
+        2. Originate B-leg para humano
+        3. Criar sessão OpenAI Realtime para B-leg
+        4. Agente anuncia e conversa com humano
+        5. Interpretar resposta (aceitar/recusar/instruções)
+        6. Se aceitar: bridge A↔B
+        7. Se recusar: retornar ao cliente com mensagem
+        
+        Args:
+            destination: Destino da transferência
+            announcement: Texto inicial do anúncio
+            caller_context: Contexto do cliente (nome, motivo, resumo)
+            realtime_prompt: Prompt para o agente ao falar com humano
+            ring_timeout: Timeout de ring em segundos
+            conversation_timeout: Tempo máximo de conversa com humano
+        
+        Returns:
+            TransferResult com status e possível mensagem do humano
+        """
+        start_time = datetime.utcnow()
+        
+        logger.info(
+            f"Starting REALTIME announced transfer",
+            extra={
+                "call_uuid": self.call_uuid,
+                "destination": destination.name,
+                "destination_number": destination.destination_number,
+            }
+        )
+        
+        try:
+            # 1. Garantir conexão ESL
+            if not self._esl.is_connected:
+                connected = await self._esl.connect()
+                if not connected:
+                    logger.error("Failed to connect to ESL for realtime transfer")
+                    return TransferResult(
+                        status=TransferStatus.FAILED,
+                        destination=destination,
+                        error="Falha na conexão ESL",
+                    )
+            
+            # 2. Verificar se A-leg ainda existe
+            a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
+            if not a_leg_exists and self._caller_hungup:
+                return TransferResult(
+                    status=TransferStatus.CANCELLED,
+                    destination=destination,
+                    error="Cliente desligou",
+                )
+            
+            # 3. Tocar música de espera no cliente
+            await self._start_moh()
+            
+            # 4. Originar B-leg
+            dial_string = self._build_dial_string(destination)
+            
+            logger.info(f"Originating B-leg for realtime transfer: {dial_string}")
+            
+            originate_result = await self._esl.originate(
+                dial_string=dial_string,
+                app="&park()",
+                timeout=ring_timeout,
+                variables={
+                    "ignore_early_media": "true",
+                    "hangup_after_bridge": "true",
+                    "origination_caller_id_number": self.caller_id,
+                    "origination_caller_id_name": "Secretaria_Virtual"
+                }
+            )
+            
+            if not originate_result.success:
+                await self._stop_moh()
+                status = self._hangup_cause_to_status(originate_result.hangup_cause)
+                
+                logger.info(
+                    f"Realtime transfer originate failed",
+                    extra={
+                        "destination": destination.name,
+                        "hangup_cause": originate_result.hangup_cause,
+                        "status": status.value,
+                    }
+                )
+                
+                return TransferResult(
+                    status=status,
+                    destination=destination,
+                    hangup_cause=originate_result.hangup_cause,
+                    error=originate_result.error_message,
+                )
+            
+            if not originate_result.uuid:
+                await self._stop_moh()
+                return TransferResult(
+                    status=TransferStatus.FAILED,
+                    destination=destination,
+                    error="Originate retornou sucesso sem UUID",
+                )
+            
+            b_leg_uuid = originate_result.uuid
+            self._b_leg_uuid = b_leg_uuid
+            
+            logger.info(f"B-leg answered, starting realtime conversation: {b_leg_uuid}")
+            
+            # 5. Iniciar sessão Realtime para o B-leg
+            # Import aqui para evitar circular imports
+            from .realtime_announcement import RealtimeAnnouncementSession
+            
+            # Construir prompt para o agente
+            system_prompt = realtime_prompt or self._build_realtime_announcement_prompt(
+                destination.name,
+                caller_context
+            )
+            
+            # Criar sessão Realtime para o B-leg
+            realtime_session = RealtimeAnnouncementSession(
+                b_leg_uuid=b_leg_uuid,
+                esl_client=self._esl,
+                system_prompt=system_prompt,
+                initial_message=announcement,
+            )
+            
+            # 6. Executar conversa e aguardar resultado
+            conversation_result = await realtime_session.run(
+                timeout=conversation_timeout
+            )
+            
+            # 7. Processar resultado
+            if conversation_result.accepted:
+                # Humano aceitou - fazer bridge
+                logger.info(f"Realtime transfer: human ACCEPTED")
+                
+                await self._stop_moh()
+                
+                # Definir hangup_after_bridge no A-leg
+                await self._esl.execute_api(
+                    f"uuid_setvar {self.call_uuid} hangup_after_bridge true"
+                )
+                
+                # Criar bridge
+                bridge_success = await self._esl.uuid_bridge(
+                    self.call_uuid,
+                    b_leg_uuid
+                )
+                
+                if bridge_success:
+                    duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                    
+                    result = TransferResult(
+                        status=TransferStatus.SUCCESS,
+                        destination=destination,
+                        b_leg_uuid=b_leg_uuid,
+                        duration_ms=duration,
+                    )
+                    
+                    if self._on_transfer_complete:
+                        await self._on_transfer_complete(result)
+                    
+                    return result
+                else:
+                    await self._esl.uuid_kill(b_leg_uuid)
+                    await self._stop_moh()
+                    
+                    return TransferResult(
+                        status=TransferStatus.FAILED,
+                        destination=destination,
+                        error="Falha ao criar bridge",
+                    )
+            
+            elif conversation_result.rejected:
+                # Humano recusou
+                logger.info(
+                    f"Realtime transfer: human REJECTED",
+                    extra={"message": conversation_result.message}
+                )
+                
+                await self._esl.uuid_kill(b_leg_uuid)
+                await self._stop_moh()
+                
+                return TransferResult(
+                    status=TransferStatus.REJECTED,
+                    destination=destination,
+                    error=conversation_result.message or f"Recusado por {destination.name}",
+                )
+            
+            else:
+                # Timeout ou erro
+                logger.info(f"Realtime transfer: conversation ended without decision")
+                
+                await self._esl.uuid_kill(b_leg_uuid)
+                await self._stop_moh()
+                
+                return TransferResult(
+                    status=TransferStatus.NO_ANSWER,
+                    destination=destination,
+                    error="Humano não respondeu a tempo",
+                )
+        
+        except asyncio.CancelledError:
+            if self._b_leg_uuid:
+                await self._esl.uuid_kill(self._b_leg_uuid)
+            await self._stop_moh()
+            raise
+        
+        except Exception as e:
+            logger.exception(f"Realtime announced transfer error: {e}")
+            await self._stop_moh()
+            
+            return TransferResult(
+                status=TransferStatus.FAILED,
+                destination=destination,
+                error=str(e),
+            )
+    
+    def _build_realtime_announcement_prompt(
+        self,
+        destination_name: str,
+        caller_context: str
+    ) -> str:
+        """
+        Constrói prompt de sistema para conversa com humano.
+        
+        Args:
+            destination_name: Nome do destino (ex: "João - Vendas")
+            caller_context: Contexto do cliente
+        
+        Returns:
+            Prompt de sistema
+        """
+        return f"""Você é uma assistente virtual anunciando uma ligação para {destination_name}.
+
+CONTEXTO DO CLIENTE:
+{caller_context}
+
+INSTRUÇÕES:
+1. Anuncie brevemente quem está ligando e o motivo
+2. Pergunte se pode transferir a ligação
+3. Se o humano aceitar (ex: "pode passar", "ok", "sim"), responda "ACEITO" e encerre
+4. Se o humano recusar (ex: "não posso", "estou ocupado"), pergunte se quer deixar recado
+5. Se o humano der instruções (ex: "diz que ligo em 5 min"), anote e responda "RECUSADO: [instruções]"
+6. Seja breve e objetivo - o cliente está aguardando em espera
+
+IMPORTANTE:
+- Sua última mensagem DEVE conter "ACEITO" ou "RECUSADO: [motivo]"
+- Não prolongue a conversa desnecessariamente
+"""
+    
     async def _monitor_transfer_leg(
         self,
         b_leg_uuid: str,

@@ -215,6 +215,12 @@ class RealtimeSessionConfig:
     transfer_accept_timeout: float = 5.0  # Segundos para aceitar automaticamente (timeout = aceitar)
     transfer_announcement_lang: str = "pt-BR"  # Idioma para mod_say
     
+    # REALTIME TRANSFER: Conversa por voz com humano (opção premium)
+    # Quando ativado, agente IA conversa com humano via OpenAI Realtime
+    transfer_realtime_enabled: bool = False  # Se True, usa Realtime ao invés de TTS+DTMF
+    transfer_realtime_prompt: Optional[str] = None  # Prompt para conversa com humano
+    transfer_realtime_timeout: float = 15.0  # Timeout de conversa com humano
+    
     # Business Hours (Time Condition)
     # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/tasks.md
     is_outside_business_hours: bool = False  # True se chamada recebida fora do horário
@@ -1721,15 +1727,33 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # 3. Executar transferência
             if self.config.transfer_announce_enabled:
                 # ANNOUNCED TRANSFER: Anunciar para o HUMANO antes de conectar
-                # "Olá, tenho o cliente X na linha sobre Y. Pressione 2 para recusar..."
                 announcement = self._build_announcement_for_human(destination_text, reason)
                 
-                result = await self._transfer_manager.execute_announced_transfer(
-                    destination=destination,
-                    announcement=announcement,
-                    ring_timeout=self.config.transfer_default_timeout,
-                    accept_timeout=self.config.transfer_accept_timeout,
-                )
+                if self.config.transfer_realtime_enabled:
+                    # REALTIME MODE: Conversa por voz com humano (premium)
+                    # Agente IA conversa via OpenAI Realtime com o atendente
+                    logger.info("Using REALTIME mode for announced transfer")
+                    
+                    # Construir contexto do cliente para o agente
+                    caller_context = self._build_caller_context(destination_text, reason)
+                    
+                    result = await self._transfer_manager.execute_announced_transfer_realtime(
+                        destination=destination,
+                        announcement=announcement,
+                        caller_context=caller_context,
+                        realtime_prompt=self.config.transfer_realtime_prompt,
+                        ring_timeout=self.config.transfer_default_timeout,
+                        conversation_timeout=self.config.transfer_realtime_timeout,
+                    )
+                else:
+                    # TTS MODE: Toca anúncio + DTMF (padrão)
+                    # "Olá, tenho o cliente X na linha sobre Y. Pressione 2 para recusar..."
+                    result = await self._transfer_manager.execute_announced_transfer(
+                        destination=destination,
+                        announcement=announcement,
+                        ring_timeout=self.config.transfer_default_timeout,
+                        accept_timeout=self.config.transfer_accept_timeout,
+                    )
             else:
                 # BLIND TRANSFER: Conectar diretamente sem anunciar
                 result = await self._transfer_manager.execute_attended_transfer(
@@ -2014,3 +2038,53 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 return cleaned
         
         return None
+    
+    def _build_caller_context(
+        self,
+        destination_request: str,
+        reason: str
+    ) -> str:
+        """
+        Constrói contexto completo do cliente para modo Realtime.
+        
+        Usado quando transfer_realtime_enabled=True.
+        Fornece ao agente informações detalhadas para conversar com o humano.
+        
+        Args:
+            destination_request: O que o cliente pediu
+            reason: Motivo da ligação
+        
+        Returns:
+            Contexto formatado
+        """
+        parts = []
+        
+        # Identificação do cliente
+        caller_name = self._extract_caller_name()
+        caller_id = self.config.caller_id
+        
+        if caller_name:
+            parts.append(f"Nome do cliente: {caller_name}")
+        if caller_id:
+            parts.append(f"Telefone: {caller_id}")
+        
+        # Motivo da ligação
+        call_reason = self._extract_call_reason(reason)
+        if call_reason:
+            parts.append(f"Motivo: {call_reason}")
+        
+        # Destino solicitado
+        parts.append(f"Destino solicitado: {destination_request}")
+        
+        # Resumo da conversa (últimas mensagens)
+        recent_messages = []
+        for entry in self._transcript[-5:]:
+            role = "Cliente" if entry.role == "user" else "Agente"
+            text = entry.text[:100] + "..." if len(entry.text) > 100 else entry.text
+            recent_messages.append(f"{role}: {text}")
+        
+        if recent_messages:
+            parts.append("\nResumo da conversa:")
+            parts.extend(recent_messages)
+        
+        return "\n".join(parts)
