@@ -1206,7 +1206,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     return
                 
                 # Check for handoff keyword
-                if self._handoff_handler and not self._handoff_result:
+                # IMPORTANTE: Não processar keywords se já houver transferência em andamento
+                # (evita conflito entre function call request_handoff e keyword detection)
+                if self._handoff_handler and not self._handoff_result and not self._transfer_in_progress:
                     self._handoff_handler.increment_turn()
                     await self._check_handoff_keyword(event.transcript)
                     
