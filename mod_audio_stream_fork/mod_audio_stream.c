@@ -299,12 +299,14 @@ SWITCH_STANDARD_API(stream_function)
                 char wsUri[MAX_WS_URI];
                 int sampling = 8000;
                 int audio_format = AUDIO_FORMAT_L16;
-                /* NETPLAY: 
-                 * - SMBF_READ_REPLACE: captures audio AFTER DSP processing (including AEC)
+                /* NETPLAY v2.5: Full-duplex with Python AEC
+                 * - SMBF_READ_STREAM: captures mic audio (may contain echo)
                  * - SMBF_WRITE_REPLACE: needed for streaming playback injection
-                 * Note: SMBF_READ_STREAM captures raw audio BEFORE AEC, causing echo issues
+                 * 
+                 * Echo cancellation is done in Python using Speex DSP.
+                 * The Python service has both mic and speaker reference for proper AEC.
                  */
-                switch_media_bug_flag_t flags = SMBF_READ_REPLACE | SMBF_WRITE_REPLACE;
+                switch_media_bug_flag_t flags = SMBF_READ_STREAM | SMBF_WRITE_REPLACE;
                 char *metadata = NULL;
                 
                 /* Parse format parameter (argv[5]) and metadata (argv[6]) */
@@ -396,7 +398,7 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.5.0-netplay"
+#define MOD_AUDIO_STREAM_VERSION "2.5.1-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
