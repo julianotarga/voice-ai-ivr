@@ -1165,24 +1165,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             # ========================================
             # PCM16 → G.711 Conversion (output)
-            # Converter para G.711 antes de enviar ao FreeSWITCH
-            # Reduz bandwidth e é nativo do FreeSWITCH
+            # O ResamplerPair já converteu 24kHz → 8kHz (freeswitch_sample_rate)
+            # Agora só precisamos converter L16 PCM → G.711
             # ========================================
             if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
-                # Primeiro, resample de 24kHz → 8kHz (requerido para G.711)
-                # O resampler já deve ter feito isso, mas vamos garantir
-                from .utils.resampler import Resampler
-                if not hasattr(self, '_g711_downsampler'):
-                    # 16kHz → 8kHz (assumindo que resampler já converteu 24k→16k)
-                    self._g711_downsampler = Resampler(16000, 8000)
-                audio_bytes = self._g711_downsampler.process(audio_bytes)
+                # L16 PCM @ 8kHz → G.711 μ-law @ 8kHz
+                # (ResamplerPair já fez 24kHz→8kHz)
                 audio_bytes = pcm_to_ulaw(audio_bytes)
             elif self.config.audio_format in ("pcma", "g711a", "alaw"):
-                from .utils.resampler import Resampler
                 from .utils.audio_codec import pcm_to_alaw
-                if not hasattr(self, '_g711_downsampler'):
-                    self._g711_downsampler = Resampler(16000, 8000)
-                audio_bytes = self._g711_downsampler.process(audio_bytes)
                 audio_bytes = pcm_to_alaw(audio_bytes)
             
             self._pending_audio_bytes += len(audio_bytes)

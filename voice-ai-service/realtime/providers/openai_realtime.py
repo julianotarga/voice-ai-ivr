@@ -269,10 +269,17 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     
     @property
     def input_sample_rate(self) -> int:
-        return 24000  # OpenAI Realtime requer 24kHz
+        # G.711 (pcmu/pcma) usa 8kHz nativo
+        # PCM16 usa 24kHz
+        audio_format = getattr(self.config, 'audio_format', 'pcm16')
+        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711_alaw", "pcma", "alaw"):
+            return 8000  # G.711 é sempre 8kHz
+        return 24000  # PCM16 @ 24kHz
     
     @property
     def output_sample_rate(self) -> int:
+        # Output da OpenAI sempre vem em PCM16 @ 24kHz
+        # (OpenAI não suporta G.711 output)
         return 24000
     
     async def connect(self) -> None:

@@ -81,10 +81,8 @@ class EchoCancellerWrapper:
         self._ec: Optional[EchoCanceller] = None
         if self.enabled:
             try:
-                self._ec = EchoCanceller.create(
-                    frame_size=self.frame_size,
-                    filter_length=self.filter_length
-                )
+                # EchoCanceller.create() não aceita keyword arguments
+                self._ec = EchoCanceller.create(self.frame_size, self.filter_length)
                 logger.info(
                     f"✅ Speex AEC inicializado: frame={self.frame_size} samples ({frame_size_ms}ms), "
                     f"filter={self.filter_length} samples ({filter_length_ms}ms)"
@@ -176,11 +174,8 @@ class EchoCancellerWrapper:
         self.speaker_buffer.clear()
         if self._ec:
             try:
-                # Recriar o echo canceller
-                self._ec = EchoCanceller.create(
-                    frame_size=self.frame_size,
-                    filter_length=self.filter_length
-                )
+                # Recriar o echo canceller (sem keyword arguments)
+                self._ec = EchoCanceller.create(self.frame_size, self.filter_length)
             except Exception:
                 pass
     
