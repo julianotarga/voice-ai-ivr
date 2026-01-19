@@ -106,7 +106,7 @@ class RealtimeConfig:
     # Tipo: "server_vad" (silêncio) ou "semantic_vad" (semântica/inteligente)
     vad_type: str = "semantic_vad"  # RECOMENDADO
     vad_threshold: float = 0.5  # 0.0-1.0 sensibilidade
-    vad_eagerness: str = "medium"  # low, medium, high (só semantic_vad)
+    vad_eagerness: str = "high"  # high responde rápido (só semantic_vad)
     silence_duration_ms: int = 500
     silence_timeout_ms: int = 1000  # Alias para compatibilidade
     prefix_padding_ms: int = 300
