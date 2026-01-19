@@ -84,25 +84,29 @@ Formato correto para API GA (General Availability):
         "instructions": "system prompt",
         "tools": [...],
         "tool_choice": "auto",
+        "turn_detection": {
+            "type": "semantic_vad",
+            "eagerness": "medium",
+            "create_response": true,
+            "interrupt_response": true
+        },
         "audio": {
             "input": {
-                "format": {"type": "audio/pcm", "rate": 24000},
-                "turn_detection": {
-                    "type": "semantic_vad",
-                    "eagerness": "medium",
-                    "create_response": true,
-                    "interrupt_response": true
-                }
+                "format": {"type": "audio/pcm", "rate": 24000}
             },
             "output": {
-                "format": {"type": "audio/pcm", "rate": 24000},
+                "format": {"type": "audio/pcm"},
                 "voice": "marin"
             }
         }
     }
 }
 
-Ref: Context7 /websites/platform_openai - session.update documentation
+NOTA: turn_detection pode estar em:
+- session.turn_detection (formato simplificado - RECOMENDADO)
+- session.audio.input.turn_detection (formato GA aninhado)
+
+Ref: Context7 /websites/platform_openai - session.update, realtime-vad
 """
 
 import asyncio
@@ -288,32 +292,38 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "instructions": "system prompt",
                 "tools": [...],
                 "tool_choice": "auto",
+                "turn_detection": {...},  // VAD no nível session (formato simplificado)
                 "audio": {
                     "input": {
-                        "format": {"type": "audio/pcm", "rate": 24000},
-                        "turn_detection": {...}
+                        "format": {"type": "audio/pcm", "rate": 24000}
                     },
                     "output": {
-                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "format": {"type": "audio/pcm"},
                         "voice": "marin"
                     }
                 }
             }
         }
         
-        Ref: Context7 /websites/platform_openai - session.update
+        NOTA: A documentação mostra turn_detection em DOIS lugares:
+        - session.turn_detection (formato simplificado - usado para VAD)
+        - session.audio.input.turn_detection (formato GA completo)
+        
+        Usamos session.turn_detection para compatibilidade máxima.
+        
+        Ref: Context7 /websites/platform_openai - session.update, realtime-vad
         """
         if not self._ws:
             raise RuntimeError("Not connected")
         
-        # Vozes disponíveis: alloy, ash, ballad, coral, echo, marin, sage, shimmer, verse
+        # Vozes disponíveis: alloy, ash, ballad, coral, echo, marin, sage, shimmer, verse, cedar
         voice = self.config.voice or "alloy"
         
-        # Construir VAD config primeiro para incluir em audio.input
+        # Construir VAD config
         vad_config = self._build_vad_config()
         
-        # === FORMATO GA (gpt-realtime) - Context7 verificado ===
-        # Estrutura aninhada com audio.input e audio.output
+        # === FORMATO GA (gpt-realtime) - Context7 verificado Jan/2026 ===
+        # NOTA: turn_detection no nível session conforme docs de VAD
         session_config = {
             "type": "session.update",
             "session": {
@@ -333,20 +343,19 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "tools": self.config.tools or DEFAULT_TOOLS,
                 "tool_choice": "auto",
                 
-                # Configuração de áudio (formato GA aninhado)
+                # Configuração de áudio (formato GA)
                 "audio": {
                     "input": {
-                        # Formato de áudio de entrada (Context7: objeto, não string)
+                        # Formato de áudio de entrada (Context7: objeto com rate obrigatório)
                         "format": {
                             "type": "audio/pcm",
                             "rate": 24000
                         },
                     },
                     "output": {
-                        # Formato de áudio de saída
+                        # Formato de áudio de saída (rate é opcional)
                         "format": {
                             "type": "audio/pcm",
-                            "rate": 24000
                         },
                         # Voz do assistente
                         "voice": voice,
@@ -355,10 +364,11 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             }
         }
         
-        # VAD - Turn Detection (DENTRO de audio.input, não no nível superior!)
-        # Context7: turn_detection deve estar em session.audio.input.turn_detection
+        # VAD - Turn Detection
+        # Context7 docs mostram turn_detection em session.turn_detection (formato simplificado)
+        # Ref: https://platform.openai.com/docs/guides/realtime-vad
         if vad_config is not None:
-            session_config["session"]["audio"]["input"]["turn_detection"] = vad_config
+            session_config["session"]["turn_detection"] = vad_config
         # Se vad_config é None, não incluímos turn_detection = push-to-talk
         
         vad_type = vad_config.get("type") if vad_config else "disabled"
