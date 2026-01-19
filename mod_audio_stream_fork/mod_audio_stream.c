@@ -280,13 +280,14 @@ done:
 
 /* ========================================
  * NETPLAY FORK - G.711 Native + Auto-Playback
- * Version: 1.1.0-netplay
+ * Version: 1.2.0-netplay
  * Build: 2026-01-19
  * Features:
  *   - Native PCMU/PCMA encoding for WebSocket
  *   - Auto-playback via uuid_broadcast (streamAudio)
+ *   - FIX: Usar .r16 (16-bit) em vez de .r8 (8-bit)
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "1.1.1-netplay"
+#define MOD_AUDIO_STREAM_VERSION "1.2.0-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)

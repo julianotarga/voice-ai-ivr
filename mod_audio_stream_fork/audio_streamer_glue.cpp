@@ -206,16 +206,16 @@ public:
                 if (0 == strcmp(jsAudioDataType, "raw")) {
                     cJSON* jsonSampleRate = cJSON_GetObjectItem(jsonData, "sampleRate");
                     sampleRate = jsonSampleRate && jsonSampleRate->valueint ? jsonSampleRate->valueint : 0;
-                    std::unordered_map<int, const char*> sampleRateMap = {
-                            {8000, ".r8"},
-                            {16000, ".r16"},
-                            {24000, ".r24"},
-                            {32000, ".r32"},
-                            {48000, ".r48"},
-                            {64000, ".r64"}
-                    };
-                    auto it = sampleRateMap.find(sampleRate);
-                    fileType = (it != sampleRateMap.end()) ? it->second : "";
+                    
+                    // NETPLAY FIX: Extensões .r8/.r16 indicam BIT DEPTH, não sample rate!
+                    // .r8 = 8-bit audio, .r16 = 16-bit audio
+                    // Nosso áudio é sempre L16 PCM (16-bit), então usar .r16
+                    // O sample rate é inferido pelo FreeSWITCH baseado no codec do canal (8kHz para G.711)
+                    if (sampleRate > 0) {
+                        fileType = ".r16";  // L16 PCM = 16-bit
+                    } else {
+                        fileType = "";
+                    }
                 } else if (0 == strcmp(jsAudioDataType, "wav")) {
                     fileType = ".wav";
                 } else if (0 == strcmp(jsAudioDataType, "mp3")) {
