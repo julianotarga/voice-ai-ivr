@@ -1360,16 +1360,26 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._cancel_handoff_fallback()
             
             if self._transfer_manager and self.config.intelligent_handoff_enabled:
-                # CRÍTICO: Interromper o provider IMEDIATAMENTE para parar de gerar áudio
-                # Isso evita que o agente continue falando enquanto o handoff inicia
-                self._set_transfer_in_progress(True, "request_handoff")
-                await self._notify_transfer_start()
+                # Interromper o provider para evitar fala concorrente
                 try:
                     if self._provider:
                         await self._provider.interrupt()
                         logger.info("Provider interrupted on handoff request")
                 except Exception as e:
                     logger.debug(f"Provider interrupt failed: {e}")
+                
+                # Falar ao cliente ANTES de iniciar transferência e colocar em espera
+                normalized_destination = self._normalize_handoff_destination_text(destination)
+                spoken_destination = self._format_destination_for_speech(normalized_destination)
+                pre_message = (
+                    f"Um momento, vou verificar a disponibilidade de {spoken_destination}. "
+                    "Vou colocar você em espera."
+                )
+                await self._say_to_caller(pre_message)
+                
+                # Agora sim, mutar áudio do agente durante a transferência
+                self._set_transfer_in_progress(True, "request_handoff")
+                await self._notify_transfer_start()
                 
                 # Handoff inteligente com attended transfer
                 asyncio.create_task(self._execute_intelligent_handoff(destination, reason))
@@ -1653,10 +1663,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             logger.exception(f"Error creating callback ticket: {e}")
             return {"success": False, "error": str(e)}
     
-    async def _send_text_to_provider(self, text: str) -> None:
+    async def _send_text_to_provider(self, text: str, request_response: bool = True) -> None:
         """Envia texto para o provider (TTS)."""
         if self._provider:
-            await self._provider.send_text(text)
+            await self._provider.send_text(text, request_response=request_response)
     
     async def _check_handoff_keyword(self, user_text: str) -> bool:
         """Verifica se o texto contém keyword de handoff."""
@@ -2731,9 +2741,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # 4. Agora sim, setar transfer_in_progress = False
             self._set_transfer_in_progress(False, "transfer_not_completed")
             
-            # 5. Enviar mensagem contextual
+            # 5. Enviar mensagem contextual (fala direta ao caller)
             message = result.message
-            await self._send_text_to_provider(message)
+            await self._say_to_caller(message)
+            # Registrar no contexto do LLM sem forçar nova resposta
+            await self._send_text_to_provider(message, request_response=False)
             
             # Aguardar TTS
             await asyncio.sleep(2.0)
@@ -2976,6 +2988,32 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         text_lower = re.sub(r"\s+", " ", text_lower).strip()
         
         return text_lower or destination_text
+
+    async def _say_to_caller(self, text: str) -> bool:
+        """
+        Fala texto diretamente no canal do caller via FreeSWITCH (mod_flite).
+        """
+        try:
+            from .handlers.esl_client import get_esl_for_domain
+            esl = await get_esl_for_domain(self.domain_uuid)
+            if not esl.is_connected:
+                await esl.connect()
+            return await esl.uuid_say(self.call_uuid, text)
+        except Exception as e:
+            logger.warning(f"Failed to speak to caller: {e}")
+            return False
+
+    def _format_destination_for_speech(self, destination_text: str) -> str:
+        """
+        Ajusta o destino para fala natural ao cliente.
+        """
+        if not destination_text:
+            return "um atendente"
+        text = destination_text.strip()
+        generic = ["qualquer", "alguém", "atendente", "disponível", "pessoa"]
+        if any(g in text.lower() for g in generic):
+            return "um atendente"
+        return text
     
     def _extract_call_reason(self, handoff_reason: str) -> Optional[str]:
         """
