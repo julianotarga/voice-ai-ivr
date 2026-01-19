@@ -285,37 +285,29 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         
         # === FORMATO GA (gpt-realtime) ===
         # Campos dentro de "session" wrapper
-        # NOTA: Modelos 2025+ requerem "type": "conversation" dentro de session
+        # Documentação oficial: session.type deve ser "realtime" (speech-to-speech) ou "transcription"
         session_config = {
             "type": "session.update",
             "session": {
-                # Tipo de sessão (requerido para modelos 2025+)
-                "type": "conversation",
+                # Tipo de sessão: "realtime" para conversação por voz (speech-to-speech)
+                "type": "realtime",
                 
-                # Modalities (texto + áudio)
-                "modalities": ["audio", "text"],
-                
-                # Voz (nível superior, não aninhado)
-                "voice": voice,
-                
-                # Formato de áudio (strings simples)
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
+                # Modelo (opcional, já especificado na URL de conexão)
+                "model": self.config.model or "gpt-4o-realtime-preview",
                 
                 # System prompt
                 "instructions": self.config.system_prompt or "",
-                
-                # Transcrição do input
-                "input_audio_transcription": {
-                    "model": "whisper-1"
-                },
                 
                 # Tools (function calling)
                 "tools": self.config.tools or DEFAULT_TOOLS,
                 "tool_choice": "auto",
                 
-                # Temperatura
-                "temperature": 0.8,
+                # Configuração de áudio (formato GA)
+                "audio": {
+                    "output": {
+                        "voice": voice,
+                    },
+                },
             }
         }
         
