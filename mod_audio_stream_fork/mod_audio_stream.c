@@ -279,12 +279,14 @@ done:
 }
 
 /* ========================================
- * NETPLAY FORK - G.711 Native Support
- * Version: 1.0.0-netplay-g711
+ * NETPLAY FORK - G.711 Native + Auto-Playback
+ * Version: 1.1.0-netplay
  * Build: 2026-01-19
- * Features: Native PCMU/PCMA encoding for WebSocket
+ * Features:
+ *   - Native PCMU/PCMA encoding for WebSocket
+ *   - Auto-playback via uuid_broadcast (streamAudio)
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "1.0.0-netplay-g711"
+#define MOD_AUDIO_STREAM_VERSION "1.1.0-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
@@ -296,7 +298,9 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
         "mod_audio_stream NETPLAY FORK v%s\n", MOD_AUDIO_STREAM_VERSION);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
-        "Build: %s | G.711 Native: ENABLED\n", MOD_AUDIO_STREAM_BUILD_DATE);
+        "Build: %s\n", MOD_AUDIO_STREAM_BUILD_DATE);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
+        "G.711 Native: ENABLED | Auto-Playback: ENABLED\n");
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
         "========================================\n");
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_audio_stream API loading..\n");
