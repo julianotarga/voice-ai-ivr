@@ -33,8 +33,9 @@ session:sleep(300) -- pequeno delay para estabilizar o canal
 -- STREAM_HEART_BEAT: intervalo em segundos para keep-alive (útil com load balancers)
 
 -- Habilitar playback bidirecional (v1.0.3+)
+-- Usar 8kHz para G.711 μ-law nativo (menor latência)
 session:setVariable("STREAM_PLAYBACK", "true")
-session:setVariable("STREAM_SAMPLE_RATE", "16000")
+session:setVariable("STREAM_SAMPLE_RATE", "8000")
 
 session:setVariable("STREAM_BUFFER_SIZE", "100")
 session:setVariable("STREAM_SUPPRESS_LOG", "false")
@@ -53,10 +54,12 @@ freeswitch.consoleLog("INFO", "[VoiceSecretary] Connecting to WebSocket: " .. ws
 
 local api = freeswitch.API()
 
--- Comando: uuid_audio_stream <uuid> start <ws-url> <mix-type> <sampling-rate>
+-- Comando: uuid_audio_stream <uuid> start <ws-url> <mix-type> <sampling-rate> [audio-format]
 --   mix-type: mono (apenas caller), mixed (caller+callee), stereo
 --   sampling-rate: 8k ou 16k
-local cmd = "uuid_audio_stream " .. call_uuid .. " start " .. ws_url .. " mono 16k"
+--   audio-format: l16 (padrão), pcmu (G.711 μ-law), pcma (G.711 A-law)
+-- Usar G.711 μ-law (pcmu) para menor latência com OpenAI Realtime
+local cmd = "uuid_audio_stream " .. call_uuid .. " start " .. ws_url .. " mono 8k pcmu"
 freeswitch.consoleLog("INFO", "[VoiceSecretary] Executing: " .. cmd .. "\n")
 
 local result = api:executeString(cmd)

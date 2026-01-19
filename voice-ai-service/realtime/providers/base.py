@@ -124,6 +124,12 @@ class RealtimeConfig:
     # Audio
     input_sample_rate: int = 16000
     output_sample_rate: int = 24000
+    
+    # Audio format
+    # - "pcm16" or "l16": Linear PCM 16-bit (legacy)
+    # - "g711_ulaw" or "pcmu": G.711 μ-law (recommended for telephony)
+    # - "g711_alaw" or "pcma": G.711 A-law
+    audio_format: str = "g711_ulaw"  # G.711 μ-law por padrão
 
 
 class BaseRealtimeProvider(ABC):

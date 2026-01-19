@@ -29,6 +29,7 @@ from .providers.factory import RealtimeProviderFactory
 from .utils.resampler import ResamplerPair
 from .utils.metrics import get_metrics
 from .utils.echo_canceller import EchoCancellerWrapper
+from .utils.audio_codec import G711Codec, ulaw_to_pcm, pcm_to_ulaw
 from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 
 # FASE 1: Handoff Inteligente
@@ -273,7 +274,13 @@ class RealtimeSessionConfig:
     # Guardrails - Segurança e moderação
     guardrails_enabled: bool = True  # Ativa instruções de segurança
     guardrails_topics: Optional[List[str]] = None  # Tópicos proibidos (lista)
-    freeswitch_sample_rate: int = 16000
+    
+    # Audio format configuration
+    # - "l16" or "pcm16": Linear PCM 16-bit (default, legacy)
+    # - "pcmu" or "g711u": G.711 μ-law (recommended for lower latency)
+    # - "pcma" or "g711a": G.711 A-law
+    audio_format: str = "pcmu"  # G.711 μ-law por padrão (menor latência)
+    freeswitch_sample_rate: int = 8000  # 8kHz para G.711, 16kHz para L16
     idle_timeout_seconds: int = 30
     max_duration_seconds: int = 600
     omniplay_webhook_url: Optional[str] = None
@@ -949,6 +956,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if not self.is_active or not self._provider:
             return
 
+        # ========================================
+        # G.711 → L16 Conversion (if needed)
+        # Converter G.711 μ-law para L16 PCM para processamento interno
+        # (AEC, barge-in detection, normalização, etc.)
+        # ========================================
+        if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+            # G.711 μ-law: 160 bytes/20ms → 320 bytes/20ms (L16)
+            audio_bytes = ulaw_to_pcm(audio_bytes)
+        elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+            # G.711 A-law: 160 bytes/20ms → 320 bytes/20ms (L16)
+            from .utils.audio_codec import alaw_to_pcm
+            audio_bytes = alaw_to_pcm(audio_bytes)
+
         # Durante transferência, não encaminhar áudio do FreeSWITCH para o provider.
         # Motivo: o MOH (uuid_broadcast/local_stream://moh) pode "vazar" no stream
         # e ser interpretado como fala, fazendo o agente gerar respostas sozinho.
@@ -1067,8 +1087,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             self._ptt_silence_ms = 0
                             await self._commit_ptt_audio()
 
+            # Resampling (só para PCM16, não para G.711)
             if self._resampler and self._resampler.input_resampler.needs_resample:
-                frame = self._resampler.resample_input(frame)
+                # Só resample se não estivermos usando G.711
+                if self.config.audio_format not in ("pcmu", "g711u", "ulaw", "pcma", "g711a", "alaw"):
+                    frame = self._resampler.resample_input(frame)
+            
+            # Se usando G.711, converter L16 de volta para G.711 antes de enviar ao provider
+            # (já convertemos G.711→L16 no início do handle_audio_input para processamento)
+            if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+                frame = pcm_to_ulaw(frame)
+            elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+                from .utils.audio_codec import pcm_to_alaw
+                frame = pcm_to_alaw(frame)
 
             await self._provider.send_audio(frame)
     
@@ -1128,8 +1159,31 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 return
             
             # Adicionar ao buffer de referência do AEC (para remover eco)
+            # NOTA: AEC trabalha em L16 PCM, então adicionamos antes da conversão G.711
             if self._echo_canceller:
                 self._echo_canceller.add_speaker_frame(audio_bytes)
+            
+            # ========================================
+            # PCM16 → G.711 Conversion (output)
+            # Converter para G.711 antes de enviar ao FreeSWITCH
+            # Reduz bandwidth e é nativo do FreeSWITCH
+            # ========================================
+            if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+                # Primeiro, resample de 24kHz → 8kHz (requerido para G.711)
+                # O resampler já deve ter feito isso, mas vamos garantir
+                from .utils.resampler import Resampler
+                if not hasattr(self, '_g711_downsampler'):
+                    # 16kHz → 8kHz (assumindo que resampler já converteu 24k→16k)
+                    self._g711_downsampler = Resampler(16000, 8000)
+                audio_bytes = self._g711_downsampler.process(audio_bytes)
+                audio_bytes = pcm_to_ulaw(audio_bytes)
+            elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+                from .utils.resampler import Resampler
+                from .utils.audio_codec import pcm_to_alaw
+                if not hasattr(self, '_g711_downsampler'):
+                    self._g711_downsampler = Resampler(16000, 8000)
+                audio_bytes = self._g711_downsampler.process(audio_bytes)
+                audio_bytes = pcm_to_alaw(audio_bytes)
             
             self._pending_audio_bytes += len(audio_bytes)
             await self._on_audio_output(audio_bytes)

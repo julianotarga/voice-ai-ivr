@@ -409,6 +409,24 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             # Context7 mostra que áudio e tools são enviados separadamente em alguns exemplos
             
             # ETAPA 1: Configuração de áudio e sessão
+            # Determinar formato de áudio baseado na configuração
+            # G.711 μ-law (8kHz) elimina resampling e reduz latência ~50ms
+            audio_format = getattr(self.config, 'audio_format', 'pcm16')
+            if audio_format in ("g711_ulaw", "pcmu", "ulaw"):
+                input_format = {"type": "audio/pcmu"}  # G.711 μ-law @ 8kHz
+                input_rate_log = "8kHz G.711 μ-law"
+            elif audio_format in ("g711_alaw", "pcma", "alaw"):
+                input_format = {"type": "audio/pcma"}  # G.711 A-law @ 8kHz
+                input_rate_log = "8kHz G.711 A-law"
+            else:
+                input_format = {"type": "audio/pcm", "rate": 24000}  # PCM16 @ 24kHz
+                input_rate_log = "24kHz PCM16"
+            
+            logger.info(f"OpenAI Realtime audio format: input={input_rate_log}", extra={
+                "audio_format": audio_format,
+                "domain_uuid": self.config.domain_uuid,
+            })
+            
             audio_config = {
                 "type": "session.update",
                 "session": {
@@ -417,15 +435,14 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                     "instructions": self.config.system_prompt or "",
                     "audio": {
                         "input": {
-                            "format": {
-                                "type": "audio/pcm",
-                                "rate": 24000
-                            },
+                            "format": input_format,
                             # Noise reduction para ambientes ruidosos (viva-voz, salas)
                             # far_field = microfone distante, near_field = headset
                             "noise_reduction": {"type": "far_field"},
                         },
                         "output": {
+                            # Output sempre PCM @ 24kHz (OpenAI não suporta G.711 output)
+                            # Conversão G.711 será feita no Python antes de enviar ao FreeSWITCH
                             "format": {
                                 "type": "audio/pcm",
                                 "rate": 24000
@@ -486,14 +503,23 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 
         else:
             # === FORMATO PREVIEW: Enviar tudo junto (mantém comportamento anterior) ===
+            # Determinar formato de áudio para modelos preview
+            audio_format = getattr(self.config, 'audio_format', 'pcm16')
+            if audio_format in ("g711_ulaw", "pcmu", "ulaw"):
+                input_audio_fmt = "g711_ulaw"
+            elif audio_format in ("g711_alaw", "pcma", "alaw"):
+                input_audio_fmt = "g711_alaw"
+            else:
+                input_audio_fmt = "pcm16"
+            
             session_config = {
                 "type": "session.update",
                 "session": {
                     "modalities": ["text", "audio"],
                     "instructions": self.config.system_prompt or "",
                     "voice": voice,
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
+                    "input_audio_format": input_audio_fmt,
+                    "output_audio_format": "pcm16",  # Output sempre PCM16
                     "tools": tools,
                     "tool_choice": "auto",
                 }

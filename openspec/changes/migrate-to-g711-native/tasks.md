@@ -12,10 +12,12 @@
 - [x] 0.1.7 Modificar stream_frame() para codificar L16→G.711 antes de enviar
 - [x] 0.1.8 Criar README.fork.md documentando as modificações
 
-### 0.2 Próximos passos do fork
-- [ ] 0.2.1 Compilar mod_audio_stream no servidor FreeSWITCH
-- [ ] 0.2.2 Testar comando `uuid_audio_stream <uuid> start <url> mono 8k pcmu`
-- [ ] 0.2.3 Verificar se áudio G.711 está sendo enviado corretamente
+### 0.2 Build e Deploy
+- [x] 0.2.0 Revisão L7: correções de segurança e performance
+- [x] 0.2.1 Criar script de build `build-g711-fork.sh`
+- [ ] 0.2.2 Compilar no servidor FreeSWITCH de produção
+- [ ] 0.2.3 Testar comando `uuid_audio_stream <uuid> start <url> mono 8k pcmu`
+- [ ] 0.2.4 Verificar se áudio G.711 está sendo enviado corretamente
 
 ---
 

@@ -1,13 +1,14 @@
 -- Voice Secretary AI Script
--- Integração com Voice AI Realtime via WebSocket (mod_audio_stream v1.0.3+)
+-- Integração com Voice AI Realtime via WebSocket (mod_audio_stream v1.0.3+ fork G.711)
 -- 
 -- Referências:
--- - https://github.com/amigniter/mod_audio_stream
+-- - https://github.com/amigniter/mod_audio_stream (fork com suporte G.711)
 -- - https://github.com/os11k/freeswitch-elevenlabs-bridge
 --
 -- Configuração:
 -- - URL: ws://127.0.0.1:8085/stream/{domain_uuid}/{call_uuid}
--- - Parâmetro mod_audio_stream: mono 16k (mono = apenas caller, evita eco)
+-- - Parâmetro mod_audio_stream: mono 8k pcmu (G.711 μ-law nativo)
+-- - G.711 reduz latência (~50ms) eliminando resampling
 -- - Formato de resposta: JSON com type="streamAudio"
 
 local domain_uuid = session:getVariable("domain_uuid") or ""
@@ -63,9 +64,9 @@ end
 -- CONFIGURAR VARIÁVEIS DE CANAL
 -- =============================================================================
 -- STREAM_PLAYBACK=true habilita receber áudio de volta do WebSocket
--- STREAM_SAMPLE_RATE=16000 define a taxa de amostragem
+-- STREAM_SAMPLE_RATE=8000 para G.711 (8kHz nativo)
 session:setVariable("STREAM_PLAYBACK", "true")
-session:setVariable("STREAM_SAMPLE_RATE", "16000")
+session:setVariable("STREAM_SAMPLE_RATE", "8000")
 session:setVariable("STREAM_SUPPRESS_LOG", "false")  -- Habilitar logs para debug
 
 -- CRÍTICO: Habilitar jitter buffer para evitar áudio picotado
@@ -89,15 +90,20 @@ local ws_url = "ws://127.0.0.1:8085/stream/" .. secretary_uuid .. "/" .. call_uu
 freeswitch.consoleLog("INFO", "[VoiceSecretary] Connecting to WebSocket: " .. ws_url .. "\n")
 
 -- Iniciar audio stream via API
--- Sintaxe: uuid_audio_stream <uuid> start <url> <mix-type> <sampling-rate> [metadata]
+-- Sintaxe: uuid_audio_stream <uuid> start <url> <mix-type> <sampling-rate> [audio-format] [metadata]
 -- mix-type: 
 --   mono   = apenas áudio do CALLER (usuário) - CORRETO para Voice AI!
 --   mixed  = caller + callee (causa eco do playback voltando ao AI)
 --   stereo = caller em canal 1, callee em canal 2
 -- sampling-rate: "8k" ou "16k" (não 8000 ou 16000!)
+-- audio-format (fork G.711):
+--   l16/pcm = Linear PCM 16-bit (padrão)
+--   pcmu/ulaw = G.711 μ-law (RECOMENDADO - menor latência)
+--   pcma/alaw = G.711 A-law
 local api = freeswitch.API()
 -- IMPORTANTE: usar MONO para evitar eco do playback!
-local cmd = "uuid_audio_stream " .. call_uuid .. " start " .. ws_url .. " mono 16k"
+-- Usar PCMU (G.711 μ-law) para menor latência com OpenAI Realtime
+local cmd = "uuid_audio_stream " .. call_uuid .. " start " .. ws_url .. " mono 8k pcmu"
 freeswitch.consoleLog("INFO", "[VoiceSecretary] Executing: " .. cmd .. "\n")
 
 local result = api:executeString(cmd)
