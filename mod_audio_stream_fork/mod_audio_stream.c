@@ -42,61 +42,55 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
             if (tech_pvt->close_requested) {
                 return SWITCH_FALSE;
             }
+            
+            /* NETPLAY v2.1: Inject playback audio during READ callback
+             * This is called every 20ms when receiving audio from caller.
+             * We use this opportunity to also send audio TO the caller.
+             */
+            if (tech_pvt->playback_buffer && tech_pvt->playback_mutex) {
+                switch_mutex_lock(tech_pvt->playback_mutex);
+                
+                switch_size_t available = switch_buffer_inuse(tech_pvt->playback_buffer);
+                const switch_size_t frame_size = 320; /* L16 @ 8kHz, 20ms = 160 samples * 2 bytes */
+                const switch_size_t warmup_threshold = frame_size * 5; /* 100ms warmup */
+                
+                /* Warmup: wait until we have enough buffer */
+                if (!tech_pvt->playback_active && available >= warmup_threshold) {
+                    tech_pvt->playback_active = 1;
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+                        "🔊 Streaming started (buffer: %zu bytes)\n", available);
+                }
+                
+                if (tech_pvt->playback_active && available >= frame_size) {
+                    /* Read audio from buffer */
+                    uint8_t audio_data[320];
+                    switch_buffer_read(tech_pvt->playback_buffer, audio_data, frame_size);
+                    
+                    /* Create and send frame */
+                    switch_frame_t write_frame = { 0 };
+                    write_frame.data = audio_data;
+                    write_frame.datalen = frame_size;
+                    write_frame.samples = 160;
+                    write_frame.codec = switch_core_session_get_write_codec(session);
+                    
+                    if (write_frame.codec) {
+                        switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
+                    }
+                } else if (tech_pvt->playback_active && available == 0) {
+                    /* Buffer empty - pause playback */
+                    tech_pvt->playback_active = 0;
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+                        "⏸️ Buffer empty, pausing\n");
+                }
+                
+                switch_mutex_unlock(tech_pvt->playback_mutex);
+            }
+            
             return stream_frame(bug);
             break;
 
         case SWITCH_ABC_TYPE_WRITE:
-            /* NETPLAY v2.0: Streaming playback - inject audio from buffer into channel
-             * 
-             * Frame timing @ 8kHz L16:
-             * - Frame size: 320 bytes (160 samples * 2 bytes)
-             * - Frame duration: 20ms
-             * - Warmup threshold: 1600 bytes (100ms = 5 frames)
-             * 
-             * This ensures smooth playback without underruns.
-             */
-            if (tech_pvt->playback_buffer) {
-                switch_frame_t *write_frame = switch_core_media_bug_get_write_replace_frame(bug);
-                if (write_frame && write_frame->data && write_frame->datalen > 0) {
-                    switch_mutex_lock(tech_pvt->playback_mutex);
-                    
-                    switch_size_t available = switch_buffer_inuse(tech_pvt->playback_buffer);
-                    const switch_size_t frame_size = write_frame->datalen;
-                    const switch_size_t warmup_threshold = frame_size * 5; /* 100ms @ 20ms/frame */
-                    
-                    /* Warmup: wait until we have enough buffer before starting */
-                    if (!tech_pvt->playback_active && available >= warmup_threshold) {
-                        tech_pvt->playback_active = 1;
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                            "🔊 Streaming started (buffer: %zu bytes, warmup: %zu)\n", 
-                            available, warmup_threshold);
-                    }
-                    
-                    if (tech_pvt->playback_active) {
-                        if (available >= frame_size) {
-                            /* Normal case: enough data, read full frame */
-                            switch_buffer_read(tech_pvt->playback_buffer, write_frame->data, frame_size);
-                            switch_core_media_bug_set_write_replace_frame(bug, write_frame);
-                        } else if (available > 0) {
-                            /* Underrun: partial data, pad with silence (linear interpolation would be better) */
-                            uint8_t *data = (uint8_t *)write_frame->data;
-                            switch_buffer_read(tech_pvt->playback_buffer, data, available);
-                            /* Pad with silence (0x00 for L16, 0xFF for PCMU) */
-                            memset(data + available, 0, frame_size - available);
-                            switch_core_media_bug_set_write_replace_frame(bug, write_frame);
-                            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                                "⚠️ Buffer underrun: %zu/%zu bytes\n", available, frame_size);
-                        } else {
-                            /* Buffer empty - stop playback, wait for more data */
-                            tech_pvt->playback_active = 0;
-                            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                                "⏸️ Buffer empty, pausing playback\n");
-                        }
-                    }
-                    
-                    switch_mutex_unlock(tech_pvt->playback_mutex);
-                }
-            }
+            /* NETPLAY: Audio injection now happens in READ callback via switch_core_session_write_frame */
             break;
         default:
             break;
@@ -343,7 +337,7 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.1.1-netplay"
+#define MOD_AUDIO_STREAM_VERSION "2.2.0-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
