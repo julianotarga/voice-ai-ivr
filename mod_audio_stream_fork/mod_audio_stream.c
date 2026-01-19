@@ -19,6 +19,50 @@ static void responseHandler(switch_core_session_t* session, const char* eventNam
     switch_event_fire(&event);
 }
 
+/*
+ * Linear 16-bit PCM to μ-law conversion
+ * Standard ITU-T G.711 algorithm
+ */
+static inline uint8_t linear_to_ulaw(int16_t pcm_val)
+{
+    static const int16_t BIAS = 0x84;   /* Bias for linear code */
+    static const int16_t CLIP = 32635;
+    static const uint8_t exp_lut[256] = {
+        0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+        5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+    };
+    
+    int sign, exponent, mantissa;
+    uint8_t ulawbyte;
+    
+    /* Get the sign and the magnitude */
+    sign = (pcm_val >> 8) & 0x80;
+    if (sign != 0) pcm_val = -pcm_val;
+    if (pcm_val > CLIP) pcm_val = CLIP;
+    
+    /* Convert from 16 bit linear to ulaw */
+    pcm_val = pcm_val + BIAS;
+    exponent = exp_lut[(pcm_val >> 7) & 0xFF];
+    mantissa = (pcm_val >> (exponent + 3)) & 0x0F;
+    ulawbyte = ~(sign | (exponent << 4) | mantissa);
+    
+    return ulawbyte;
+}
+
 static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
     switch_core_session_t *session = switch_core_media_bug_get_session(bug);
@@ -64,19 +108,26 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 if (tech_pvt->playback_active && available >= l16_frame_size) {
                     /* Read L16 audio from buffer */
                     int16_t l16_data[160];  /* 160 samples of L16 */
+                    uint8_t pcmu_data[160]; /* 160 bytes of PCMU */
+                    int i;
+                    
                     switch_buffer_read(tech_pvt->playback_buffer, l16_data, l16_frame_size);
                     
-                    /* Get read codec (L16 internal) - FS will transcode to wire codec */
-                    switch_codec_t *read_codec = switch_core_session_get_read_codec(session);
+                    /* Convert L16 to PCMU using FreeSWITCH's built-in function */
+                    for (i = 0; i < 160; i++) {
+                        pcmu_data[i] = linear_to_ulaw(l16_data[i]);
+                    }
                     
-                    if (read_codec) {
-                        /* Create frame with L16 data - FreeSWITCH handles transcoding */
+                    /* Get write codec (PCMU) */
+                    switch_codec_t *write_codec = switch_core_session_get_write_codec(session);
+                    
+                    if (write_codec) {
                         switch_frame_t write_frame = { 0 };
-                        write_frame.data = l16_data;
-                        write_frame.datalen = l16_frame_size;
+                        write_frame.data = pcmu_data;
+                        write_frame.datalen = 160;  /* PCMU: 160 bytes for 160 samples */
                         write_frame.samples = 160;
                         write_frame.rate = 8000;
-                        write_frame.codec = read_codec;
+                        write_frame.codec = write_codec;
                         
                         switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
                     }
@@ -341,7 +392,7 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.2.2-netplay"
+#define MOD_AUDIO_STREAM_VERSION "2.3.0-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
