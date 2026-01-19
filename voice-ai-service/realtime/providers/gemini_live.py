@@ -210,8 +210,9 @@ class GeminiLiveProvider(BaseRealtimeProvider):
         }
         
         # Adicionar maxOutputTokens se configurado (limitar resposta)
-        if self.config.max_response_output_tokens and self.config.max_response_output_tokens > 0:
-            generation_config["maxOutputTokens"] = int(self.config.max_response_output_tokens)
+        # None = infinito (não envia o parâmetro)
+        if self.config.max_response_output_tokens is not None and self.config.max_response_output_tokens > 0:
+            generation_config["maxOutputTokens"] = self.config.max_response_output_tokens
         
         # Configurar temperatura se especificada
         if hasattr(self.config, 'temperature') and self.config.temperature is not None:
