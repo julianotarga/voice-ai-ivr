@@ -133,6 +133,7 @@ class DualModeEventRelay:
         self._hangup_received = False
         self._session_lock = threading.Lock()  # Protege acesso à sessão
         self._outbound_moh_active = False
+        self._current_moh_source: Optional[str] = None  # Fonte de MOH atual
         self._command_queue: Queue = Queue()
         
         # Últimos eventos recebidos (para debug)
@@ -657,18 +658,37 @@ class DualModeEventRelay:
         try:
             if on:
                 # Tocar MOH em background (não bloqueante)
-                # Tentar várias opções de música de espera
-                moh_sources = [
-                    "local_stream://default",
-                    "local_stream://moh",
-                    "silence_stream://-1,1400",  # Silêncio com tom leve como fallback
-                ]
+                # 
+                # IMPORTANTE: local_stream retorna sucesso mesmo sem arquivos!
+                # Então usamos tone_stream PRIMEIRO para garantir que o cliente ouça algo.
+                # Se o usuário configurar MOH real no FreeSWITCH, pode mudar a ordem.
+                #
+                # Variável de ambiente para escolher MOH preferido
+                preferred_moh = os.getenv("VOICE_AI_MOH_SOURCE", "tone_stream")
+                
+                if preferred_moh == "local_stream":
+                    # Prioriza música de espera configurada
+                    moh_sources = [
+                        "local_stream://default",
+                        "local_stream://moh",
+                        "tone_stream://%(1000,4000,425);loops=-1",
+                    ]
+                else:
+                    # Prioriza tom de ringback (garantido funcionar)
+                    moh_sources = [
+                        # Tom de ringback brasileiro (som de "chamando" - 425Hz)
+                        "tone_stream://%(1000,4000,425);loops=-1",
+                        # Fallback para MOH configurado
+                        "local_stream://default",
+                        "local_stream://moh",
+                    ]
                 
                 for moh_source in moh_sources:
                     try:
                         logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] Tentando playback: {moh_source}")
                         self.session.playback(moh_source, block=False)
                         self._outbound_moh_active = True
+                        self._current_moh_source = moh_source
                         logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] ✅ MOH iniciado com sucesso: {moh_source}")
                         return True
                     except Exception as e:
