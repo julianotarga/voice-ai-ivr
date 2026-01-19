@@ -108,6 +108,44 @@ END_CALL_FUNCTION_DEFINITION = {
 }
 
 # ========================================
+# FUNÇÃO TAKE_MESSAGE - Para anotar recados
+# ========================================
+
+TAKE_MESSAGE_FUNCTION_DEFINITION = {
+    "type": "function",
+    "name": "take_message",
+    "description": (
+        "Anota um recado do cliente para retorno posterior. "
+        "OBRIGATÓRIO usar quando o cliente quiser deixar uma mensagem ou recado. "
+        "Após chamar esta função, a chamada será encerrada automaticamente. "
+        "Colete: nome do cliente, telefone para retorno, mensagem e urgência."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "caller_name": {
+                "type": "string",
+                "description": "Nome de quem está ligando"
+            },
+            "phone": {
+                "type": "string",
+                "description": "Telefone para retorno (ex: '11987654321')"
+            },
+            "message": {
+                "type": "string",
+                "description": "Conteúdo do recado"
+            },
+            "urgency": {
+                "type": "string",
+                "enum": ["normal", "urgente", "muito_urgente"],
+                "description": "Nível de urgência do recado"
+            }
+        },
+        "required": ["caller_name", "phone", "message"]
+    }
+}
+
+# ========================================
 # MODO DUAL: Function Definitions
 # Ref: openspec/changes/dual-mode-esl-websocket/
 # ========================================

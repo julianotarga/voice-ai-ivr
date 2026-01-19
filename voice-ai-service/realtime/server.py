@@ -640,6 +640,7 @@ class RealtimeServer:
             CHECK_EXTENSION_FUNCTION_DEFINITION,
             LOOKUP_CUSTOMER_FUNCTION_DEFINITION,
             CHECK_APPOINTMENT_FUNCTION_DEFINITION,
+            TAKE_MESSAGE_FUNCTION_DEFINITION,
         )
         
         # Inicializar tools se não existir
@@ -662,6 +663,10 @@ class RealtimeServer:
         # Adicionar end_call se não existir
         if "end_call" not in tool_names:
             tools.append(END_CALL_FUNCTION_DEFINITION)
+        
+        # Adicionar take_message se não existir (OBRIGATÓRIO para recados)
+        if "take_message" not in tool_names:
+            tools.append(TAKE_MESSAGE_FUNCTION_DEFINITION)
         
         # ========================================
         # FERRAMENTAS DE CONTROLE DE CHAMADA
