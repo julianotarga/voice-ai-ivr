@@ -99,7 +99,7 @@ FORMATO GA (gpt-realtime, gpt-realtime-mini):
                 "turn_detection": {"type": "semantic_vad", ...}
             },
             "output": {
-                "format": {"type": "audio/pcm"},
+                "format": {"type": "audio/pcm", "rate": 24000},  // rate OBRIGATÓRIO!
                 "voice": "marin"
             }
         }
@@ -388,6 +388,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                     "tool_choice": "auto",
                     
                     # Configuração de áudio (formato GA estruturado)
+                    # NOTA: rate é OBRIGATÓRIO tanto em input quanto em output!
                     "audio": {
                         "input": {
                             "format": {
@@ -398,6 +399,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                         "output": {
                             "format": {
                                 "type": "audio/pcm",
+                                "rate": 24000  # OBRIGATÓRIO para modelos GA!
                             },
                             "voice": voice,
                         },
