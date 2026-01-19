@@ -131,6 +131,7 @@ class DualModeEventRelay:
         self._connected = False
         self._hangup_received = False
         self._session_lock = threading.Lock()  # Protege acesso à sessão
+        self._outbound_moh_active = False
         
         # Últimos eventos recebidos (para debug)
         self._last_dtmf: Optional[str] = None
@@ -585,8 +586,8 @@ class DualModeEventRelay:
         """
         Coloca/retira a chamada em espera no modo ESL Outbound.
         
-        NOTA: uuid_hold (API) não funciona em Outbound, mas podemos usar
-        session.execute("hold"/"unhold") no canal atual.
+        NOTA: uuid_hold (API) não funciona em Outbound. No greenswitch,
+        usamos playback de MOH em background e interrompemos com uuid_break.
         
         Args:
             on: True para colocar em espera, False para retirar
@@ -599,19 +600,22 @@ class DualModeEventRelay:
             return False
         
         try:
-            import gevent
-            
-            app = "hold" if on else "unhold"
-            with gevent.Timeout(2.0, False):
-                self.session.execute(app)
-                logger.info(f"[{self._uuid}] {app} executed via ESL Outbound")
+            if on:
+                # Tocar MOH em background (não bloqueante)
+                self.session.playback("local_stream://default", block=False)
+                self._outbound_moh_active = True
+                logger.info(f"[{self._uuid}] MOH started via ESL Outbound")
+                return True
+            else:
+                # Parar MOH (uuid_break é API global e requer permissão full)
+                if self._outbound_moh_active:
+                    self.session.uuid_break()
+                    self._outbound_moh_active = False
+                    logger.info(f"[{self._uuid}] MOH stopped via ESL Outbound (uuid_break)")
                 return True
             
-            logger.warning(f"[{self._uuid}] {app} via ESL Outbound timed out")
-            return False
-            
         except Exception as e:
-            logger.warning(f"[{self._uuid}] {('hold' if on else 'unhold')} via ESL Outbound failed: {e}")
+            logger.warning(f"[{self._uuid}] hold/unhold via ESL Outbound failed: {e}")
             return False
     
     def uuid_break(self) -> bool:
