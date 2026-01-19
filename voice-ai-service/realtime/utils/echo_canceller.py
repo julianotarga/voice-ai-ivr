@@ -110,11 +110,13 @@ class EchoCancellerWrapper:
         # Dividir em frames do tamanho esperado
         frame_bytes = self.frame_size * 2  # 2 bytes por sample (PCM16)
         offset = 0
+        frames_added = 0
         
         while offset + frame_bytes <= len(audio_bytes):
             frame = audio_bytes[offset:offset + frame_bytes]
             self.speaker_buffer.append(frame)
             offset += frame_bytes
+            frames_added += 1
         
         # Guardar resto parcial (se houver)
         if offset < len(audio_bytes):
@@ -122,6 +124,14 @@ class EchoCancellerWrapper:
             remaining = audio_bytes[offset:]
             padding = bytes(frame_bytes - len(remaining))
             self.speaker_buffer.append(remaining + padding)
+            frames_added += 1
+        
+        # Log periódico
+        if frames_added > 0 and (self.frames_processed % 50 == 0 or self.frames_processed < 5):
+            logger.debug(
+                f"🔊 [AEC] speaker_frame: +{frames_added} frames, "
+                f"buffer={len(self.speaker_buffer)}/{self.max_speaker_frames}"
+            )
     
     def process(self, mic_audio: bytes) -> bytes:
         """
@@ -139,6 +149,8 @@ class EchoCancellerWrapper:
         frame_bytes = self.frame_size * 2
         result = bytearray()
         offset = 0
+        frames_with_reference = 0
+        frames_without_reference = 0
         
         while offset + frame_bytes <= len(mic_audio):
             mic_frame = mic_audio[offset:offset + frame_bytes]
@@ -146,9 +158,11 @@ class EchoCancellerWrapper:
             # Pegar frame do speaker para referência
             if self.speaker_buffer:
                 speaker_frame = self.speaker_buffer.popleft()
+                frames_with_reference += 1
             else:
-                # Sem referência, usar silêncio
+                # Sem referência, usar silêncio (AEC não vai remover nada)
                 speaker_frame = bytes(frame_bytes)
+                frames_without_reference += 1
             
             try:
                 # Processar AEC
@@ -162,15 +176,22 @@ class EchoCancellerWrapper:
             
             self.frames_processed += 1
             offset += frame_bytes
-            
-            # Log periódico a cada 250 frames (~5 segundos)
-            if self.frames_processed % 250 == 0:
-                logger.info(
-                    f"🔇 [AEC] frames={self.frames_processed}, "
-                    f"echo_removed={self.frames_with_echo_removed}, "
-                    f"speaker_buffer={len(self.speaker_buffer)}, "
-                    f"sample_rate={self.sample_rate}Hz"
-                )
+        
+        # Log periódico a cada 250 frames (~5 segundos)
+        if self.frames_processed % 250 == 0:
+            logger.info(
+                f"🔇 [AEC] frames={self.frames_processed}, "
+                f"with_ref={frames_with_reference}, no_ref={frames_without_reference}, "
+                f"speaker_buffer={len(self.speaker_buffer)}, "
+                f"sample_rate={self.sample_rate}Hz"
+            )
+        
+        # Log inicial para debug
+        if self.frames_processed <= 5:
+            logger.info(
+                f"🔇 [AEC] frame #{self.frames_processed}: "
+                f"mic={len(mic_audio)}B, with_ref={frames_with_reference}, no_ref={frames_without_reference}"
+            )
         
         # Processar resto parcial
         if offset < len(mic_audio):
