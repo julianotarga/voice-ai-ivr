@@ -269,7 +269,7 @@ class RealtimeSessionConfig:
     # Tipo: "server_vad" (baseado em silêncio) ou "semantic_vad" (baseado em semântica)
     vad_type: str = "semantic_vad"  # RECOMENDADO: semantic_vad é mais inteligente
     vad_threshold: float = 0.5  # 0.0-1.0 (sensibilidade)
-    vad_eagerness: str = "medium"  # low, medium, high (quão rápido responder) - só semantic_vad
+    vad_eagerness: str = "low"  # low=tolerante a eco, medium, high - só semantic_vad
     silence_duration_ms: int = 500  # Tempo de silêncio para encerrar turno (só server_vad)
     prefix_padding_ms: int = 300  # Áudio antes da fala detectada
     

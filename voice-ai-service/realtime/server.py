@@ -439,8 +439,9 @@ class RealtimeServer:
                     s.silence_fallback_prompt,
                     COALESCE(s.silence_fallback_max_retries, 2) as silence_fallback_max_retries,
                     -- VAD Configuration (migration 023)
+                    -- NOTA: 'low' é mais tolerante a eco de viva-voz
                     COALESCE(s.vad_type, 'semantic_vad') as vad_type,
-                    COALESCE(s.vad_eagerness, 'medium') as vad_eagerness,
+                    COALESCE(s.vad_eagerness, 'low') as vad_eagerness,
                     -- Guardrails Configuration (migration 023)
                     COALESCE(s.guardrails_enabled, true) as guardrails_enabled,
                     s.guardrails_topics,
@@ -840,8 +841,9 @@ class RealtimeServer:
             silence_fallback_prompt=row.get("silence_fallback_prompt"),
             silence_fallback_max_retries=int(row.get("silence_fallback_max_retries") or 2),
             # VAD Configuration (migration 023)
+            # NOTA: 'low' é mais tolerante a eco de viva-voz
             vad_type=row.get("vad_type") or "semantic_vad",
-            vad_eagerness=row.get("vad_eagerness") or "medium",
+            vad_eagerness=row.get("vad_eagerness") or "low",
             # Guardrails Configuration (migration 023)
             guardrails_enabled=_parse_bool(row.get("guardrails_enabled"), default=True),
             guardrails_topics=_parse_guardrails_topics(row.get("guardrails_topics")),
