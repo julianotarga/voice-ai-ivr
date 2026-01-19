@@ -331,8 +331,11 @@ namespace {
 
         memset(tech_pvt, 0, sizeof(private_t));
 
-        strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
-        strncpy(tech_pvt->ws_uri, wsUri, MAX_WS_URI);
+        /* Use strncpy with explicit null-termination to prevent buffer overread */
+        strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID - 1);
+        tech_pvt->sessionId[MAX_SESSION_ID - 1] = '\0';
+        strncpy(tech_pvt->ws_uri, wsUri, MAX_WS_URI - 1);
+        tech_pvt->ws_uri[MAX_WS_URI - 1] = '\0';
         tech_pvt->sampling = desiredSampling;
         tech_pvt->responseHandler = responseHandler;
         tech_pvt->rtp_packets = rtp_packets;
@@ -341,10 +344,18 @@ namespace {
         tech_pvt->audio_format = audio_format;
         tech_pvt->codec_initialized = 0;
 
-        if (metadata) strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN);
+        if (metadata) {
+            strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN - 1);
+            tech_pvt->initialMetadata[MAX_METADATA_LEN - 1] = '\0';
+        }
 
-        //size_t buflen = (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PERIOD * BUFFERED_SEC);
-        const size_t buflen = (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * rtp_packets);
+        /* Calculate buffer length with overflow protection
+         * Formula: FRAME_SIZE_8000 * (desiredSampling / 8000) * channels * rtp_packets
+         * FRAME_SIZE_8000 = 320 bytes (20ms @ 8kHz stereo L16)
+         * Max reasonable values: 48kHz, 2 channels, 10 rtp_packets = 320 * 6 * 2 * 10 = 38400
+         */
+        const size_t buflen = ((size_t)FRAME_SIZE_8000 * (size_t)desiredSampling / 8000) * 
+                              (size_t)channels * (size_t)rtp_packets;
 
         auto* as = new AudioStreamer(tech_pvt->sessionId, wsUri, responseHandler, deflate, heart_beat,
                                         suppressLog, extra_headers, no_reconnect,
@@ -381,6 +392,12 @@ namespace {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                     "(%s) G.711 (%s) requires 8kHz sample rate, got %d Hz\n", 
                     tech_pvt->sessionId, codec_name, desiredSampling);
+                /* Clean up AudioStreamer before returning to prevent memory leak */
+                if (tech_pvt->pAudioStreamer) {
+                    auto* as = static_cast<AudioStreamer*>(tech_pvt->pAudioStreamer);
+                    finish(as);
+                    tech_pvt->pAudioStreamer = nullptr;
+                }
                 return SWITCH_STATUS_FALSE;
             }
             
@@ -399,6 +416,12 @@ namespace {
                                        pool) != SWITCH_STATUS_SUCCESS) {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                     "(%s) Failed to initialize %s codec\n", tech_pvt->sessionId, codec_name);
+                /* Clean up AudioStreamer before returning to prevent memory leak */
+                if (tech_pvt->pAudioStreamer) {
+                    auto* as = static_cast<AudioStreamer*>(tech_pvt->pAudioStreamer);
+                    finish(as);
+                    tech_pvt->pAudioStreamer = nullptr;
+                }
                 return SWITCH_STATUS_FALSE;
             }
             tech_pvt->codec_initialized = 1;
@@ -442,17 +465,14 @@ namespace {
 
 extern "C" {
     int validate_ws_uri(const char* url, char* wsUri) {
-        const char* scheme = nullptr;
         const char* hostStart = nullptr;
         const char* hostEnd = nullptr;
         const char* portStart = nullptr;
 
-        // Check scheme
+        // Check scheme (ws:// or wss://)
         if (strncmp(url, "ws://", 5) == 0) {
-            scheme = "ws";
             hostStart = url + 5;
         } else if (strncmp(url, "wss://", 6) == 0) {
-            scheme = "wss";
             hostStart = url + 6;
         } else {
             return 0;
@@ -722,6 +742,10 @@ extern "C" {
                 
                 uint8_t data_buf[SWITCH_RECOMMENDED_BUFFER_SIZE];
                 uint8_t g711_buf[SWITCH_RECOMMENDED_BUFFER_SIZE / 2]; /* G.711 is half the size of L16 */
+                /* Pre-allocate buffer for reading from sbuffer to avoid allocation in hot path */
+                uint8_t sbuffer_tmp[SWITCH_RECOMMENDED_BUFFER_SIZE];
+                uint8_t sbuffer_g711[SWITCH_RECOMMENDED_BUFFER_SIZE / 2];
+                
                 switch_frame_t frame = {0};
                 frame.data = data_buf;
                 frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
@@ -746,20 +770,18 @@ extern "C" {
                         }
                         if (0 == switch_buffer_freespace(tech_pvt->sbuffer)) {
                             switch_size_t inuse = switch_buffer_inuse(tech_pvt->sbuffer);
-                            if (inuse > 0) {
-                                std::vector<uint8_t> tmp(inuse);
-                                switch_buffer_read(tech_pvt->sbuffer, tmp.data(), inuse);
+                            if (inuse > 0 && inuse <= sizeof(sbuffer_tmp)) {
+                                switch_buffer_read(tech_pvt->sbuffer, sbuffer_tmp, inuse);
                                 switch_buffer_zero(tech_pvt->sbuffer);
                                 
                                 if (use_g711 && tech_pvt->codec_initialized) {
                                     /* Encode buffered L16 to G.711 before sending */
-                                    std::vector<uint8_t> g711_tmp(inuse / 2);
-                                    size_t g711_len = encode_g711(tech_pvt, tmp.data(), inuse, g711_tmp.data(), g711_tmp.size());
+                                    size_t g711_len = encode_g711(tech_pvt, sbuffer_tmp, inuse, sbuffer_g711, sizeof(sbuffer_g711));
                                     if (g711_len > 0) {
-                                        pAudioStreamer->writeBinary(g711_tmp.data(), g711_len);
+                                        pAudioStreamer->writeBinary(sbuffer_g711, g711_len);
                                     }
                                 } else {
-                                    pAudioStreamer->writeBinary(tmp.data(), inuse);
+                                    pAudioStreamer->writeBinary(sbuffer_tmp, inuse);
                                 }
                             }
                         }
@@ -770,6 +792,13 @@ extern "C" {
 
                 uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
                 uint8_t g711_buf[SWITCH_RECOMMENDED_BUFFER_SIZE / 2];
+                /* Pre-allocate buffers to avoid allocation in hot path */
+                uint8_t sbuffer_tmp[SWITCH_RECOMMENDED_BUFFER_SIZE];
+                uint8_t sbuffer_g711[SWITCH_RECOMMENDED_BUFFER_SIZE / 2];
+                /* Pre-allocate resampler output buffer to avoid VLA (stack overflow risk) */
+                spx_int16_t resampler_out[SWITCH_RECOMMENDED_BUFFER_SIZE / sizeof(spx_int16_t)];
+                const size_t max_out_samples = sizeof(resampler_out) / sizeof(spx_int16_t);
+                
                 switch_frame_t frame = {};
                 frame.data = data;
                 frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
@@ -778,8 +807,8 @@ extern "C" {
                 while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS) {
                     if(frame.datalen) {
                         spx_uint32_t in_len = frame.samples;
-                        spx_uint32_t out_len = (available / (tech_pvt->channels * sizeof(spx_int16_t)));
-                        spx_int16_t out[available / sizeof(spx_int16_t)];
+                        spx_uint32_t out_len = (spx_uint32_t)(max_out_samples / tech_pvt->channels);
+                        spx_int16_t *out = resampler_out;
 
                         if(tech_pvt->channels == 1) {
                             speex_resampler_process_int(tech_pvt->resampler,
@@ -817,20 +846,18 @@ extern "C" {
 
                         if(switch_buffer_freespace(tech_pvt->sbuffer) == 0) {
                             switch_size_t inuse = switch_buffer_inuse(tech_pvt->sbuffer);
-                            if (inuse > 0) {
-                                std::vector<uint8_t> tmp(inuse);
-                                switch_buffer_read(tech_pvt->sbuffer, tmp.data(), inuse);
+                            if (inuse > 0 && inuse <= sizeof(sbuffer_tmp)) {
+                                switch_buffer_read(tech_pvt->sbuffer, sbuffer_tmp, inuse);
                                 switch_buffer_zero(tech_pvt->sbuffer);
                                 
                                 if (use_g711 && tech_pvt->codec_initialized) {
                                     /* Encode buffered L16 to G.711 before sending */
-                                    std::vector<uint8_t> g711_tmp(inuse / 2);
-                                    size_t g711_len = encode_g711(tech_pvt, tmp.data(), inuse, g711_tmp.data(), g711_tmp.size());
+                                    size_t g711_len = encode_g711(tech_pvt, sbuffer_tmp, inuse, sbuffer_g711, sizeof(sbuffer_g711));
                                     if (g711_len > 0) {
-                                        pAudioStreamer->writeBinary(g711_tmp.data(), g711_len);
+                                        pAudioStreamer->writeBinary(sbuffer_g711, g711_len);
                                     }
                                 } else {
-                                    pAudioStreamer->writeBinary(tmp.data(), inuse);
+                                    pAudioStreamer->writeBinary(sbuffer_tmp, inuse);
                                 }
                             }
                         }
@@ -851,7 +878,9 @@ extern "C" {
         {
             auto* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
             char sessionId[MAX_SESSION_ID];
-            strcpy(sessionId, tech_pvt->sessionId);
+            /* Use strncpy with bounds check to prevent buffer overflow */
+            strncpy(sessionId, tech_pvt->sessionId, MAX_SESSION_ID - 1);
+            sessionId[MAX_SESSION_ID - 1] = '\0';
             AudioStreamer* audioStreamer = nullptr;
 
             switch_mutex_lock(tech_pvt->mutex);
