@@ -391,27 +391,26 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         
         # Detectar formato baseado no modelo
         is_ga = self._is_ga_model()
+        format_label = "GA" if is_ga else "PREVIEW"
+        
+        vad_type = vad_config.get("type") if vad_config else "disabled"
+        vad_eagerness = vad_config.get("eagerness") if vad_config else None
+        
+        # Preparar tools
+        tools = self.config.tools or DEFAULT_TOOLS
+        tools_names = [t.get("name") for t in tools]
         
         if is_ga:
-            # === FORMATO GA (gpt-realtime, gpt-realtime-mini) ===
-            session_config = {
+            # === FORMATO GA: Enviar configuração em DUAS ETAPAS ===
+            # Context7 mostra que áudio e tools são enviados separadamente em alguns exemplos
+            
+            # ETAPA 1: Configuração de áudio e sessão
+            audio_config = {
                 "type": "session.update",
                 "session": {
-                    # Tipo de sessão: OBRIGATÓRIO para GA
                     "type": "realtime",
-                    
-                    # Output modalities (Context7: usar output_modalities para GA)
                     "output_modalities": ["audio"],
-                    
-                    # System prompt
                     "instructions": self.config.system_prompt or "",
-                    
-                    # Tools (function calling)
-                    "tools": self.config.tools or DEFAULT_TOOLS,
-                    "tool_choice": "auto",
-                    
-                    # Configuração de áudio (formato GA estruturado)
-                    # NOTA: rate é OBRIGATÓRIO tanto em input quanto em output!
                     "audio": {
                         "input": {
                             "format": {
@@ -422,7 +421,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                         "output": {
                             "format": {
                                 "type": "audio/pcm",
-                                "rate": 24000  # OBRIGATÓRIO para modelos GA!
+                                "rate": 24000
                             },
                             "voice": voice,
                         },
@@ -432,30 +431,61 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             
             # VAD para GA: vai em audio.input.turn_detection
             if vad_config is not None:
-                session_config["session"]["audio"]["input"]["turn_detection"] = vad_config
+                audio_config["session"]["audio"]["input"]["turn_detection"] = vad_config
+            
+            logger.info(f"Sending session.update #1 ({format_label} - audio/session)", extra={
+                "domain_uuid": self.config.domain_uuid,
+                "voice": voice,
+                "vad_type": vad_type,
+                "model": self.model,
+            })
+            
+            try:
+                await self._ws.send(json.dumps(audio_config))
+                logger.debug(f"session.update #1 payload: {json.dumps(audio_config)[:1500]}")
+            except Exception as e:
+                logger.error(f"Failed to send session.update #1: {e}")
+                raise
+            
+            # Pequena pausa para garantir processamento
+            await asyncio.sleep(0.1)
+            
+            # ETAPA 2: Configurar tools separadamente
+            tools_config = {
+                "type": "session.update",
+                "session": {
+                    "tools": tools,
+                    "tool_choice": "auto",
+                }
+            }
+            
+            logger.info(f"Sending session.update #2 ({format_label} - tools)", extra={
+                "domain_uuid": self.config.domain_uuid,
+                "tools_count": len(tools),
+                "tools_names": tools_names,
+            })
+            
+            try:
+                await self._ws.send(json.dumps(tools_config))
+                logger.debug(f"session.update #2 payload: {json.dumps(tools_config)[:1500]}")
+                logger.info(f"session.update sent successfully ({format_label} format)", extra={
+                    "tools_count": len(tools),
+                })
+            except Exception as e:
+                logger.error(f"Failed to send session.update #2 (tools): {e}")
+                raise
                 
         else:
-            # === FORMATO PREVIEW (gpt-4o-realtime-preview, etc.) ===
+            # === FORMATO PREVIEW: Enviar tudo junto (mantém comportamento anterior) ===
             session_config = {
                 "type": "session.update",
                 "session": {
-                    # NÃO incluir "type" - preview não suporta!
-                    
-                    # Modalities (formato preview usa "modalities", não "output_modalities")
                     "modalities": ["text", "audio"],
-                    
-                    # System prompt
                     "instructions": self.config.system_prompt or "",
-                    
-                    # Voice no nível raiz (formato preview)
                     "voice": voice,
-                    
-                    # Formato de áudio (strings simples, não objetos)
                     "input_audio_format": "pcm16",
                     "output_audio_format": "pcm16",
-                    
-                    # Tools (function calling)
-                    "tools": self.config.tools or DEFAULT_TOOLS,
+                    "tools": tools,
                     "tool_choice": "auto",
                 }
             }
@@ -463,38 +493,29 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             # VAD para preview: vai no nível raiz da session
             if vad_config is not None:
                 session_config["session"]["turn_detection"] = vad_config
-        
-        vad_type = vad_config.get("type") if vad_config else "disabled"
-        vad_eagerness = vad_config.get("eagerness") if vad_config else None
-        format_label = "GA" if is_ga else "PREVIEW"
-        
-        # Contar tools para log
-        tools_count = len(session_config.get("session", {}).get("tools", []))
-        tools_names = [t.get("name") for t in session_config.get("session", {}).get("tools", [])]
-        
-        logger.info(f"Sending session.update ({format_label} format) - voice={voice}, vad={vad_type}", extra={
-            "domain_uuid": self.config.domain_uuid,
-            "has_instructions": bool(self.config.system_prompt),
-            "voice": voice,
-            "vad_type": vad_type,
-            "vad_eagerness": vad_eagerness,
-            "model": self.model,
-            "is_ga_model": is_ga,
-            "tools_count": tools_count,
-            "tools_names": tools_names,
-        })
-        
-        # DEBUG: Log do payload completo (apenas em DEBUG level)
-        logger.debug(f"session.update payload: {json.dumps(session_config, indent=2)[:2000]}")
-        
-        try:
-            await self._ws.send(json.dumps(session_config))
-            logger.info(f"session.update sent successfully ({format_label} format)", extra={
-                "tools_count": tools_count,
+            
+            logger.info(f"Sending session.update ({format_label} format) - voice={voice}, vad={vad_type}", extra={
+                "domain_uuid": self.config.domain_uuid,
+                "has_instructions": bool(self.config.system_prompt),
+                "voice": voice,
+                "vad_type": vad_type,
+                "vad_eagerness": vad_eagerness,
+                "model": self.model,
+                "is_ga_model": is_ga,
+                "tools_count": len(tools),
+                "tools_names": tools_names,
             })
-        except Exception as e:
-            logger.error(f"Failed to send session.update: {e}")
-            raise
+            
+            logger.debug(f"session.update payload: {json.dumps(session_config, indent=2)[:2000]}")
+            
+            try:
+                await self._ws.send(json.dumps(session_config))
+                logger.info(f"session.update sent successfully ({format_label} format)", extra={
+                    "tools_count": len(tools),
+                })
+            except Exception as e:
+                logger.error(f"Failed to send session.update: {e}")
+                raise
         
         # Se houver first_message (saudação), enviar como texto e solicitar resposta
         if self.config.first_message:
