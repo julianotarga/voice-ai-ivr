@@ -1438,17 +1438,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     async with aiohttp.ClientSession() as http_session:
                         payload = {
                             "event": "voice_ai_message",
+                            "domain_uuid": self.config.domain_uuid,
+                            "call_uuid": self.call_uuid,
+                            "caller_id": caller_phone,
                             "secretary_uuid": self.config.secretary_uuid,
-                            "caller_id": caller_phone,  # OBRIGATÓRIO pelo backend
                             "ticket": {
-                                "caller_name": caller_name,
-                                "phone": caller_phone,
+                                "type": "message",
+                                "subject": f"Recado de {caller_name}" if caller_name != "Não informado" else f"Recado de {caller_phone}",
                                 "message": message,
-                                "urgency": urgency,
-                                "type": "recado"
+                                "priority": urgency
                             }
                         }
-                        logger.debug(f"📝 [TAKE_MESSAGE] Enviando payload: {payload}")
+                        logger.info(f"📝 [TAKE_MESSAGE] Enviando payload: {payload}")
                         async with http_session.post(
                             self.config.omniplay_webhook_url,
                             json=payload,
