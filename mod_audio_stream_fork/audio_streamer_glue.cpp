@@ -395,7 +395,9 @@ namespace {
                 /* Clean up AudioStreamer before returning to prevent memory leak */
                 if (tech_pvt->pAudioStreamer) {
                     auto* as = static_cast<AudioStreamer*>(tech_pvt->pAudioStreamer);
-                    finish(as);
+                    as->markCleanedUp();
+                    as->disconnect();
+                    delete as;
                     tech_pvt->pAudioStreamer = nullptr;
                 }
                 return SWITCH_STATUS_FALSE;
@@ -419,7 +421,9 @@ namespace {
                 /* Clean up AudioStreamer before returning to prevent memory leak */
                 if (tech_pvt->pAudioStreamer) {
                     auto* as = static_cast<AudioStreamer*>(tech_pvt->pAudioStreamer);
-                    finish(as);
+                    as->markCleanedUp();
+                    as->disconnect();
+                    delete as;
                     tech_pvt->pAudioStreamer = nullptr;
                 }
                 return SWITCH_STATUS_FALSE;
