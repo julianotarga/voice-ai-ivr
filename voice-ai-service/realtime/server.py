@@ -971,9 +971,10 @@ class RealtimeServer:
             """
             Envia áudio para o buffer de streaming do FreeSWITCH.
             
-            v2.0: TRUE STREAMING com otimizações:
+            v2.2: TRUE STREAMING com rate limiting:
             - Warmup: acumula 100ms antes de enviar (evita underrun inicial)
-            - Batch: agrupa chunks para reduzir overhead de WebSocket
+            - Batch: agrupa chunks de 100ms
+            - Rate limit: envia na velocidade de tempo real para evitar buffer overrun
             - O mod_audio_stream mantém ring buffer e injeta no canal
             """
             nonlocal playback_mode
@@ -982,12 +983,15 @@ class RealtimeServer:
                 chunks_sent = 0
                 batch_buffer = bytearray()
                 warmup_complete = False
+                last_send_time = 0.0
                 
                 # Configuração de streaming
                 # Warmup: 100ms = 5 chunks de 20ms = 1600 bytes @ 8kHz L16
                 warmup_bytes = 1600
                 # Batch: enviar a cada 100ms para reduzir overhead
                 batch_bytes = 1600
+                # Rate limit: 100ms de áudio = 100ms de tempo real
+                batch_duration_ms = 100.0
                 
                 while True:
                     item = await audio_out_queue.get()
@@ -1001,6 +1005,7 @@ class RealtimeServer:
                     if isinstance(item[0], str) and item[0] == "STOP":
                         batch_buffer.clear()
                         warmup_complete = False
+                        last_send_time = 0.0
                         await _send_stop_audio()
                         continue
                     
@@ -1015,6 +1020,7 @@ class RealtimeServer:
                     if not warmup_complete:
                         if len(batch_buffer) >= warmup_bytes:
                             warmup_complete = True
+                            last_send_time = time.time()
                             logger.info(f"Streaming warmup complete ({len(batch_buffer)} bytes)", 
                                        extra={"call_uuid": call_uuid})
                         else:
@@ -1022,7 +1028,15 @@ class RealtimeServer:
                     
                     # Enviar batch quando atingir tamanho alvo
                     if len(batch_buffer) >= batch_bytes:
+                        # Rate limit: esperar tempo real antes de enviar próximo batch
+                        now = time.time()
+                        elapsed_ms = (now - last_send_time) * 1000
+                        if elapsed_ms < batch_duration_ms:
+                            wait_ms = batch_duration_ms - elapsed_ms
+                            await asyncio.sleep(wait_ms / 1000.0)
+                        
                         await _send_streamaudio_chunk(bytes(batch_buffer))
+                        last_send_time = time.time()
                         chunks_sent += 1
                         batch_buffer.clear()
                         
