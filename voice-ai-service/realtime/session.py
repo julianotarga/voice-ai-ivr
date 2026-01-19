@@ -389,6 +389,7 @@ class RealtimeSession:
         on_session_end: Optional[Callable[[str], Any]] = None,
         on_barge_in: Optional[Callable[[str], Any]] = None,
         on_transfer: Optional[Callable[[str], Any]] = None,
+        on_audio_done: Optional[Callable[[], Any]] = None,
     ):
         self.config = config
         self._on_audio_output = on_audio_output
@@ -397,6 +398,7 @@ class RealtimeSession:
         self._on_session_end = on_session_end
         self._on_barge_in = on_barge_in
         self._on_transfer = on_transfer
+        self._on_audio_done = on_audio_done
         
         self._provider: Optional[BaseRealtimeProvider] = None
         self._resampler: Optional[ResamplerPair] = None
@@ -1349,6 +1351,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 remaining = self._resampler.flush_output()
                 if remaining:
                     await self._handle_audio_output_direct(remaining)
+            # Notificar server.py para flush do streamaudio buffer
+            if self._on_audio_done:
+                try:
+                    result = self._on_audio_done()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"Error in on_audio_done callback: {e}")
         
         elif event.type == ProviderEventType.TRANSCRIPT_DELTA:
             if event.transcript:

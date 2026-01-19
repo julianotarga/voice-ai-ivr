@@ -49,6 +49,7 @@ class RealtimeSessionManager:
         on_function_call: Optional[Callable] = None,
         on_barge_in: Optional[Callable] = None,
         on_transfer: Optional[Callable] = None,
+        on_audio_done: Optional[Callable] = None,
     ) -> RealtimeSession:
         """Cria nova sessão."""
         async with self._lock:
@@ -68,6 +69,7 @@ class RealtimeSessionManager:
                 on_session_end=lambda reason: self._on_session_end(config.call_uuid, reason),
                 on_barge_in=on_barge_in,
                 on_transfer=on_transfer,
+                on_audio_done=on_audio_done,
             )
             
             self._sessions[config.call_uuid] = session

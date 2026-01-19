@@ -991,6 +991,16 @@ class RealtimeServer:
                         if streamaudio_buffer:
                             await _send_streamaudio_frame(bytes(streamaudio_buffer))
                         return
+                    
+                    # Tratar sentinela FLUSH
+                    if isinstance(item[0], str) and item[0] == "FLUSH":
+                        flush_gen = item[1]
+                        if flush_gen == playback_generation and streamaudio_buffer:
+                            logger.debug(f"Flushing streamaudio buffer: {len(streamaudio_buffer)}B", extra={"call_uuid": call_uuid})
+                            await _send_streamaudio_frame(bytes(streamaudio_buffer))
+                            streamaudio_buffer.clear()
+                        continue
+                    
                     generation, chunk = item
                     if generation != playback_generation:
                         continue
@@ -1195,6 +1205,16 @@ class RealtimeServer:
                         audio_out_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
+
+        async def flush_audio() -> None:
+            """
+            Flush: envia sentinela para fazer flush do buffer streamaudio.
+            Chamado quando a resposta do AI termina (AUDIO_DONE).
+            """
+            if sender_task is not None:
+                # Envia sentinela "FLUSH" para forçar envio do buffer restante
+                await audio_out_queue.put(("FLUSH", playback_generation))
+                logger.debug("Flush signal sent to audio sender", extra={"call_uuid": call_uuid})
         
         # Criar sessão via manager
         manager = get_session_manager()
@@ -1203,6 +1223,7 @@ class RealtimeServer:
             on_audio_output=send_audio,
             on_barge_in=clear_playback,
             on_transfer=clear_playback,
+            on_audio_done=flush_audio,
         )
         
         return session
