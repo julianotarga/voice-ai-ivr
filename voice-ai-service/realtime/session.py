@@ -55,13 +55,9 @@ HANDOFF_FUNCTION_DEFINITION = {
     "type": "function",
     "name": "request_handoff",
     "description": (
-        "Transfere a chamada para um atendente humano, departamento ou pessoa específica. "
-        "Use quando o cliente pedir para falar com alguém ou quando não souber resolver. "
-        "IMPORTANTE: Ao receber o resultado desta função, você DEVE falar imediatamente ao cliente "
-        "informando que vai verificar a disponibilidade e colocá-lo em espera. "
-        "Exemplo: 'Um momento, vou verificar se o setor de vendas está disponível. Aguarde na linha.' "
-        "Se o cliente disser o próprio nome e um departamento (ex: 'Juliano, quero falar no vendas'), "
-        "use o DEPARTAMENTO como destino, nunca o nome do cliente."
+        "Transfere a chamada para atendente, departamento ou pessoa. "
+        "Ao chamar, diga apenas: 'Um momento, vou transferir.' - seja BREVE. "
+        "Se cliente disser nome próprio + departamento, use o DEPARTAMENTO como destino."
     ),
     "parameters": {
         "type": "object",
@@ -1544,7 +1540,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
                 return {
                     "status": "verifying",
-                    "message": f"Diga ao cliente que vai verificar a disponibilidade de {spoken_destination} e que vai colocá-lo em espera por um momento. Seja breve e natural.",
+                    "message": f"Diga brevemente: 'Um momento, vou transferir para {spoken_destination}.'",
                     "destination": destination,
                     "action": "FALE_AGORA_E_AGUARDE"
                 }
