@@ -207,19 +207,11 @@ public:
                     cJSON* jsonSampleRate = cJSON_GetObjectItem(jsonData, "sampleRate");
                     sampleRate = jsonSampleRate && jsonSampleRate->valueint ? jsonSampleRate->valueint : 0;
                     
-                    // NETPLAY FIX: Usar .sln (Signed Linear) que é o formato nativo do FreeSWITCH
-                    // .sln = raw 16-bit signed linear PCM @ 8kHz (L16)
-                    // FreeSWITCH reconhece .sln como seu formato interno
-                    if (sampleRate == 8000) {
-                        fileType = ".sln";  // L16 PCM @ 8kHz
-                    } else if (sampleRate == 16000) {
-                        fileType = ".sln16";  // L16 PCM @ 16kHz
-                    } else if (sampleRate == 24000) {
-                        fileType = ".sln24";  // L16 PCM @ 24kHz
-                    } else if (sampleRate == 48000) {
-                        fileType = ".sln48";  // L16 PCM @ 48kHz
-                    } else if (sampleRate > 0) {
-                        fileType = ".sln";  // fallback
+                    // NETPLAY FIX: Usar .raw que é reconhecido por padrão pelo mod_sndfile
+                    // FreeSWITCH usa o sample rate do canal (8kHz para G.711)
+                    // O áudio é L16 PCM (16-bit signed linear)
+                    if (sampleRate > 0) {
+                        fileType = ".raw";
                     } else {
                         fileType = "";
                     }
@@ -263,8 +255,8 @@ public:
                     status = SWITCH_TRUE;
                     
                     // NETPLAY FORK: Auto-playback do arquivo recebido (assíncrono)
-                    // Arquivos .sln são Signed Linear PCM (formato nativo do FreeSWITCH)
-                    // .sln = L16 PCM @ 8kHz, .sln16 = @ 16kHz, etc.
+                    // Arquivos .raw são L16 PCM (16-bit signed linear)
+                    // FreeSWITCH usa sample rate do canal (8kHz para G.711)
                     const char* audioFilePath = jsonFile->valuestring;
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, 
                         "(%s) 🔊 Auto-playback: %s\n", m_sessionId.c_str(), audioFilePath);
