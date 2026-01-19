@@ -56,7 +56,10 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para um atendente humano, departamento ou pessoa específica. "
-        "Use quando o cliente pedir para falar com alguém ou quando não souber resolver."
+        "Use quando o cliente pedir para falar com alguém ou quando não souber resolver. "
+        "IMPORTANTE: Antes de chamar esta função, AVISE o cliente que vai verificar "
+        "(ex: 'Um momento, vou verificar a disponibilidade do setor de vendas.'). "
+        "O cliente será colocado em espera enquanto você verifica."
     ),
     "parameters": {
         "type": "object",
@@ -2484,12 +2487,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """
         Executa handoff inteligente com attended transfer.
         
-        Fluxo:
+        Fluxo CORRETO:
         1. Encontra destino pelo texto do usuário
-        2. Anuncia transferência
-        3. Executa attended transfer com monitoramento
-        4. Se atendeu: bridge e encerra sessão
-        5. Se não atendeu: retorna ao cliente com mensagem contextual
+        2. Anuncia "Um momento, vou verificar" ao cliente
+        3. COLOCA CLIENTE EM ESPERA (hold_call)
+        4. Verifica se ramal está disponível
+        5a. Se disponível: executa transferência
+        5b. Se OFFLINE: RETIRA DA ESPERA (unhold) e avisa cliente
+        6. Se não atendeu: oferece recado
         
         Args:
             destination_text: Texto do destino (ex: "Jeni", "financeiro")
@@ -2510,6 +2515,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         # NOTA: _transfer_in_progress já é True (setado em _execute_function)
         # Isso é intencional para mutar o áudio do agente durante a transferência.
+        
+        # Flag para controlar se colocamos em hold
+        client_on_hold = False
         
         try:
             # 1. Encontrar destino
@@ -2532,9 +2540,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 )
                 return
             
-            # NOTA: O provider já foi interrompido em _execute_function quando request_handoff foi chamado.
-            # _transfer_in_progress já é True. O cliente não ouvirá anúncio - irá direto para o MOH.
-            # Isso é intencional: evita que o agente continue falando enquanto a transferência inicia.
+            # 2. COLOCAR CLIENTE EM ESPERA antes de verificar/transferir
+            # O agente já avisou o cliente através do LLM, agora colocamos em hold
+            logger.info("Placing client on hold before transfer verification")
+            hold_success = await self.hold_call()
+            if hold_success:
+                client_on_hold = True
+                logger.info("Client placed on hold successfully")
+            else:
+                logger.warning("Failed to place client on hold, continuing anyway")
 
             logger.info(
                 "Executing intelligent handoff",
@@ -2587,10 +2601,25 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._current_transfer = result
             
             # 4. Processar resultado
+            # Se o cliente ainda estiver em hold e a transferência não foi sucesso, fazer unhold
+            if client_on_hold and result.status != TransferStatus.SUCCESS:
+                logger.info("Transfer not successful, removing client from hold")
+                await self.unhold_call()
+                client_on_hold = False
+            
             await self._handle_transfer_result(result, reason)
             
         except Exception as e:
             logger.exception(f"Intelligent handoff error: {e}")
+            
+            # Se erro, garantir que cliente sai do hold
+            if client_on_hold:
+                logger.info("Error during handoff, removing client from hold")
+                try:
+                    await self.unhold_call()
+                except Exception:
+                    pass
+            
             await self._send_text_to_provider(
                 "Desculpe, não foi possível completar a transferência. "
                 "Posso ajudar de outra forma?"
