@@ -279,10 +279,9 @@ class RealtimeSessionConfig:
     # - "l16" or "pcm16": Linear PCM 16-bit (default, legacy)
     # - "pcmu" or "g711u": G.711 μ-law (recommended for lower latency)
     # - "pcma" or "g711a": G.711 A-law
-    # NOTA: G.711 (pcmu) só funciona se mod_audio_stream fork estiver instalado.
-    # Até lá, usar L16 PCM para evitar distorção de áudio.
-    # Quando o fork estiver pronto, mudar para "pcmu" para menor latência.
-    audio_format: str = "l16"  # L16 PCM até mod_audio_stream G.711 ser instalado
+    # G.711 μ-law nativo - requer mod_audio_stream NETPLAY FORK instalado
+    # Para reverter para L16: mudar para "l16"
+    audio_format: str = "pcmu"  # G.711 μ-law (menor latência)
     freeswitch_sample_rate: int = 8000  # 8kHz para G.711, 16kHz para L16
     idle_timeout_seconds: int = 30
     max_duration_seconds: int = 600
