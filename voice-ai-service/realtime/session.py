@@ -1238,16 +1238,24 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._echo_canceller.add_speaker_frame(audio_bytes)
             
             # ========================================
-            # OUTPUT - baseado no formato DETECTADO do input
+            # OUTPUT - baseado no formato CONFIGURADO ou DETECTADO
             # ========================================
-            # Se o mod_audio_stream está enviando L16, espera receber L16 de volta.
-            # Só convertemos para G.711 se detectamos G.711 no input.
+            # Se config.audio_format é G.711 e:
+            #   - detected_format é "g711" (confirmado), OU
+            #   - detected_format é None (ainda não detectado, assumir config)
+            # Então converter para G.711.
             # ========================================
             detected_format = getattr(self, '_detected_input_format', None)
+            use_g711 = self.config.audio_format in ("pcmu", "g711u", "ulaw", "pcma", "g711a", "alaw")
+            
+            # Se detectamos L16 explicitamente, não usar G.711
+            if detected_format in ("l16_8k", "l16_16k", "unknown"):
+                use_g711 = False
+            
             pre_g711_len = len(audio_bytes)
             
-            if detected_format == "g711":
-                # Input era G.711, output também deve ser G.711
+            if use_g711:
+                # Converter para G.711
                 if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
                     audio_bytes = pcm_to_ulaw(audio_bytes)
                     if self._output_frame_count == 1:
@@ -1262,9 +1270,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             "call_uuid": self.call_uuid,
                         })
             else:
-                # Input era L16 PCM, output também deve ser L16 PCM
+                # L16 PCM direto
                 if self._output_frame_count == 1:
-                    logger.info(f"🔊 [OUTPUT→FS] L16 PCM direto: {len(audio_bytes)}B (mod_audio_stream não suporta G.711)", extra={
+                    logger.info(f"🔊 [OUTPUT→FS] L16 PCM direto: {len(audio_bytes)}B (detected={detected_format})", extra={
                         "call_uuid": self.call_uuid,
                     })
             

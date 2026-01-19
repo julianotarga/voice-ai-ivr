@@ -868,9 +868,9 @@ class RealtimeServer:
         # Callback para enviar áudio de volta ao FreeSWITCH
         #
         # Protocolo rawAudio + binário (mod_audio_stream v1.0.3+):
-        # 1. Enviar uma vez: {"type":"rawAudio","data":{"sampleRate":16000}}
-        # 2. Depois enviar chunks BINÁRIOS de 640 bytes (20ms @16kHz) com pacing 20ms
-        # 3. Warmup de 10 chunks (200ms) antes de começar a enviar
+        # - G.711 @ 8kHz: {"sampleRate":8000}, chunks de 160 bytes (20ms)
+        # - L16 @ 16kHz: {"sampleRate":16000}, chunks de 640 bytes (20ms)
+        # - L16 @ 8kHz: {"sampleRate":8000}, chunks de 320 bytes (20ms)
         #
         # Ref: https://github.com/os11k/freeswitch-elevenlabs-bridge/blob/main/server.js
         audio_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
@@ -881,6 +881,19 @@ class RealtimeServer:
         playback_lock = asyncio.Lock()
         playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
         allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
+        
+        # Determinar sample rate e chunk size baseado na configuração de áudio
+        # G.711: 8kHz, 160 bytes/20ms (1 byte/sample)
+        # L16: 8kHz, 320 bytes/20ms (2 bytes/sample)
+        audio_format = config.audio_format if config else "l16"
+        if audio_format in ("pcmu", "g711u", "ulaw", "pcma", "g711a", "alaw"):
+            fs_sample_rate = 8000
+            fs_chunk_size = 160  # G.711: 8000 samples/s * 0.020s * 1 byte/sample
+            logger.info(f"Audio output format: G.711 @ {fs_sample_rate}Hz, {fs_chunk_size}B/chunk", extra={"call_uuid": call_uuid})
+        else:
+            fs_sample_rate = 8000  # FreeSWITCH sempre recebe 8kHz do ResamplerPair
+            fs_chunk_size = 320   # L16: 8000 samples/s * 0.020s * 2 bytes/sample
+            logger.info(f"Audio output format: L16 PCM @ {fs_sample_rate}Hz, {fs_chunk_size}B/chunk", extra={"call_uuid": call_uuid})
         
         # Audio Configuration - usar valores já extraídos do banco (db_warmup_* definidos acima)
         adaptive_warmup = db_adaptive_warmup
@@ -909,12 +922,12 @@ class RealtimeServer:
                 format_msg = json.dumps({
                     "type": "rawAudio",
                     "data": {
-                        "sampleRate": 16000
+                        "sampleRate": fs_sample_rate
                     }
                 })
                 await websocket.send(format_msg)
                 format_sent = True
-                logger.info("Audio format sent to FreeSWITCH (rawAudio)", extra={"call_uuid": call_uuid})
+                logger.info(f"Audio format sent to FreeSWITCH (rawAudio @ {fs_sample_rate}Hz)", extra={"call_uuid": call_uuid})
                 return True
             except Exception as e:
                 logger.warning(f"Failed to send rawAudio header: {e}", extra={"call_uuid": call_uuid})
@@ -928,7 +941,7 @@ class RealtimeServer:
                 "type": "streamAudio",
                 "data": {
                     "audioDataType": "raw",
-                    "sampleRate": 16000,
+                    "sampleRate": fs_sample_rate,
                     "audioData": base64.b64encode(frame_bytes).decode("utf-8"),
                 }
             })
@@ -1149,9 +1162,10 @@ class RealtimeServer:
 
                 pending.extend(audio_bytes)
 
-                while len(pending) >= PCM16_16K_CHUNK_BYTES:
-                    chunk = bytes(pending[:PCM16_16K_CHUNK_BYTES])
-                    del pending[:PCM16_16K_CHUNK_BYTES]
+                # Usar tamanho de chunk baseado no formato (G.711=160B, L16@8k=320B)
+                while len(pending) >= fs_chunk_size:
+                    chunk = bytes(pending[:fs_chunk_size])
+                    del pending[:fs_chunk_size]
                     await audio_out_queue.put((playback_generation, chunk))
 
             except Exception as e:
