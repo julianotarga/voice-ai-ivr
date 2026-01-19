@@ -263,8 +263,8 @@ public:
                     status = SWITCH_TRUE;
                     
                     // NETPLAY FORK: Auto-playback do arquivo recebido (assíncrono)
-                    // Arquivos .r8 são raw L16 PCM @ 8kHz (extensão usada pelo mod_audio_stream)
-                    // FreeSWITCH interpreta .r8 como raw audio @ 8kHz automaticamente
+                    // Arquivos .sln são Signed Linear PCM (formato nativo do FreeSWITCH)
+                    // .sln = L16 PCM @ 8kHz, .sln16 = @ 16kHz, etc.
                     const char* audioFilePath = jsonFile->valuestring;
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, 
                         "(%s) 🔊 Auto-playback: %s\n", m_sessionId.c_str(), audioFilePath);
