@@ -22,28 +22,31 @@ Ref: https://github.com/amigniter/mod_audio_stream/issues/72
 
 ### Fase 2: G.711 Completo (opções)
 
-**Opção A: Conversão no Voice AI (recomendada)**
-- Converter L16 PCM → G.711 µ-law no Python usando `audioop.lin2ulaw()`
-- Enviar G.711 para OpenAI via `audio/pcmu`
-- Benefício: Zero mudança no FreeSWITCH, implementação rápida
-- Trade-off: CPU mínima no container Python
+**Opção A: Fork do mod_audio_stream (RECOMENDADA)**
+- Código fonte disponível: https://github.com/amigniter/mod_audio_stream
+- Licença MIT permite modificação e uso comercial
+- Adicionar parâmetro `format=mulaw` no comando `uuid_audio_stream`
+- Usar `switch_core_codec_encode()` do FreeSWITCH para codificar L16→PCMU
+- Compilar nossa própria versão (sem limite de 10 canais)
+- Estimativa: 6-10h de desenvolvimento
+- Benefício: Solução definitiva, zero overhead no Python
 
-**Opção B: Contribuir patch para mod_audio_stream**
-- Adicionar flag `format=mulaw` no comando `uuid_audio_stream`
-- PR para https://github.com/amigniter/mod_audio_stream
-- Benefício: Solução definitiva para a comunidade
-- Trade-off: Tempo de desenvolvimento e aprovação
+**Opção B: Conversão no Voice AI Python**
+- Converter L16 PCM → G.711 µ-law usando `audioop.lin2ulaw()`
+- Enviar G.711 para OpenAI via `audio/pcmu`
+- Benefício: Implementação rápida, sem recompilar FreeSWITCH
+- Trade-off: CPU mínima no container Python (~0.1ms por frame)
 
 **Opção C: Media bug customizado (complexo)**
 - Capturar RTP G.711 antes da decodificação via `switch_media_bug`
 - Enviar pacotes G.711 direto via WebSocket
-- Benefício: Zero transcoding
 - Trade-off: Módulo C customizado, manutenção complexa
+- Não recomendado
 
 **Opção D: mod_audio_fork (não recomendada)**
 - Módulo antigo com problemas de compatibilidade
 - Muitos reports de falhas com FreeSWITCH recente
-- Não recomendado para produção
+- Não recomendado
 
 ## Impact
 
