@@ -41,21 +41,24 @@ Server → Client:
 - response.function_call_arguments.done: Function call
 - error: Erros (rate_limit_exceeded, etc.)
 
-=== VAD (TURN DETECTION) ===
-Dois tipos disponíveis:
+=== VAD (TURN DETECTION) - Context7 verificado Jan/2026 ===
+Dois tipos disponíveis. IMPORTANTE: turn_detection vai DENTRO de audio.input!
 
 1. server_vad (baseado em silêncio):
    - threshold: 0.5 (0.0-1.0, sensibilidade)
    - prefix_padding_ms: 300 (áudio antes da fala)
-   - silence_duration_ms: 500 (silêncio para encerrar turno)
+   - silence_duration_ms: 200-500 (silêncio para encerrar turno)
    - create_response: true (auto-responder)
+   - interrupt_response: true (OBRIGATÓRIO para barge-in!)
 
 2. semantic_vad (baseado em semântica - RECOMENDADO):
-   - eagerness: "low" | "medium" | "high"
+   - eagerness: "low" | "medium" | "high" | "auto"
      - low: Paciente, espera pausas longas
      - medium: Balanceado (recomendado pt-BR)
      - high: Responde rápido
+     - auto: Deixa o modelo decidir (default)
    - create_response: true
+   - interrupt_response: true (OBRIGATÓRIO para barge-in!)
 
 3. disabled (push-to-talk):
    - Não inclui turn_detection no session.update
@@ -69,22 +72,37 @@ Migrado para API GA em Jan/2026.
 - Custo ~20% menor que versão preview
 Ref: openai.com/blog/introducing-gpt-realtime
 
-=== SESSION.UPDATE FORMAT ===
-IMPORTANTE: API Beta usa formato DIFERENTE da documentação GA!
+=== SESSION.UPDATE FORMAT (GA - Context7 Jan/2026) ===
+Formato correto para API GA (General Availability):
 
-API BETA (ATUAL):
-- modalities: ["audio", "text"] (não "output_modalities")
-- voice: "alloy" (nível superior)
-- input_audio_format: "pcm16" (string plana)
-- output_audio_format: "pcm16" (string plana)
-- turn_detection: {...} (nível superior)
-- instructions: "system prompt"
-- NÃO TEM session.type!
+{
+    "type": "session.update",
+    "session": {
+        "type": "realtime",
+        "model": "gpt-realtime",
+        "output_modalities": ["audio"],
+        "instructions": "system prompt",
+        "tools": [...],
+        "tool_choice": "auto",
+        "audio": {
+            "input": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "eagerness": "medium",
+                    "create_response": true,
+                    "interrupt_response": true
+                }
+            },
+            "output": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "voice": "marin"
+            }
+        }
+    }
+}
 
-API GA (FUTURO - Context7):
-- session.type: "realtime"
-- output_modalities: ["audio"]
-- audio: { input: {...}, output: {...} }
+Ref: Context7 /websites/platform_openai - session.update documentation
 """
 
 import asyncio
@@ -260,32 +278,42 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         """
         Configura sessão com prompt, voz, VAD, tools.
         
-        FORMATO GA (gpt-realtime):
+        FORMATO GA (gpt-realtime) - Context7 verificado Jan/2026:
         {
             "type": "session.update",
             "session": {
-                "modalities": ["audio", "text"],
-                "voice": "alloy",
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "turn_detection": {...},
+                "type": "realtime",
+                "model": "gpt-realtime",
+                "output_modalities": ["audio"],
                 "instructions": "system prompt",
-                ...
+                "tools": [...],
+                "tool_choice": "auto",
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "turn_detection": {...}
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "voice": "marin"
+                    }
+                }
             }
         }
         
-        NOTA: Formato GA é o mesmo do Beta para session.update.
-        Ref: https://platform.openai.com/docs/api-reference/realtime
+        Ref: Context7 /websites/platform_openai - session.update
         """
         if not self._ws:
             raise RuntimeError("Not connected")
         
-        # Vozes disponíveis: alloy, ash, ballad, coral, echo, sage, shimmer, verse
+        # Vozes disponíveis: alloy, ash, ballad, coral, echo, marin, sage, shimmer, verse
         voice = self.config.voice or "alloy"
         
-        # === FORMATO GA (gpt-realtime) ===
-        # Campos dentro de "session" wrapper
-        # Documentação oficial: session.type deve ser "realtime" (speech-to-speech) ou "transcription"
+        # Construir VAD config primeiro para incluir em audio.input
+        vad_config = self._build_vad_config()
+        
+        # === FORMATO GA (gpt-realtime) - Context7 verificado ===
+        # Estrutura aninhada com audio.input e audio.output
         session_config = {
             "type": "session.update",
             "session": {
@@ -293,7 +321,10 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "type": "realtime",
                 
                 # Modelo (opcional, já especificado na URL de conexão)
-                "model": self.config.model or "gpt-4o-realtime-preview",
+                "model": self.model,
+                
+                # Output modalities (Context7: usar output_modalities, não modalities)
+                "output_modalities": ["audio"],
                 
                 # System prompt
                 "instructions": self.config.system_prompt or "",
@@ -302,36 +333,49 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "tools": self.config.tools or DEFAULT_TOOLS,
                 "tool_choice": "auto",
                 
-                # Configuração de áudio (formato GA)
+                # Configuração de áudio (formato GA aninhado)
                 "audio": {
+                    "input": {
+                        # Formato de áudio de entrada (Context7: objeto, não string)
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                    },
                     "output": {
+                        # Formato de áudio de saída
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                        # Voz do assistente
                         "voice": voice,
                     },
                 },
             }
         }
         
-        # VAD - Turn Detection (nível superior)
-        # Tipos: "server_vad", "semantic_vad" ou None (push-to-talk)
-        vad_config = self._build_vad_config()
+        # VAD - Turn Detection (DENTRO de audio.input, não no nível superior!)
+        # Context7: turn_detection deve estar em session.audio.input.turn_detection
         if vad_config is not None:
-            session_config["session"]["turn_detection"] = vad_config
+            session_config["session"]["audio"]["input"]["turn_detection"] = vad_config
         # Se vad_config é None, não incluímos turn_detection = push-to-talk
         
         vad_type = vad_config.get("type") if vad_config else "disabled"
         vad_eagerness = vad_config.get("eagerness") if vad_config else None
         
-        logger.info(f"Sending session.update (GA) - voice={voice}, vad={vad_type}", extra={
+        logger.info(f"Sending session.update (GA format) - voice={voice}, vad={vad_type}", extra={
             "domain_uuid": self.config.domain_uuid,
             "has_instructions": bool(self.config.system_prompt),
             "voice": voice,
             "vad_type": vad_type,
             "vad_eagerness": vad_eagerness,
+            "model": self.model,
         })
         
         try:
             await self._ws.send(json.dumps(session_config))
-            logger.info("session.update sent successfully")
+            logger.info("session.update sent successfully (GA format)")
         except Exception as e:
             logger.error(f"Failed to send session.update: {e}")
             raise
@@ -346,27 +390,34 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             else:
                 logger.debug("Response already active; skipping response.create for first_message")
     
-    def _build_vad_config(self) -> Dict[str, Any]:
+    def _build_vad_config(self) -> Optional[Dict[str, Any]]:
         """
         Constrói configuração de VAD (Voice Activity Detection).
         
-        Suporta dois tipos:
+        Suporta dois tipos (Context7 verificado Jan/2026):
         - server_vad: Baseado em silêncio (threshold, silence_duration_ms)
         - semantic_vad: Baseado em semântica (eagerness) - MAIS INTELIGENTE
         
         semantic_vad entende quando o usuário TERMINOU de falar,
         não apenas quando fez uma pausa. Melhor para pt-BR e linguagem natural.
         
-        Parâmetros semantic_vad (conforme docs Jan/2026):
-        - eagerness: "low" | "medium" | "high"
+        Parâmetros semantic_vad (Context7 /websites/platform_openai):
+        - eagerness: "low" | "medium" | "high" | "auto"
           - low: Paciente, espera pausas longas antes de responder
           - medium: Balanceado (recomendado para pt-BR)
           - high: Responde rápido, pode interromper
+          - auto: Deixa o modelo decidir (default na API)
         - create_response: true para responder automaticamente
-        - interrupt_response: true para permitir barge-in
+        - interrupt_response: true para permitir barge-in (OBRIGATÓRIO para barge-in!)
         
-        Ref: https://platform.openai.com/docs/guides/realtime-transcription
-        Ref: https://platform.openai.com/docs/guides/realtime-model-capabilities
+        Parâmetros server_vad (Context7 /websites/platform_openai):
+        - threshold: 0.0-1.0 (sensibilidade, padrão 0.5)
+        - prefix_padding_ms: ms de áudio antes da fala (padrão 300)
+        - silence_duration_ms: ms de silêncio para encerrar turno (padrão 200-500)
+        - create_response: true
+        - interrupt_response: true (OBRIGATÓRIO para barge-in!)
+        
+        Ref: Context7 query "Realtime API turn_detection semantic_vad server_vad"
         """
         vad_type = getattr(self.config, 'vad_type', 'server_vad')
         
@@ -374,8 +425,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             # semantic_vad: Mais inteligente, entende contexto semântico
             eagerness = getattr(self.config, 'vad_eagerness', 'medium')
             
-            # Validar eagerness (deve ser low, medium ou high)
-            valid_eagerness = ["low", "medium", "high"]
+            # Validar eagerness (Context7: inclui "auto" como opção válida)
+            valid_eagerness = ["low", "medium", "high", "auto"]
             if eagerness not in valid_eagerness:
                 logger.warning(f"Invalid eagerness '{eagerness}', using 'medium'")
                 eagerness = "medium"
@@ -387,7 +438,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "eagerness": eagerness,
                 "create_response": True,
                 # interrupt_response: permite usuário interromper agente (barge-in)
-                # IMPORTANTE: Sem isso, barge-in não funciona com semantic_vad
+                # Context7: OBRIGATÓRIO para barge-in funcionar
                 "interrupt_response": True,
             }
         
@@ -410,6 +461,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "prefix_padding_ms": prefix_ms,
                 "silence_duration_ms": silence_ms,
                 "create_response": True,
+                # Context7: interrupt_response OBRIGATÓRIO para barge-in funcionar
+                "interrupt_response": True,
             }
     
     async def send_audio(self, audio_bytes: bytes) -> None:

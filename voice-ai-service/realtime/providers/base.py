@@ -89,6 +89,9 @@ class RealtimeConfig:
     # Provider
     provider_name: str = "openai"
     
+    # Model (para OpenAI Realtime)
+    model: str = "gpt-realtime"  # gpt-realtime, gpt-realtime-mini
+    
     # Secretary (opcional - pode ser passado via session config)
     secretary_uuid: Optional[str] = None
     
@@ -103,7 +106,7 @@ class RealtimeConfig:
     # Tipo: "server_vad" (silêncio) ou "semantic_vad" (semântica/inteligente)
     vad_type: str = "semantic_vad"  # RECOMENDADO
     vad_threshold: float = 0.5  # 0.0-1.0 sensibilidade
-    vad_eagerness: str = "medium"  # low, medium, high (só semantic_vad)
+    vad_eagerness: str = "medium"  # low, medium, high, auto (só semantic_vad)
     silence_duration_ms: int = 500
     silence_timeout_ms: int = 1000  # Alias para compatibilidade
     prefix_padding_ms: int = 300
