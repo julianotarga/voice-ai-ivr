@@ -80,6 +80,15 @@ static switch_status_t start_capture(switch_core_session_t *session,
 
     read_codec = switch_core_session_get_read_codec(session);
 
+    /* Log audio format for debugging - NETPLAY FORK */
+    const char* format_name = "L16";
+    if (audio_format == 1) format_name = "PCMU (G.711 μ-law)";
+    else if (audio_format == 2) format_name = "PCMA (G.711 A-law)";
+    
+    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, 
+        "[NETPLAY] Stream starting: format=%s, sampling=%dHz, channels=%d\n",
+        format_name, sampling, channels);
+
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "calling stream_session_init.\n");
     if (SWITCH_STATUS_FALSE == stream_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second,
                                                  wsUri, sampling, channels, audio_format, metadata, &pUserData)) {
@@ -269,10 +278,27 @@ done:
     return SWITCH_STATUS_SUCCESS;
 }
 
+/* ========================================
+ * NETPLAY FORK - G.711 Native Support
+ * Version: 1.0.0-netplay-g711
+ * Build: 2026-01-19
+ * Features: Native PCMU/PCMA encoding for WebSocket
+ * ======================================== */
+#define MOD_AUDIO_STREAM_VERSION "1.0.0-netplay-g711"
+#define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
 {
     switch_api_interface_t *api_interface;
 
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
+        "========================================\n");
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
+        "mod_audio_stream NETPLAY FORK v%s\n", MOD_AUDIO_STREAM_VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
+        "Build: %s | G.711 Native: ENABLED\n", MOD_AUDIO_STREAM_BUILD_DATE);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
+        "========================================\n");
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_audio_stream API loading..\n");
 
     /* connect my internal structure to the blank pointer passed to me */
