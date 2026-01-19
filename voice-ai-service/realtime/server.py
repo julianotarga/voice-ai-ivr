@@ -969,23 +969,38 @@ class RealtimeServer:
 
         async def _sender_loop_rawaudio() -> None:
             """
-            Envia áudio diretamente para o buffer de streaming do FreeSWITCH.
+            Envia áudio para o buffer de streaming do FreeSWITCH.
             
-            v2.0: TRUE STREAMING - sem buffering pesado no Python.
-            O mod_audio_stream mantém ring buffer interno e injeta no canal.
+            v2.0: TRUE STREAMING com otimizações:
+            - Warmup: acumula 100ms antes de enviar (evita underrun inicial)
+            - Batch: agrupa chunks para reduzir overhead de WebSocket
+            - O mod_audio_stream mantém ring buffer e injeta no canal
             """
             nonlocal playback_mode
             try:
                 last_health_update = 0.0
                 chunks_sent = 0
-
+                batch_buffer = bytearray()
+                warmup_complete = False
+                
+                # Configuração de streaming
+                # Warmup: 100ms = 5 chunks de 20ms = 1600 bytes @ 8kHz L16
+                warmup_bytes = 1600
+                # Batch: enviar a cada 100ms para reduzir overhead
+                batch_bytes = 1600
+                
                 while True:
                     item = await audio_out_queue.get()
                     if item is None:
+                        # Flush remaining batch
+                        if batch_buffer:
+                            await _send_streamaudio_chunk(bytes(batch_buffer))
                         return
                     
                     # Tratar sentinela STOP (barge-in)
                     if isinstance(item[0], str) and item[0] == "STOP":
+                        batch_buffer.clear()
+                        warmup_complete = False
                         await _send_stop_audio()
                         continue
                     
@@ -993,12 +1008,26 @@ class RealtimeServer:
                     if generation != playback_generation:
                         continue
                     
-                    # Enviar chunk imediatamente para FreeSWITCH
-                    await _send_streamaudio_chunk(chunk)
-                    chunks_sent += 1
+                    # Acumular no batch buffer
+                    batch_buffer.extend(chunk)
                     
-                    if chunks_sent == 1:
-                        logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
+                    # Warmup: esperar ter dados suficientes antes de começar
+                    if not warmup_complete:
+                        if len(batch_buffer) >= warmup_bytes:
+                            warmup_complete = True
+                            logger.info(f"Streaming warmup complete ({len(batch_buffer)} bytes)", 
+                                       extra={"call_uuid": call_uuid})
+                        else:
+                            continue
+                    
+                    # Enviar batch quando atingir tamanho alvo
+                    if len(batch_buffer) >= batch_bytes:
+                        await _send_streamaudio_chunk(bytes(batch_buffer))
+                        chunks_sent += 1
+                        batch_buffer.clear()
+                        
+                        if chunks_sent == 1:
+                            logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
 
                     # Atualizar health score periodicamente
                     now = time.time()

@@ -216,7 +216,7 @@ public:
             }
             status = SWITCH_TRUE;
         }
-        // NETPLAY: streamAudio - write directly to playback buffer (streaming)
+        // NETPLAY v2.0: streamAudio - write directly to playback buffer (true streaming)
         else if(jsType && strcmp(jsType, "streamAudio") == 0) {
             cJSON* jsonData = cJSON_GetObjectItem(json, "data");
             if(jsonData && tech_pvt && tech_pvt->playback_buffer) {
@@ -235,24 +235,39 @@ public:
                         return status;
                     }
                     
-                    /* Write to playback buffer */
                     switch_mutex_lock(tech_pvt->playback_mutex);
-                    switch_size_t written = switch_buffer_write(tech_pvt->playback_buffer, 
-                        rawAudio.data(), rawAudio.size());
                     
-                    /* Activate playback if not already active */
-                    if (!tech_pvt->playback_active && written > 0) {
-                        tech_pvt->playback_active = 1;
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, 
-                            "(%s) 🔊 Streaming playback started\n", m_sessionId.c_str());
+                    /* Check for buffer overrun - if near full, discard oldest data */
+                    const switch_size_t buffer_capacity = 32000;  /* 2 seconds @ 8kHz L16 */
+                    const switch_size_t high_water_mark = buffer_capacity - rawAudio.size();
+                    switch_size_t current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
+                    
+                    if (current_size > high_water_mark) {
+                        /* Buffer nearly full - discard oldest data to make room */
+                        switch_size_t to_discard = current_size - high_water_mark + rawAudio.size();
+                        char discard_buf[1024];
+                        while (to_discard > 0) {
+                            switch_size_t chunk = (to_discard > sizeof(discard_buf)) ? sizeof(discard_buf) : to_discard;
+                            switch_buffer_read(tech_pvt->playback_buffer, discard_buf, chunk);
+                            to_discard -= chunk;
+                        }
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, 
+                            "(%s) ⚠️ Buffer overrun - discarded old data\n", m_sessionId.c_str());
                     }
+                    
+                    /* Write new audio to buffer */
+                    switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
                     
                     switch_size_t buffered = switch_buffer_inuse(tech_pvt->playback_buffer);
                     switch_mutex_unlock(tech_pvt->playback_mutex);
                     
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, 
-                        "(%s) 📝 Buffer: +%zu bytes (total: %zu)\n", 
-                        m_sessionId.c_str(), rawAudio.size(), buffered);
+                    /* Log every 50 chunks or on significant events */
+                    static int chunk_count = 0;
+                    if (++chunk_count % 50 == 1 || buffered < 1000) {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, 
+                            "(%s) 📝 Buffer: +%zu bytes (total: %zu, active: %d)\n", 
+                            m_sessionId.c_str(), rawAudio.size(), buffered, tech_pvt->playback_active);
+                    }
                     
                     status = SWITCH_TRUE;
                 }
