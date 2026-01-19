@@ -286,7 +286,7 @@ done:
  *   - Native PCMU/PCMA encoding for WebSocket
  *   - Auto-playback via uuid_broadcast (streamAudio)
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "1.1.0-netplay"
+#define MOD_AUDIO_STREAM_VERSION "1.1.1-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-19"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)

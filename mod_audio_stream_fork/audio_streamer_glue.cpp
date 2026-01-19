@@ -258,8 +258,9 @@ public:
                     // NETPLAY FORK: Auto-playback do arquivo recebido (assíncrono)
                     // Arquivos .r8 são raw L16 PCM @ 8kHz (extensão usada pelo mod_audio_stream)
                     // FreeSWITCH interpreta .r8 como raw audio @ 8kHz automaticamente
+                    const char* audioFilePath = jsonFile->valuestring;
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, 
-                        "(%s) 🔊 Auto-playback: %s\n", m_sessionId.c_str(), filePath);
+                        "(%s) 🔊 Auto-playback: %s\n", m_sessionId.c_str(), audioFilePath);
                     
                     switch_channel_t *channel = switch_core_session_get_channel(session);
                     if (channel && switch_channel_ready(channel)) {
@@ -267,7 +268,7 @@ public:
                         // aleg = reproduz no A-leg (caller)
                         char broadcast_cmd[512];
                         switch_snprintf(broadcast_cmd, sizeof(broadcast_cmd), "%s playback::%s aleg", 
-                            m_sessionId.c_str(), filePath);
+                            m_sessionId.c_str(), audioFilePath);
                         
                         switch_stream_handle_t stream = { 0 };
                         SWITCH_STANDARD_STREAM(stream);
@@ -275,7 +276,7 @@ public:
                         
                         if (api_status != SWITCH_STATUS_SUCCESS) {
                             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, 
-                                "(%s) uuid_broadcast failed for: %s\n", m_sessionId.c_str(), filePath);
+                                "(%s) uuid_broadcast failed for: %s\n", m_sessionId.c_str(), audioFilePath);
                         }
                         switch_safe_free(stream.data);
                     }
