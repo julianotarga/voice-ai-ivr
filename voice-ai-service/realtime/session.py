@@ -1442,11 +1442,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             "call_uuid": self.call_uuid,
                             "caller_id": caller_phone,
                             "secretary_uuid": self.config.secretary_uuid,
+                            # IMPORTANTE: Passar company_id diretamente para evitar lookup no OmniPlay
+                            # O OmniPlay não tem acesso à tabela voice_secretaries do FusionPBX
+                            "company_id": self.config.omniplay_company_id,
                             "ticket": {
                                 "type": "message",
                                 "subject": f"Recado de {caller_name}" if caller_name != "Não informado" else f"Recado de {caller_phone}",
                                 "message": message,
-                                "priority": urgency
+                                "priority": urgency,
+                                "caller_name": caller_name,
+                                "caller_phone": caller_phone,
                             }
                         }
                         # Usar endpoint configurado (genérico /webhook já detecta formato)
@@ -1466,16 +1471,17 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     logger.warning(f"📝 [TAKE_MESSAGE] Erro ao enviar webhook: {e}")
             
             # IMPORTANTE: Agendar encerramento automático após recado
-            # O agente deve encerrar a ligação logo após confirmar o recado
-            logger.info("📝 [TAKE_MESSAGE] Recado anotado - agendando encerramento em 3s")
-            asyncio.create_task(self._delayed_stop(3.0, "take_message_done"))
+            # Dar tempo suficiente para o OpenAI confirmar o recado antes de encerrar
+            # 8 segundos é suficiente para falar "Recado anotado, obrigado, tenha um bom dia!"
+            logger.info("📝 [TAKE_MESSAGE] Recado anotado - agendando encerramento em 8s (tempo para OpenAI falar)")
+            asyncio.create_task(self._delayed_stop(8.0, "take_message_done"))
             self._ending_call = True
             
             return {
                 "status": "success",
-                "message": f"Recado de {caller_name} ({phone}) anotado com sucesso. Urgência: {urgency}. "
-                           "ENCERRE a ligação agora - diga 'Recado anotado, obrigado, tenha um bom dia!' "
-                           "e a chamada será encerrada automaticamente."
+                "message": f"Recado de {caller_name} anotado com sucesso. "
+                           "ENCERRE AGORA: Diga brevemente 'Recado anotado! Obrigado, tenha um bom dia!' "
+                           "A chamada será encerrada automaticamente em seguida."
             }
         
         elif name == "get_business_info":
@@ -2698,15 +2704,25 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         )
         
         try:
-            # Aguardar o OpenAI terminar de falar o aviso
-            await asyncio.sleep(delay_seconds)
+            # Aguardar delay mínimo para o OpenAI começar a gerar resposta
+            await asyncio.sleep(1.0)
+            
+            # Depois, esperar o OpenAI terminar de falar (máximo delay_seconds)
+            # _assistant_speaking = True enquanto o OpenAI está gerando áudio
+            wait_time = 0
+            max_wait = delay_seconds - 1.0  # já esperamos 1s
+            while self._assistant_speaking and wait_time < max_wait:
+                if self._ending_call or not self._provider:
+                    break
+                await asyncio.sleep(0.2)
+                wait_time += 0.2
             
             # Verificar se a chamada ainda está ativa
             if self._ending_call or not self._provider:
                 logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante delay, abortando")
                 return
             
-            logger.info("⏳ [DELAYED_HANDOFF] Delay concluído, iniciando handoff...")
+            logger.info(f"⏳ [DELAYED_HANDOFF] Delay concluído (esperou {1.0 + wait_time:.1f}s), iniciando handoff...")
             
             # Agora sim, mutar o áudio e iniciar o handoff
             self._set_transfer_in_progress(True, "delayed_handoff_start")
@@ -2988,16 +3004,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # NOVA ABORDAGEM: Usar voz do OpenAI em vez de FreeSWITCH TTS
             # 
             # Fluxo:
-            # 1. Tirar cliente do hold
+            # 1. [REMOVIDO] Unhold já foi feito em _intelligent_handoff_internal
             # 2. Limpar buffers
             # 3. Habilitar áudio novamente (transfer_in_progress = False)
             # 4. Enviar mensagem ao OpenAI para ele FALAR
             # 5. O OpenAI vai falar naturalmente usando sua própria voz
             #
             
-            # 1. Tirar cliente do hold
-            logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 1: Tirando cliente do hold...")
-            await self.unhold_call()
+            # 1. [REMOVIDO] Unhold já foi feito antes de chamar esta função
+            # Não fazer unhold duplo - causa problemas no FreeSWITCH
+            logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 1: [SKIP] Unhold já foi feito anteriormente")
             
             # 2. Limpar buffer de áudio de entrada para descartar áudio acumulado
             logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 2: Limpando buffers de áudio...")
@@ -3014,8 +3030,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             # 3.5. PROTEÇÃO CONTRA INTERRUPÇÕES
             # Após unhold, pode haver ruído residual (clique, MOH) que o VAD detecta como fala.
-            # Proteger por 2 segundos para garantir que a mensagem seja dita completamente.
-            protection_duration = 2.0  # segundos
+            # Proteger por 3 segundos para garantir que a mensagem seja dita completamente.
+            # O OpenAI precisa de tempo para:
+            # - Receber a instrução
+            # - Processar e gerar áudio
+            # - Começar a falar (latência de rede)
+            protection_duration = 3.0  # segundos
             self._interrupt_protected_until = time.time() + protection_duration
             logger.info(
                 f"📋 [HANDLE_TRANSFER_RESULT] Step 3.5: Proteção contra interrupções ativada ({protection_duration}s)",
@@ -3031,26 +3051,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             message = result.message
             destination_name = result.destination.name if result.destination else "o ramal"
             
-            # Construir mensagem clara para o OpenAI falar
-            # IMPORTANTE: Instruir o agente a encerrar a ligação proativamente
+            # Construir mensagem concisa para o OpenAI falar
+            # IMPORTANTE: Instruções curtas são seguidas melhor pelo LLM
             openai_instruction = (
-                f"[SISTEMA] A transferência para {destination_name} não foi possível. "
-                f"Motivo: {message}. "
-                "INSTRUÇÕES OBRIGATÓRIAS - SIGA À RISCA: "
-                "1. Informe o cliente de forma clara e empática que não foi possível transferir. "
-                "2. Pergunte: 'Gostaria de deixar um recado para retornarem a ligação?' "
-                "3. SE O CLIENTE QUISER DEIXAR RECADO: "
-                "   - Peça o recado e AGUARDE o cliente falar. "
-                "   - Quando o cliente PARAR de falar por 2-3 segundos, ou disser algo como "
-                "     'é isso', 'só isso', 'pronto', 'ok', considere o recado FINALIZADO. "
-                "   - Repita um resumo breve do recado para confirmar. "
-                "   - Diga 'Recado anotado! Obrigado pelo contato, tenha um bom dia!' "
-                "   - IMEDIATAMENTE chame a função end_call. NÃO espere resposta. "
-                "4. SE O CLIENTE NÃO QUISER RECADO ou disser 'não precisa': "
-                "   - Diga 'Tudo bem! Obrigado pelo contato, tenha um bom dia!' "
-                "   - IMEDIATAMENTE chame a função end_call. NÃO espere resposta. "
-                "5. REGRA DE OURO: Após agradecer e se despedir, SEMPRE chame end_call. "
-                "   Nunca fique esperando o cliente dizer 'tchau'. VOCÊ encerra a ligação."
+                f"[SISTEMA] Transferência para {destination_name} falhou: {message}. "
+                "AÇÃO: Informe o cliente e pergunte se quer deixar recado. "
+                "Se SIM: colete o recado, use take_message, encerre com end_call. "
+                "Se NÃO: agradeça e encerre com end_call. "
+                "REGRA: Sempre chame end_call ao final, não espere o cliente."
             )
             
             logger.info(
