@@ -2543,6 +2543,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # 2. COLOCAR CLIENTE EM ESPERA antes de verificar/transferir
             # O agente já avisou o cliente através do LLM, agora colocamos em hold
             logger.info("Placing client on hold before transfer verification")
+            hold_start_time = asyncio.get_event_loop().time()
             hold_success = await self.hold_call()
             if hold_success:
                 client_on_hold = True
@@ -2560,6 +2561,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     "announced_transfer": self.config.transfer_announce_enabled,
                 }
             )
+            
+            # Tempo mínimo de espera (em segundos) para parecer natural
+            MIN_HOLD_TIME_SECONDS = 10.0
             
             # 3. Executar transferência
             if self.config.transfer_announce_enabled:
@@ -2603,6 +2607,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # 4. Processar resultado
             # Se o cliente ainda estiver em hold e a transferência não foi sucesso, fazer unhold
             if client_on_hold and result.status != TransferStatus.SUCCESS:
+                # Garantir tempo mínimo de espera para parecer natural
+                elapsed = asyncio.get_event_loop().time() - hold_start_time
+                if elapsed < MIN_HOLD_TIME_SECONDS:
+                    remaining = MIN_HOLD_TIME_SECONDS - elapsed
+                    logger.info(f"Waiting {remaining:.1f}s more to complete minimum hold time")
+                    await asyncio.sleep(remaining)
+                
                 logger.info("Transfer not successful, removing client from hold")
                 await self.unhold_call()
                 client_on_hold = False
