@@ -233,7 +233,7 @@ class RealtimeSessionConfig:
     max_duration_seconds: int = 600
     omniplay_webhook_url: Optional[str] = None
     tools: Optional[List[Dict[str, Any]]] = None
-    max_response_output_tokens: int = 4096
+    max_response_output_tokens: Optional[int] = 4096  # None = infinito (OpenAI "inf")
     fallback_providers: List[str] = field(default_factory=list)
     barge_in_enabled: bool = True
     # Handoff configuration

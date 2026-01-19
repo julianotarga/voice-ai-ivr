@@ -61,6 +61,36 @@ def _parse_bool(value, default: bool = True) -> bool:
     return default
 
 
+def _parse_max_tokens(value, default: int = 4096) -> Optional[int]:
+    """
+    Converte max_response_output_tokens para int ou None (infinito).
+    
+    OpenAI Realtime aceita:
+    - Número inteiro (ex: 4096)
+    - "inf" para tokens ilimitados (passa como None na API)
+    
+    Args:
+        value: Valor a converter (str, int, None)
+        default: Valor padrão se inválido
+        
+    Returns:
+        int ou None (para infinito)
+    """
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ('inf', 'infinite', 'infinity', 'none', ''):
+            return None  # OpenAI interpreta None como infinito
+        try:
+            return int(value_lower)
+        except ValueError:
+            return default
+    return default
+
+
 def _parse_guardrails_topics(value) -> Optional[List[str]]:
     """
     Converte texto de tópicos proibidos em lista.
@@ -506,7 +536,7 @@ class RealtimeServer:
         vad_threshold = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.65"))
         silence_duration_ms = int(os.getenv("REALTIME_SILENCE_MS", "900"))
         prefix_padding_ms = int(os.getenv("REALTIME_PREFIX_PADDING_MS", "300"))
-        max_response_output_tokens = int(os.getenv("REALTIME_MAX_OUTPUT_TOKENS", "4096"))
+        max_response_output_tokens = _parse_max_tokens(os.getenv("REALTIME_MAX_OUTPUT_TOKENS", "4096"))
         # Voice: prioridade 1) banco (tts_voice_id), 2) env, 3) provider_config, 4) default
         voice = (row.get("tts_voice_id") or os.getenv("REALTIME_VOICE", "") or "").strip()
         # Language: prioridade 1) banco, 2) default
@@ -528,7 +558,7 @@ class RealtimeServer:
             vad_threshold = float(provider_config.get("vad_threshold", vad_threshold))
             silence_duration_ms = int(provider_config.get("silence_duration_ms", silence_duration_ms))
             prefix_padding_ms = int(provider_config.get("prefix_padding_ms", prefix_padding_ms))
-            max_response_output_tokens = int(provider_config.get("max_response_output_tokens", max_response_output_tokens))
+            max_response_output_tokens = _parse_max_tokens(provider_config.get("max_response_output_tokens"), max_response_output_tokens or 4096)
             voice = str(provider_config.get("voice", voice or "alloy")).strip()
             barge_in_enabled = str(provider_config.get("barge_in_enabled", str(barge_in_enabled))).lower() in ("1", "true", "yes")
             fallback_providers_env = str(provider_config.get("fallback_providers", fallback_providers_env)).strip()

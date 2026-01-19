@@ -116,7 +116,7 @@ class RealtimeConfig:
     tools: Optional[List[Dict[str, Any]]] = None
     
     # Limites
-    max_response_output_tokens: int = 4096
+    max_response_output_tokens: Optional[int] = 4096  # None = infinito
     
     # Audio
     input_sample_rate: int = 16000
