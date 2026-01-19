@@ -2859,37 +2859,48 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         )
         
         try:
-            # Aguardar delay mínimo para o OpenAI gerar a resposta completa
-            # 2.5s é suficiente para frases curtas como "Vou transferir para vendas"
-            min_delay = 2.5
-            await asyncio.sleep(min_delay)
-            
-            # Depois, esperar o OpenAI terminar de falar (máximo delay_seconds)
-            # _assistant_speaking = True enquanto o OpenAI está gerando áudio
-            wait_time = 0
-            max_wait = delay_seconds - min_delay  # já esperamos min_delay
-            while self._assistant_speaking and wait_time < max_wait:
+            # === FASE 1: Esperar OpenAI terminar de GERAR a resposta ===
+            # _assistant_speaking = True enquanto OpenAI está gerando
+            wait_generation = 0
+            max_wait_generation = delay_seconds
+            while self._assistant_speaking and wait_generation < max_wait_generation:
                 if self._ending_call or not self._provider:
                     break
-                await asyncio.sleep(0.2)
-                wait_time += 0.2
+                await asyncio.sleep(0.1)
+                wait_generation += 0.1
             
-            # Esperar o buffer de áudio pendente ser reproduzido
-            # _pending_audio_bytes contém áudio ainda não enviado ao FreeSWITCH
-            if hasattr(self, '_pending_audio_bytes') and self._pending_audio_bytes > 0:
-                # Calcular tempo de reprodução: bytes / (sample_rate * 2 bytes)
-                bytes_per_second = self.config.freeswitch_sample_rate * 2
-                audio_duration = self._pending_audio_bytes / bytes_per_second
-                extra_wait = min(audio_duration + 0.5, 3.0)  # máximo 3s extra
-                logger.info(f"⏳ [DELAYED_HANDOFF] Aguardando {extra_wait:.1f}s para buffer de áudio ({self._pending_audio_bytes}B)")
-                await asyncio.sleep(extra_wait)
+            if self._ending_call or not self._provider:
+                logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante geração, abortando")
+                return
+            
+            # === FASE 2: Calcular tempo de reprodução restante ===
+            # _pending_audio_bytes = total de bytes enviados nesta resposta
+            # _response_audio_start_time = quando o primeiro chunk foi enviado
+            bytes_per_second = self.config.freeswitch_sample_rate * 2  # 16-bit mono
+            audio_duration = self._pending_audio_bytes / bytes_per_second if bytes_per_second > 0 else 0
+            audio_elapsed = time.time() - self._response_audio_start_time if self._response_audio_start_time > 0 else 0
+            remaining_time = audio_duration - audio_elapsed
+            
+            # Adicionar margem de 20% para latência de rede + 300ms buffer
+            if remaining_time > 0:
+                wait_playback = remaining_time * 1.2 + 0.3
+                wait_playback = max(0.3, min(wait_playback, 5.0))  # Entre 300ms e 5s
+                
+                logger.info(
+                    f"⏳ [DELAYED_HANDOFF] Audio: {audio_duration:.1f}s total, "
+                    f"{audio_elapsed:.1f}s elapsed, aguardando {wait_playback:.1f}s"
+                )
+                await asyncio.sleep(wait_playback)
+            else:
+                # Pequena margem se o áudio já terminou
+                await asyncio.sleep(0.3)
             
             # Verificar se a chamada ainda está ativa
             if self._ending_call or not self._provider:
-                logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante delay, abortando")
+                logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante reprodução, abortando")
                 return
             
-            total_wait = min_delay + wait_time
+            total_wait = wait_generation + (wait_playback if remaining_time > 0 else 0.3)
             logger.info(f"⏳ [DELAYED_HANDOFF] Delay concluído (esperou {total_wait:.1f}s), iniciando handoff...")
             
             # Agora sim, mutar o áudio e iniciar o handoff
