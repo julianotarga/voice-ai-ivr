@@ -1,5 +1,24 @@
 # Tasks: Migrar para G.711 Híbrido/Nativo
 
+## Fase 0: Fork do mod_audio_stream (CONCLUÍDO)
+
+### 0.1 Fork e Patch
+- [x] 0.1.1 Clonar repositório https://github.com/amigniter/mod_audio_stream
+- [x] 0.1.2 Adicionar constantes AUDIO_FORMAT_* em mod_audio_stream.h
+- [x] 0.1.3 Adicionar campo audio_format e write_codec no struct private_data
+- [x] 0.1.4 Modificar parsing do comando para aceitar parâmetro format (pcmu/pcma/l16)
+- [x] 0.1.5 Inicializar codec G.711 usando switch_core_codec_init()
+- [x] 0.1.6 Implementar encode_g711() helper function
+- [x] 0.1.7 Modificar stream_frame() para codificar L16→G.711 antes de enviar
+- [x] 0.1.8 Criar README.fork.md documentando as modificações
+
+### 0.2 Próximos passos do fork
+- [ ] 0.2.1 Compilar mod_audio_stream no servidor FreeSWITCH
+- [ ] 0.2.2 Testar comando `uuid_audio_stream <uuid> start <url> mono 8k pcmu`
+- [ ] 0.2.3 Verificar se áudio G.711 está sendo enviado corretamente
+
+---
+
 ## Fase 1: G.711 Híbrido (Output Only)
 
 ### 1.1 Configuração
