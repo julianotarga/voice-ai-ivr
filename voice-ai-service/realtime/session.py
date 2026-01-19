@@ -1372,6 +1372,82 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
         
+        elif name == "take_message":
+            # Função do prompt do FusionPBX para anotar recados
+            # Mapear para o webhook OmniPlay (create_ticket)
+            caller_name = args.get("caller_name", "Não informado")
+            phone = args.get("phone", "Não informado")
+            message = args.get("message", "")
+            urgency = args.get("urgency", "normal")
+            
+            logger.info(
+                "📝 [TAKE_MESSAGE] Anotando recado",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "caller_name": caller_name,
+                    "phone": phone,
+                    "urgency": urgency,
+                }
+            )
+            
+            # Enviar via webhook OmniPlay se configurado
+            if self.config.omniplay_webhook_url:
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        payload = {
+                            "event": "voice_ai_message",
+                            "secretary_uuid": self.config.domain_uuid,
+                            "ticket": {
+                                "caller_name": caller_name,
+                                "phone": phone,
+                                "message": message,
+                                "urgency": urgency,
+                                "type": "recado"
+                            }
+                        }
+                        async with session.post(
+                            self.config.omniplay_webhook_url,
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=5)
+                        ) as resp:
+                            if resp.status == 200:
+                                logger.info("📝 [TAKE_MESSAGE] Recado enviado ao OmniPlay")
+                            else:
+                                logger.warning(f"📝 [TAKE_MESSAGE] Webhook retornou {resp.status}")
+                except Exception as e:
+                    logger.warning(f"📝 [TAKE_MESSAGE] Erro ao enviar webhook: {e}")
+            
+            # IMPORTANTE: Agendar encerramento automático após recado
+            # O agente deve encerrar a ligação logo após confirmar o recado
+            logger.info("📝 [TAKE_MESSAGE] Recado anotado - agendando encerramento em 3s")
+            asyncio.create_task(self._delayed_stop(3.0, "take_message_done"))
+            self._ending_call = True
+            
+            return {
+                "status": "success",
+                "message": f"Recado de {caller_name} ({phone}) anotado com sucesso. Urgência: {urgency}. "
+                           "ENCERRE a ligação agora - diga 'Recado anotado, obrigado, tenha um bom dia!' "
+                           "e a chamada será encerrada automaticamente."
+            }
+        
+        elif name == "get_business_info":
+            # Função do prompt do FusionPBX para informações da empresa
+            topic = args.get("topic", "geral")
+            logger.info(f"📋 [GET_BUSINESS_INFO] Buscando info: {topic}")
+            
+            # Retornar informações básicas (pode ser expandido)
+            info_map = {
+                "servicos": "Oferecemos soluções de telefonia fixa, móvel, internet fibra óptica e integração WhatsApp Business.",
+                "horarios": "Nosso horário de atendimento é de segunda a sexta, das 8h às 18h.",
+                "localizacao": "Estamos localizados em São Paulo. Para endereço completo, consulte nosso site.",
+                "contato": "Nosso WhatsApp é o mesmo número desta ligação. Email: contato@netplay.com.br",
+            }
+            return {
+                "status": "success",
+                "info": info_map.get(topic, "Informação não disponível. Posso anotar sua dúvida para retorno.")
+            }
+        
         elif name == "request_handoff":
             # FASE 1: Usar TransferManager se disponível
             destination = args.get("destination", "qualquer atendente")
