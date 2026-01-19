@@ -279,7 +279,10 @@ class RealtimeSessionConfig:
     # - "l16" or "pcm16": Linear PCM 16-bit (default, legacy)
     # - "pcmu" or "g711u": G.711 μ-law (recommended for lower latency)
     # - "pcma" or "g711a": G.711 A-law
-    audio_format: str = "pcmu"  # G.711 μ-law por padrão (menor latência)
+    # NOTA: G.711 (pcmu) só funciona se mod_audio_stream fork estiver instalado.
+    # Até lá, usar L16 PCM para evitar distorção de áudio.
+    # Quando o fork estiver pronto, mudar para "pcmu" para menor latência.
+    audio_format: str = "l16"  # L16 PCM até mod_audio_stream G.711 ser instalado
     freeswitch_sample_rate: int = 8000  # 8kHz para G.711, 16kHz para L16
     idle_timeout_seconds: int = 30
     max_duration_seconds: int = 600
@@ -959,36 +962,56 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # Log inicial do áudio recebido (a cada 100 frames para não poluir)
         if not hasattr(self, '_input_frame_count'):
             self._input_frame_count = 0
+            self._detected_input_format = None  # Auto-detectado no primeiro frame
         self._input_frame_count += 1
         
         original_len = len(audio_bytes)
+
+        # ========================================
+        # AUTO-DETECÇÃO DO FORMATO DE ÁUDIO
+        # ========================================
+        # G.711 @ 8kHz/20ms = 160 bytes (1 byte/sample)
+        # L16 PCM @ 8kHz/20ms = 320 bytes (2 bytes/sample)
+        # L16 PCM @ 16kHz/20ms = 640 bytes (2 bytes/sample)
+        #
+        # O mod_audio_stream pode não ter sido atualizado com nosso fork G.711,
+        # então detectamos automaticamente baseado no tamanho do frame.
+        # ========================================
+        if self._input_frame_count == 1:
+            if original_len == 160:
+                self._detected_input_format = "g711"
+                logger.info(f"🎤 [INPUT] Auto-detectado: G.711 (160B/frame)", extra={
+                    "call_uuid": self.call_uuid,
+                })
+            elif original_len == 320:
+                self._detected_input_format = "l16_8k"
+                logger.warning(f"🎤 [INPUT] Auto-detectado: L16 PCM @ 8kHz (320B/frame) - mod_audio_stream não está enviando G.711!", extra={
+                    "call_uuid": self.call_uuid,
+                })
+            elif original_len == 640:
+                self._detected_input_format = "l16_16k"
+                logger.warning(f"🎤 [INPUT] Auto-detectado: L16 PCM @ 16kHz (640B/frame)", extra={
+                    "call_uuid": self.call_uuid,
+                })
+            else:
+                self._detected_input_format = "unknown"
+                logger.warning(f"🎤 [INPUT] Tamanho inesperado: {original_len}B - assumindo L16", extra={
+                    "call_uuid": self.call_uuid,
+                })
 
         # ========================================
         # G.711 → L16 Conversion (if needed)
         # Converter G.711 μ-law para L16 PCM para processamento interno
         # (AEC, barge-in detection, normalização, etc.)
         # ========================================
-        if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
-            # G.711 μ-law: 160 bytes/20ms → 320 bytes/20ms (L16)
-            audio_bytes = ulaw_to_pcm(audio_bytes)
-            if self._input_frame_count == 1:
-                logger.info(f"🎤 [INPUT] G.711 μ-law → L16: {original_len}B → {len(audio_bytes)}B", extra={
-                    "call_uuid": self.call_uuid,
-                    "audio_format": self.config.audio_format,
-                })
-        elif self.config.audio_format in ("pcma", "g711a", "alaw"):
-            # G.711 A-law: 160 bytes/20ms → 320 bytes/20ms (L16)
-            from .utils.audio_codec import alaw_to_pcm
-            audio_bytes = alaw_to_pcm(audio_bytes)
-            if self._input_frame_count == 1:
-                logger.info(f"🎤 [INPUT] G.711 A-law → L16: {original_len}B → {len(audio_bytes)}B", extra={
-                    "call_uuid": self.call_uuid,
-                })
-        else:
-            if self._input_frame_count == 1:
-                logger.info(f"🎤 [INPUT] L16 PCM direto: {original_len}B", extra={
-                    "call_uuid": self.call_uuid,
-                })
+        # SÓ converter se realmente for G.711 (160 bytes/frame)
+        if self._detected_input_format == "g711":
+            if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+                audio_bytes = ulaw_to_pcm(audio_bytes)
+            elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+                from .utils.audio_codec import alaw_to_pcm
+                audio_bytes = alaw_to_pcm(audio_bytes)
+        # Se detectamos L16, não converter - já é L16
 
         # Durante transferência, não encaminhar áudio do FreeSWITCH para o provider.
         # Motivo: o MOH (uuid_broadcast/local_stream://moh) pode "vazar" no stream
@@ -1108,25 +1131,31 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             self._ptt_silence_ms = 0
                             await self._commit_ptt_audio()
 
-            # Resampling (só para PCM16, não para G.711)
-            if self._resampler and self._resampler.input_resampler.needs_resample:
-                # Só resample se não estivermos usando G.711
-                if self.config.audio_format not in ("pcmu", "g711u", "ulaw", "pcma", "g711a", "alaw"):
-                    frame = self._resampler.resample_input(frame)
-            
-            # Se usando G.711, converter L16 de volta para G.711 antes de enviar ao provider
-            # (já convertemos G.711→L16 no início do handle_audio_input para processamento)
+            # ========================================
+            # ENVIO AO OPENAI - baseado no formato DETECTADO (não configurado)
+            # ========================================
             pre_convert_len = len(frame)
-            if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
-                frame = pcm_to_ulaw(frame)
-                # Log a cada 500 frames
-                if self._input_frame_count % 500 == 1:
-                    logger.debug(f"🎤 [INPUT→OPENAI] L16 → G.711 μ-law: {pre_convert_len}B → {len(frame)}B", extra={
-                        "call_uuid": self.call_uuid,
-                    })
-            elif self.config.audio_format in ("pcma", "g711a", "alaw"):
-                from .utils.audio_codec import pcm_to_alaw
-                frame = pcm_to_alaw(frame)
+            
+            if self._detected_input_format == "g711":
+                # Input é G.711 nativo - converter L16 de volta para G.711 
+                # (já convertemos G.711→L16 para AEC/barge-in)
+                if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+                    frame = pcm_to_ulaw(frame)
+                    if self._input_frame_count % 500 == 1:
+                        logger.debug(f"🎤 [INPUT→OPENAI] L16 → G.711 μ-law: {pre_convert_len}B → {len(frame)}B", extra={
+                            "call_uuid": self.call_uuid,
+                        })
+                elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+                    from .utils.audio_codec import pcm_to_alaw
+                    frame = pcm_to_alaw(frame)
+            else:
+                # Input é L16 PCM - precisamos fazer upsample 8kHz → 24kHz para OpenAI
+                if self._resampler and self._resampler.input_resampler.needs_resample:
+                    frame = self._resampler.resample_input(frame)
+                    if self._input_frame_count % 500 == 1:
+                        logger.debug(f"🎤 [INPUT→OPENAI] L16 resample 8k→24k: {pre_convert_len}B → {len(frame)}B", extra={
+                            "call_uuid": self.call_uuid,
+                        })
 
             await self._provider.send_audio(frame)
     
@@ -1210,30 +1239,33 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._echo_canceller.add_speaker_frame(audio_bytes)
             
             # ========================================
-            # PCM16 → G.711 Conversion (output)
-            # O ResamplerPair já converteu 24kHz → 8kHz (freeswitch_sample_rate)
-            # Agora só precisamos converter L16 PCM → G.711
+            # OUTPUT - baseado no formato DETECTADO do input
             # ========================================
+            # Se o mod_audio_stream está enviando L16, espera receber L16 de volta.
+            # Só convertemos para G.711 se detectamos G.711 no input.
+            # ========================================
+            detected_format = getattr(self, '_detected_input_format', None)
             pre_g711_len = len(audio_bytes)
-            if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
-                # L16 PCM @ 8kHz → G.711 μ-law @ 8kHz
-                # (ResamplerPair já fez 24kHz→8kHz)
-                audio_bytes = pcm_to_ulaw(audio_bytes)
-                # Log do primeiro frame convertido
-                if self._output_frame_count == 1:
-                    logger.info(f"🔊 [OUTPUT→FS] L16 → G.711 μ-law: {pre_g711_len}B → {len(audio_bytes)}B", extra={
-                        "call_uuid": self.call_uuid,
-                    })
-            elif self.config.audio_format in ("pcma", "g711a", "alaw"):
-                from .utils.audio_codec import pcm_to_alaw
-                audio_bytes = pcm_to_alaw(audio_bytes)
-                if self._output_frame_count == 1:
-                    logger.info(f"🔊 [OUTPUT→FS] L16 → G.711 A-law: {pre_g711_len}B → {len(audio_bytes)}B", extra={
-                        "call_uuid": self.call_uuid,
-                    })
+            
+            if detected_format == "g711":
+                # Input era G.711, output também deve ser G.711
+                if self.config.audio_format in ("pcmu", "g711u", "ulaw"):
+                    audio_bytes = pcm_to_ulaw(audio_bytes)
+                    if self._output_frame_count == 1:
+                        logger.info(f"🔊 [OUTPUT→FS] L16 → G.711 μ-law: {pre_g711_len}B → {len(audio_bytes)}B", extra={
+                            "call_uuid": self.call_uuid,
+                        })
+                elif self.config.audio_format in ("pcma", "g711a", "alaw"):
+                    from .utils.audio_codec import pcm_to_alaw
+                    audio_bytes = pcm_to_alaw(audio_bytes)
+                    if self._output_frame_count == 1:
+                        logger.info(f"🔊 [OUTPUT→FS] L16 → G.711 A-law: {pre_g711_len}B → {len(audio_bytes)}B", extra={
+                            "call_uuid": self.call_uuid,
+                        })
             else:
+                # Input era L16 PCM, output também deve ser L16 PCM
                 if self._output_frame_count == 1:
-                    logger.info(f"🔊 [OUTPUT→FS] L16 PCM direto: {len(audio_bytes)}B", extra={
+                    logger.info(f"🔊 [OUTPUT→FS] L16 PCM direto: {len(audio_bytes)}B (mod_audio_stream não suporta G.711)", extra={
                         "call_uuid": self.call_uuid,
                     })
             

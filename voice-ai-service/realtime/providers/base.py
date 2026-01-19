@@ -129,7 +129,9 @@ class RealtimeConfig:
     # - "pcm16" or "l16": Linear PCM 16-bit (legacy)
     # - "g711_ulaw" or "pcmu": G.711 μ-law (recommended for telephony)
     # - "g711_alaw" or "pcma": G.711 A-law
-    audio_format: str = "g711_ulaw"  # G.711 μ-law por padrão
+    # NOTA: G.711 só funciona se mod_audio_stream fork estiver instalado.
+    # Usar PCM16 por padrão para compatibilidade.
+    audio_format: str = "pcm16"  # PCM16 @ 24kHz por padrão
 
 
 class BaseRealtimeProvider(ABC):
