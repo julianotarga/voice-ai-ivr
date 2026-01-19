@@ -1449,9 +1449,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                                 "priority": urgency
                             }
                         }
-                        logger.info(f"📝 [TAKE_MESSAGE] Enviando payload: {payload}")
+                        # Usar endpoint específico /message que é mais robusto
+                        webhook_url = self.config.omniplay_webhook_url
+                        if not webhook_url.endswith("/message"):
+                            webhook_url = webhook_url.rstrip("/") + "/message"
+                        
+                        logger.info(f"📝 [TAKE_MESSAGE] Enviando para {webhook_url}: {payload}")
                         async with http_session.post(
-                            self.config.omniplay_webhook_url,
+                            webhook_url,
                             json=payload,
                             timeout=aiohttp.ClientTimeout(total=5)
                         ) as resp:
