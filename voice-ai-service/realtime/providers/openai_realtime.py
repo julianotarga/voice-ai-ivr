@@ -285,9 +285,13 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         
         # === FORMATO GA (gpt-realtime) ===
         # Campos dentro de "session" wrapper
+        # NOTA: Modelos 2025+ requerem "type": "conversation" dentro de session
         session_config = {
             "type": "session.update",
             "session": {
+                # Tipo de sessão (requerido para modelos 2025+)
+                "type": "conversation",
+                
                 # Modalities (texto + áudio)
                 "modalities": ["audio", "text"],
                 
