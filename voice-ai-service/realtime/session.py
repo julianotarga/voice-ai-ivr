@@ -312,7 +312,7 @@ class RealtimeSessionConfig:
     unbridge_resume_message: Optional[str] = None
     # Audio Configuration (per-secretary)
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
-    audio_warmup_ms: int = 400  # buffer de warmup em ms
+    audio_warmup_ms: int = 100  # buffer de warmup em ms (reduzido para menor latência)
     audio_adaptive_warmup: bool = True  # ajuste automático de warmup
     jitter_buffer_min: int = 100  # FreeSWITCH jitter buffer min (ms)
     jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
