@@ -369,7 +369,7 @@ class AsyncESLClient:
         self._writer.write(data.encode())
         await self._writer.drain()
     
-    async def _read_response(self, timeout: float = ESL_READ_TIMEOUT, discard_events: bool = False) -> str:
+    async def _read_response(self, timeout: float = ESL_READ_TIMEOUT, discard_events: bool = False, quiet_timeout: bool = False) -> str:
         """
         Lê resposta do ESL (headers + body se houver).
         
@@ -444,6 +444,8 @@ class AsyncESLClient:
                     return "\n".join(lines) + ("\n\n" + body if body else "")
                     
                 except asyncio.TimeoutError:
+                    if not quiet_timeout:
+                        logger.debug(f"Read timeout ({timeout}s)")
                     raise ESLError(f"Read timeout ({timeout}s)")
             
             raise ESLError("Max retries reached reading command response")
@@ -567,7 +569,8 @@ class AsyncESLClient:
         try:
             # NOTA: Timeout curto (0.5s) para liberar lock frequentemente
             # Isso permite que execute_api() adquira o lock rapidamente
-            response = await self._read_response(timeout=0.5, discard_events=False)
+            # Timeout é esperado e normal quando não há eventos - não logar
+            response = await self._read_response(timeout=0.5, discard_events=False, quiet_timeout=True)
             
             # Verificar se é evento
             if "Event-Name:" not in response:
@@ -598,6 +601,11 @@ class AsyncESLClient:
                 body=body
             )
             
+        except ESLError as e:
+            # Timeout é esperado e normal quando não há eventos - não logar
+            if "Read timeout" not in str(e):
+                logger.debug(f"Failed to read event: {e}")
+            return None
         except Exception as e:
             logger.debug(f"Failed to read event: {e}")
             return None

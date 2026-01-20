@@ -220,12 +220,27 @@ class ConferenceAnnouncementSession:
             duration_seconds=duration,
         )
     
+    def _is_ws_closed(self) -> bool:
+        """Verifica se WebSocket está fechado (compatível com diferentes versões)."""
+        if not self._ws:
+            return True
+        # websockets >= 11.0 usa close_code, versões anteriores usam closed
+        if hasattr(self._ws, 'close_code'):
+            return self._ws.close_code is not None
+        if hasattr(self._ws, 'closed'):
+            return self._ws.closed
+        # Fallback: verificar state se disponível
+        if hasattr(self._ws, 'state'):
+            from websockets.protocol import State
+            return self._ws.state == State.CLOSED
+        return False
+    
     async def _wait_for_decision(self) -> None:
         """Aguarda decisão via function call ou patterns de texto."""
         while self._running and not self._accepted and not self._rejected:
             try:
                 # Verificar se WebSocket ainda conectado
-                if not self._ws or self._ws.closed:
+                if self._is_ws_closed():
                     logger.warning("OpenAI WebSocket closed")
                     break
                 
