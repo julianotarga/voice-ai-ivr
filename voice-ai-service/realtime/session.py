@@ -2336,7 +2336,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             if self._response_audio_start_time > 0:
                 audio_elapsed = time.time() - self._response_audio_start_time
             else:
-                audio_elapsed = generation_wait
+                # Se não temos timestamp do início, assumir que acabou de começar
+                # (generation_wait é o tempo que esperamos a geração, não a reprodução)
+                audio_elapsed = 0.0
             
             # Tempo restante de reprodução
             remaining_time = audio_duration - audio_elapsed
