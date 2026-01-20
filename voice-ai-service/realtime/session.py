@@ -3236,10 +3236,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # Verificar se podemos usar CONFERENCE MODE
                 use_conference_mode = (
                     self.config.transfer_conference_enabled 
-                    and self._transfer_manager 
+                    and self._transfer_manager is not None
                     and hasattr(self._transfer_manager, '_esl')
-                    and self._transfer_manager._esl._connected
+                    and self._transfer_manager._esl is not None
+                    and getattr(self._transfer_manager._esl, '_connected', False)
                 )
+                
+                if self.config.transfer_conference_enabled and not use_conference_mode:
+                    logger.warning(
+                        "Conference mode enabled but requirements not met: "
+                        f"transfer_manager={self._transfer_manager is not None}, "
+                        f"has_esl={hasattr(self._transfer_manager, '_esl') if self._transfer_manager else False}, "
+                        f"esl_connected={getattr(self._transfer_manager._esl, '_connected', False) if self._transfer_manager and hasattr(self._transfer_manager, '_esl') else False}"
+                    )
                 
                 if use_conference_mode:
                     # CONFERENCE MODE: Usa mod_conference (RECOMENDADO)
@@ -3275,7 +3284,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     # Converter ConferenceTransferResult para TransferResult
                     result = self._convert_conference_result(conf_result, destination)
                     
-                elif not use_conference_mode and self.config.transfer_realtime_enabled:
+                elif self.config.transfer_realtime_enabled:
                     # REALTIME MODE (LEGADO): Conversa por voz com humano
                     # Usa &park() - pode ter problemas de áudio
                     logger.info("Using REALTIME mode for announced transfer (legacy)")
