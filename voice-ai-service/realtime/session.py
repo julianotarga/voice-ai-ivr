@@ -3233,25 +3233,22 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # ANNOUNCED TRANSFER: Anunciar para o HUMANO antes de conectar
                 announcement = self._build_announcement_for_human(destination_text, reason)
                 
-                if self.config.transfer_conference_enabled:
+                # Verificar se podemos usar CONFERENCE MODE
+                use_conference_mode = (
+                    self.config.transfer_conference_enabled 
+                    and self._transfer_manager 
+                    and hasattr(self._transfer_manager, '_esl')
+                    and self._transfer_manager._esl._connected
+                )
+                
+                if use_conference_mode:
                     # CONFERENCE MODE: Usa mod_conference (RECOMENDADO)
                     # Mais robusto e confiável que &park()
                     logger.info("Using CONFERENCE mode for announced transfer (mod_conference)")
                     
-                    # Obter ESL client do TransferManager existente (já conectado)
-                    # O TransferManager é inicializado no início da sessão e mantém conexão ESL
-                    esl_client = None
-                    if self._transfer_manager and hasattr(self._transfer_manager, '_esl'):
-                        esl_client = self._transfer_manager._esl
-                        logger.debug("Using ESL from existing TransferManager")
-                    else:
-                        # Fallback: criar novo ESL client e conectar
-                        from .handlers.esl_client import AsyncESLClient, get_esl_client
-                        esl_client = get_esl_client()
-                        if not esl_client._connected:
-                            logger.info("ESL not connected, connecting...")
-                            await esl_client.connect()
-                        logger.debug("Using new ESL client")
+                    # Usar ESL do TransferManager existente (já conectado)
+                    esl_client = self._transfer_manager._esl
+                    logger.debug(f"Using ESL from TransferManager")
                     
                     conf_manager = ConferenceTransferManager(
                         esl_client=esl_client,
@@ -3278,7 +3275,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     # Converter ConferenceTransferResult para TransferResult
                     result = self._convert_conference_result(conf_result, destination)
                     
-                elif self.config.transfer_realtime_enabled:
+                elif not use_conference_mode and self.config.transfer_realtime_enabled:
                     # REALTIME MODE (LEGADO): Conversa por voz com humano
                     # Usa &park() - pode ter problemas de áudio
                     logger.info("Using REALTIME mode for announced transfer (legacy)")
