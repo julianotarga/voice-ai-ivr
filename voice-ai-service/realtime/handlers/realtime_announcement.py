@@ -357,15 +357,23 @@ class RealtimeAnnouncementSession:
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
             logger.info(f"🔊 Executing ESL command: {cmd}")
             
-            response = await self.esl.execute_api(cmd)
-            logger.info(
-                f"🔊 B-leg audio stream command result: {response[:200] if response else 'None'}",
-                extra={
-                    "b_leg_uuid": self.b_leg_uuid,
-                    "ws_url": ws_url,
-                    "esl_response": response,
-                },
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.esl.execute_api(cmd),
+                    timeout=3.0
+                )
+                logger.info(
+                    f"🔊 B-leg audio stream command result: {response[:200] if response else 'None'}",
+                    extra={
+                        "b_leg_uuid": self.b_leg_uuid,
+                        "ws_url": ws_url,
+                        "esl_response": response,
+                    },
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"❌ ESL command timeout (3s): {cmd}")
+            except Exception as e:
+                logger.error(f"❌ ESL command failed: {e}")
             
             # 3) Aguardar conexão do FreeSWITCH
             try:
