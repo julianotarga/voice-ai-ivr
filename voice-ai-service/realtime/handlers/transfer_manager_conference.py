@@ -879,11 +879,10 @@ class ConferenceTransferManager:
         # Prompt para o agente
         system_prompt = self._build_announcement_prompt(context)
         
-        # Mensagem inicial
+        # Mensagem inicial - apenas o anúncio, a IA vai perguntar naturalmente
         initial_message = (
-            f"{announcement}. "
-            f"Se você pode atender agora, diga 'aceito' ou 'pode conectar'. "
-            f"Se não pode atender, diga 'não posso' ou 'recuso'."
+            f"Olá, tenho um cliente na linha. {announcement}. "
+            f"Você pode atender agora?"
         )
         
         try:
@@ -937,22 +936,36 @@ class ConferenceTransferManager:
     
     def _build_announcement_prompt(self, context: str) -> str:
         """Constrói prompt de sistema para o anúncio."""
-        return f"""Você é uma assistente virtual anunciando uma ligação para um atendente humano.
+        return f"""Você é uma secretária virtual de uma empresa. Você está anunciando uma ligação para um atendente humano.
 
-CONTEXTO: {context}
+CONTEXTO DA LIGAÇÃO: {context}
 
-INSTRUÇÕES:
-1. Anuncie brevemente quem está ligando e o motivo
-2. Pergunte se o atendente pode atender agora
-3. IMPORTANTE: Detecte a resposta do atendente:
-   - Se aceitar (dizer "sim", "aceito", "pode conectar", "pode passar"): chame accept_transfer()
-   - Se recusar (dizer "não", "não posso", "ocupado", "recuso"): chame reject_transfer()
-4. Seja educado, profissional e BREVE - o cliente está aguardando
+SEU OBJETIVO:
+1. Anunciar que há um cliente na linha aguardando
+2. Perguntar se o atendente pode atender AGORA
+3. Aguardar uma resposta CLARA do atendente
 
-REGRAS:
-- Máximo 2-3 frases no anúncio
-- Aguarde a resposta do atendente
-- Não insista se recusarem
+FLUXO DA CONVERSA:
+1. PRIMEIRO: Faça o anúncio (máximo 2 frases)
+2. DEPOIS: Aguarde a resposta do atendente
+3. SÓ ENTÃO: Chame a função apropriada
+
+QUANDO CHAMAR AS FUNÇÕES:
+- accept_transfer(): APENAS se o atendente disser CLARAMENTE: "sim", "pode passar", "pode conectar", "aceito", "manda", "transfira"
+- reject_transfer(): Se o atendente disser: "não", "não posso", "ocupado", "estou em reunião", "depois", "liga depois"
+
+IMPORTANTE:
+- "Alô", "Oi", "Olá", "Pois não" NÃO SÃO aceitação - são apenas saudações. Continue a conversa!
+- Se o atendente apenas atender com saudação, REPITA a pergunta se ele pode atender
+- NÃO assuma aceitação sem confirmação explícita
+- Seja BREVE - o cliente está aguardando na linha
+
+EXEMPLO DE CONVERSA CORRETA:
+Você: "Olá, tenho um cliente na linha sobre vendas. Você pode atender agora?"
+Atendente: "Alô"
+Você: "Há um cliente aguardando para falar sobre vendas. Pode atendê-lo?"
+Atendente: "Sim, pode passar"
+[Agora sim chamar accept_transfer()]
 """
     
     async def _process_decision(
@@ -997,8 +1010,9 @@ REGRAS:
         
         A conferência permanece ativa com ambos os participantes.
         
-        IMPORTANTE: Parar stream de áudio do B-leg ANTES de unmute
-        para evitar eco/feedback do OpenAI.
+        IMPORTANTE: 
+        1. Parar stream de áudio do B-leg ANTES de unmute
+        2. Configurar conferência para terminar quando um sair
         """
         logger.info("✅ Transfer ACCEPTED")
         
@@ -1034,9 +1048,40 @@ REGRAS:
                 logger.warning(f"Unmute may have failed: {result}")
             else:
                 logger.info(f"A-leg unmuted: {result}")
-            logger.info("🎉 Transfer completed - both parties can talk")
             
-            # Definir hangup_after_bridge em ambos (fire and forget com timeout)
+            # CRÍTICO: Configurar para terminar conferência quando um participante sair
+            # Opção 1: Setar variável no A-leg para kickar quando B-leg sair
+            # Opção 2: Setar variável no B-leg para kickar quando A-leg sair
+            # 
+            # Usamos conference_set_auto_outcall para monitorar e encerrar
+            # Mas a forma mais simples é usar uuid_bridge após a conferência
+            #
+            # SOLUÇÃO: Usar uuid_bridge direto entre A-leg e B-leg
+            # Isso é mais simples e funciona melhor que conferência para 2 pessoas
+            logger.info("🔄 Converting conference to direct bridge...")
+            
+            try:
+                # Primeiro, tirar ambos da conferência
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"conference {self.conference_name} kick {self.a_leg_uuid}"),
+                    timeout=2.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass
+            
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"conference {self.conference_name} kick {self.b_leg_uuid}"),
+                    timeout=2.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass
+            
+            # Pequeno delay para os kicks processarem
+            await asyncio.sleep(0.3)
+            
+            # Agora fazer bridge direto entre A-leg e B-leg
+            # hangup_after_bridge garante que ambos desligam juntos
             try:
                 await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_bridge true"),
@@ -1053,6 +1098,21 @@ REGRAS:
             except asyncio.TimeoutError:
                 pass
             
+            # Bridge direto
+            bridge_cmd = f"uuid_bridge {self.a_leg_uuid} {self.b_leg_uuid}"
+            logger.info(f"Bridge command: {bridge_cmd}")
+            
+            try:
+                bridge_result = await asyncio.wait_for(
+                    self.esl.execute_api(bridge_cmd),
+                    timeout=3.0
+                )
+                logger.info(f"Bridge result: {bridge_result}")
+            except asyncio.TimeoutError:
+                logger.warning("Bridge command timeout")
+            
+            logger.info("🎉 Transfer completed - both parties bridged directly")
+            
             return ConferenceTransferResult(
                 success=True,
                 decision=TransferDecision.ACCEPTED,
@@ -1061,7 +1121,7 @@ REGRAS:
             )
             
         except Exception as e:
-            logger.error(f"Failed to unmute A-leg: {e}")
+            logger.error(f"Failed to complete transfer: {e}")
             return ConferenceTransferResult(
                 success=False,
                 decision=TransferDecision.ERROR,
