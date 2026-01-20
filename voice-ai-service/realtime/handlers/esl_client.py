@@ -1284,42 +1284,48 @@ class AsyncESLClient:
         )
         
         try:
-            # Usar sofia status para verificar registro
-            # Formato: sofia status profile internal reg <user>@<domain>
-            logger.debug(f"📞 [CHECK_EXTENSION] Executando: sofia status profile internal reg {extension}@{domain}")
+            # Buscar TODOS os registros e procurar pelo número
+            # NOTA: Não filtrar por domínio pois FreeSWITCH pode usar domínio interno diferente
+            logger.debug(f"📞 [CHECK_EXTENSION] Executando: sofia status profile internal reg")
             result = await asyncio.wait_for(
-                self.execute_api(f"sofia status profile internal reg {extension}@{domain}"),
+                self.execute_api("sofia status profile internal reg"),
                 timeout=ESL_REGISTRATION_TIMEOUT
             )
             
-            logger.debug(f"📞 [CHECK_EXTENSION] Resultado (primeiros 300 chars): {result[:300] if result else 'None'}")
+            if not result:
+                logger.debug(f"📞 [CHECK_EXTENSION] Resultado vazio")
+                return (False, None, True)
             
-            # Se encontrar "Total items returned: 0", não está registrado
-            if "Total items returned: 0" in result or "0 total" in result.lower():
-                logger.debug(f"Extension {extension}@{domain} is NOT registered")
-                return (False, None, True)  # check_successful = True, mas não registrado
+            # Procurar pelo número do ramal na saída
+            # Formato típico: "User:       1001@dominio"
+            extension_found = False
+            contact = None
             
-            # Se encontrar dados de registro, está online
-            # Formato típico: Call-ID, User, Contact, Agent, Status, Ping, etc.
-            if extension in result and ("Registered" in result or "Contact:" in result):
-                # Extrair endereço de contato se disponível
-                contact = None
-                for line in result.split("\n"):
-                    if "Contact:" in line or "contact:" in line.lower():
-                        parts = line.split()
-                        if len(parts) > 1:
-                            contact = parts[1]
-                            break
+            for line in result.split("\n"):
+                # Verifica se a linha contém "User:" seguido do número do ramal
+                if "User:" in line and f"{extension}@" in line:
+                    extension_found = True
+                    logger.debug(f"📞 [CHECK_EXTENSION] Encontrado: {line.strip()}")
+                    continue
                 
-                logger.debug(f"Extension {extension}@{domain} is registered at {contact}")
+                # Se encontramos o usuário, procurar o Contact na próxima linha
+                if extension_found and "Contact:" in line:
+                    # Extrair endereço de contato
+                    parts = line.split("Contact:", 1)
+                    if len(parts) > 1:
+                        contact = parts[1].strip().split()[0] if parts[1].strip() else None
+                    break
+            
+            if extension_found:
+                logger.info(f"✅ Extension {extension} is REGISTERED (contact={contact})")
                 return (True, contact, True)
             
-            # Fallback: se retornou dados mas não identificamos claramente
-            # assumir registrado para não bloquear indevidamente
-            if len(result) > 50:  # Tem conteúdo significativo
-                logger.debug(f"Extension {extension}@{domain} status unclear, assuming registered")
-                return (True, None, True)
+            # Verificar total de registros
+            if "Total items returned: 0" in result:
+                logger.debug(f"Extension {extension} is NOT registered (no registrations)")
+                return (False, None, True)
             
+            logger.debug(f"Extension {extension} is NOT registered (not found in {len(result)} chars)")
             return (False, None, True)
             
         except asyncio.TimeoutError:
