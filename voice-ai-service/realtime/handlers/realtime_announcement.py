@@ -237,32 +237,31 @@ class RealtimeAnnouncementSession:
         para responder rapidamente quando o humano aceitar/recusar.
         """
         # FORMATO GA (gpt-4o-realtime-preview-2024-12-17):
-        # Estrutura simplificada que funciona com a API GA
+        # - session.type é OBRIGATÓRIO
+        # - Parâmetros de áudio são flat (não aninhados em audio.input/output)
         config = {
             "type": "session.update",
             "session": {
+                # Tipo de sessão (OBRIGATÓRIO na API GA)
+                "type": "response",
+                
+                # Modelo e voz
                 "model": "gpt-4o-realtime-preview-2024-12-17",
-                "instructions": self.system_prompt,
                 "voice": self.voice,
                 
-                # Estrutura de áudio para GA API
-                "audio": {
-                    "input": {
-                        "format": "pcm16",
-                        "rate": 24000
-                    },
-                    "output": {
-                        "format": "pcm16",
-                        "rate": 24000
-                    }
-                },
+                # Instruções do sistema
+                "instructions": self.system_prompt,
                 
-                # Transcrição do input
+                # Formatos de áudio (flat, não aninhados)
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                
+                # Transcrição de entrada
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },
                 
-                # VAD - server_vad é mais estável para anúncios
+                # Detecção de atividade de voz
                 "turn_detection": {
                     "type": "server_vad",
                     "threshold": 0.5,
@@ -275,6 +274,8 @@ class RealtimeAnnouncementSession:
                 "max_response_output_tokens": 4096
             }
         }
+        
+        logger.debug(f"Sending session config: {json.dumps(config)[:500]}")
         
         await self._ws.send(json.dumps(config))
         
