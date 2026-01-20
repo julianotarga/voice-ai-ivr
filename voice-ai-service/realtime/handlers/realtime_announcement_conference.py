@@ -138,7 +138,10 @@ class ConferenceAnnouncementSession:
         # Resamplers: FS 16kHz <-> OpenAI 24kHz
         self._resampler_in = Resampler(16000, 24000)
         self._resampler_out = Resampler(24000, 16000)
-        self._fs_audio_buffer = AudioBuffer(warmup_ms=300, sample_rate=16000)
+        # IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz
+        # Então precisamos: OpenAI 24kHz -> 16kHz -> 8kHz
+        self._resampler_to_8k = Resampler(16000, 8000)
+        self._fs_audio_buffer = AudioBuffer(warmup_ms=300, sample_rate=8000)
         
         # Buffer de áudio para fallback TTS
         self._audio_buffer = bytearray()
@@ -1009,22 +1012,35 @@ class ConferenceAnnouncementSession:
             pass
     
     async def _enqueue_audio_to_freeswitch(self, audio_bytes: bytes) -> None:
-        """Enfileira áudio do OpenAI para o FreeSWITCH."""
+        """Enfileira áudio do OpenAI para o FreeSWITCH.
+        
+        IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz!
+        Fluxo: OpenAI 24kHz -> 16kHz -> 8kHz
+        """
         if not audio_bytes:
             return
+        
+        # Primeiro resample: 24kHz -> 16kHz
         try:
             audio_16k = self._resampler_out.process(audio_bytes)
         except Exception:
             audio_16k = audio_bytes
         
-        audio_16k = self._fs_audio_buffer.add(audio_16k)
-        if not audio_16k:
+        # Segundo resample: 16kHz -> 8kHz (mod_audio_stream playback requer 8kHz)
+        try:
+            audio_8k = self._resampler_to_8k.process(audio_16k)
+        except Exception:
+            audio_8k = audio_16k
+        
+        audio_8k = self._fs_audio_buffer.add(audio_8k)
+        if not audio_8k:
             return
         
-        chunk_size = 640  # 20ms @ 16kHz
+        # L16 @ 8kHz, 20ms = 160 samples * 2 bytes = 320 bytes per chunk
+        chunk_size = 320
         chunks_enqueued = 0
-        for i in range(0, len(audio_16k), chunk_size):
-            chunk = audio_16k[i:i + chunk_size]
+        for i in range(0, len(audio_8k), chunk_size):
+            chunk = audio_8k[i:i + chunk_size]
             try:
                 await self._fs_audio_queue.put(chunk)
                 chunks_enqueued += 1
@@ -1032,10 +1048,16 @@ class ConferenceAnnouncementSession:
                 break
         
         if chunks_enqueued > 0:
-            logger.debug(f"🔊 Audio enqueued: {chunks_enqueued} chunks ({len(audio_16k)} bytes) to FS")
+            logger.debug(f"🔊 Audio enqueued: {chunks_enqueued} chunks ({len(audio_8k)} bytes) to FS @ 8kHz")
     
     async def _fs_sender_loop(self) -> None:
-        """Envia áudio para o FreeSWITCH."""
+        """Envia áudio para o FreeSWITCH.
+        
+        IMPORTANTE: mod_audio_stream espera JSON com formato:
+        {"type": "streamAudio", "data": {"audioData": "<base64>", "audioDataType": "raw"}}
+        
+        Mensagens binárias são IGNORADAS pelo mod_audio_stream!
+        """
         if not self._fs_ws:
             logger.warning("🔊 _fs_sender_loop: No FS WebSocket!")
             return
@@ -1044,15 +1066,15 @@ class ConferenceAnnouncementSession:
         chunks_sent = 0
         
         try:
-            # Enviar mensagem de configuração inicial
+            # Enviar mensagem de configuração inicial (opcional, para compatibilidade)
             if not self._fs_rawaudio_sent:
                 config_msg = json.dumps({
                     "type": "rawAudio",
-                    "data": {"sampleRate": 16000}
+                    "data": {"sampleRate": 8000}
                 })
                 await self._fs_ws.send(config_msg)
                 self._fs_rawaudio_sent = True
-                logger.info("🔊 FS sender: rawAudio config sent (16kHz)")
+                logger.info("🔊 FS sender: rawAudio config sent (8kHz L16)")
             
             while self._running and self._fs_ws:
                 try:
@@ -1061,7 +1083,18 @@ class ConferenceAnnouncementSession:
                         self._fs_audio_queue.get(),
                         timeout=0.5
                     )
-                    await self._fs_ws.send(chunk)
+                    
+                    # CORREÇÃO: mod_audio_stream espera JSON, não binary frames!
+                    # O áudio L16 deve ser codificado em base64 e enviado como JSON
+                    audio_msg = json.dumps({
+                        "type": "streamAudio",
+                        "data": {
+                            "audioData": base64.b64encode(chunk).decode("utf-8"),
+                            "audioDataType": "raw"
+                        }
+                    })
+                    await self._fs_ws.send(audio_msg)
+                    
                     total_bytes_sent += len(chunk)
                     chunks_sent += 1
                     
