@@ -10,6 +10,7 @@ Ref: voice-ai-ivr/docs/announced-transfer-conference.md
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -711,7 +712,6 @@ class ConferenceTransferManager:
             
             # Remover < > se existir
             if '<' in contact_clean:
-                import re
                 match = re.search(r'<([^>]+)>', contact_clean)
                 if match:
                     contact_clean = match.group(1)
