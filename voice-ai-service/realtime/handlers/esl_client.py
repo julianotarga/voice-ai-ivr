@@ -1434,9 +1434,12 @@ class AsyncESLClient:
                 logger.debug(f"📞 [CHECK_EXTENSION] Resultado vazio")
                 return (False, None, True)
             
+            # DEBUG: Logar resultado completo para diagnóstico
+            logger.debug(f"📞 [CHECK_EXTENSION] Resultado bruto:\n{result[:800]}...")
+            
             # Procurar pelo número do ramal E domínio na saída
-            # Formato típico: "User:       1001@dominio"
-            # SEGURANÇA MULTI-TENANT: Verificar AMBOS número e domínio
+            # SEGURANÇA MULTI-TENANT: SEMPRE verificar AMBOS número E domínio
+            # Nunca aceitar match só pelo número!
             extension_found = False
             contact = None
             
@@ -1446,22 +1449,33 @@ class AsyncESLClient:
             target_user = f"{extension}@{domain_base}"
             
             for line in result.split("\n"):
-                line_lower = line.lower()
+                line_lower = line.lower().strip()
                 
-                # Verifica se a linha contém "User:" seguido do número@domínio
-                if "user:" in line_lower:
-                    # Verificar match exato do número E domínio (multi-tenant safe)
-                    if target_user in line_lower or f"{extension}@" in line and domain_base in line_lower:
-                        extension_found = True
-                        logger.debug(f"📞 [CHECK_EXTENSION] Match encontrado: {line.strip()}")
-                        continue
+                # Skip linhas vazias
+                if not line_lower:
+                    continue
+                
+                # MULTI-TENANT SAFE: Sempre verificar número E domínio juntos
+                # Match 1: número@domínio completo na linha
+                if target_user in line_lower:
+                    extension_found = True
+                    logger.debug(f"📞 [CHECK_EXTENSION] Match encontrado: {line.strip()}")
+                    continue
+                
+                # Match 2: número@ E domínio ambos presentes na mesma linha
+                # (para formatos onde aparecem separados mas na mesma linha)
+                if f"{extension}@" in line_lower and domain_base in line_lower:
+                    extension_found = True
+                    logger.debug(f"📞 [CHECK_EXTENSION] Match (num+domain): {line.strip()}")
+                    continue
                 
                 # Se encontramos o usuário, procurar o Contact na próxima linha
-                if extension_found and "Contact:" in line:
+                if extension_found and "contact" in line_lower:
                     # Extrair endereço de contato
-                    parts = line.split("Contact:", 1)
-                    if len(parts) > 1:
-                        contact = parts[1].strip().split()[0] if parts[1].strip() else None
+                    if ":" in line:
+                        parts = line.split(":", 1)
+                        if len(parts) > 1:
+                            contact = parts[1].strip().split()[0] if parts[1].strip() else None
                     break
             
             if extension_found:
@@ -1473,7 +1487,9 @@ class AsyncESLClient:
                 logger.debug(f"Extension {extension} is NOT registered (no registrations)")
                 return (False, None, True)
             
+            # Log mais detalhado para diagnóstico
             logger.debug(f"Extension {extension} is NOT registered (not found in {len(result)} chars)")
+            logger.debug(f"📞 [CHECK_EXTENSION] Procurando por: '{target_user}' (multi-tenant safe)")
             return (False, None, True)
             
         except asyncio.TimeoutError:
