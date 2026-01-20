@@ -157,6 +157,10 @@ class ConferenceTransferManager:
         """
         start_time = time.time()
         
+        def elapsed() -> str:
+            """Retorna tempo decorrido formatado."""
+            return f"[{time.time() - start_time:.2f}s]"
+        
         logger.info("=" * 70)
         logger.info("🎯 ANNOUNCED TRANSFER - mod_conference")
         logger.info(f"   A-leg UUID: {self.a_leg_uuid}")
@@ -166,8 +170,11 @@ class ConferenceTransferManager:
         logger.info("=" * 70)
         
         try:
+            # ============================================================
             # STEP 0: Verificar e garantir conexão ESL
-            logger.debug(f"Step 0: ESL client type: {type(self.esl).__name__}")
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 0: Verificando conexão ESL...")
+            logger.info(f"{elapsed()} STEP 0: ESL client type: {type(self.esl).__name__}")
             
             # Verificar se ESL está conectado
             is_connected = False
@@ -176,86 +183,96 @@ class ConferenceTransferManager:
             elif hasattr(self.esl, 'is_connected'):
                 is_connected = self.esl.is_connected
             
-            logger.debug(f"Step 0: ESL connected = {is_connected}")
+            logger.info(f"{elapsed()} STEP 0: ESL connected = {is_connected}")
             
             if not is_connected:
-                logger.info("ESL not connected, attempting connection...")
+                logger.info(f"{elapsed()} STEP 0: ESL not connected, attempting connection...")
                 try:
                     await asyncio.wait_for(self.esl.connect(), timeout=5.0)
-                    logger.info("ESL connected successfully")
+                    logger.info(f"{elapsed()} STEP 0: ✅ ESL connected successfully")
                 except Exception as e:
-                    logger.error(f"Failed to connect ESL: {e}")
+                    logger.error(f"{elapsed()} STEP 0: ❌ Failed to connect ESL: {e}")
                     return ConferenceTransferResult(
                         success=False,
                         decision=TransferDecision.ERROR,
                         error="Falha na conexão com FreeSWITCH"
                     )
+            else:
+                logger.info(f"{elapsed()} STEP 0: ✅ ESL already connected")
             
-            # STEP 1: Verificar A-leg ainda existe (timeout curto)
-            logger.debug("Step 1: Checking if A-leg exists...")
+            # ============================================================
+            # STEP 1: Verificar A-leg ainda existe
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 1: Verificando se A-leg existe...")
             try:
                 a_exists = await asyncio.wait_for(
                     self.esl.uuid_exists(self.a_leg_uuid),
                     timeout=5.0
                 )
+                logger.info(f"{elapsed()} STEP 1: uuid_exists returned: {a_exists}")
             except asyncio.TimeoutError:
-                logger.warning("Step 1: uuid_exists timeout, assuming A-leg exists")
+                logger.warning(f"{elapsed()} STEP 1: ⚠️ uuid_exists TIMEOUT, assuming A-leg exists")
                 a_exists = True
             except Exception as e:
-                logger.warning(f"Step 1: uuid_exists error: {e}, assuming A-leg exists")
+                logger.warning(f"{elapsed()} STEP 1: ⚠️ uuid_exists error: {e}, assuming A-leg exists")
                 a_exists = True
             
-            logger.debug(f"Step 1: A-leg exists = {a_exists}")
-            
             if not a_exists:
-                logger.warning("A-leg no longer exists")
+                logger.warning(f"{elapsed()} STEP 1: ❌ A-leg no longer exists")
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.HANGUP,
                     error="Cliente desligou antes da transferência"
                 )
+            logger.info(f"{elapsed()} STEP 1: ✅ A-leg exists")
             
-            # STEP 2: Criar nome único para conferência
+            # ============================================================
+            # STEP 2: Criar conferência e mover A-leg
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 2: Criando conferência...")
             self.conference_name = self._generate_conference_name()
-            logger.info(f"📋 Step 1: Conference: {self.conference_name}")
+            logger.info(f"{elapsed()} STEP 2: Conference name: {self.conference_name}")
             
-            # STEP 3: Parar stream de áudio do Voice AI
+            logger.info(f"{elapsed()} STEP 2: Parando Voice AI stream...")
             await self._stop_voiceai_stream()
+            logger.info(f"{elapsed()} STEP 2: ✅ Voice AI stream parado")
             
-            # STEP 4: Mover A-leg para conferência (muted)
+            logger.info(f"{elapsed()} STEP 2: Movendo A-leg para conferência...")
             await self._move_a_leg_to_conference()
-            logger.info("✅ Step 2: A-leg in conference (muted)")
+            logger.info(f"{elapsed()} STEP 2: ✅ A-leg in conference (muted)")
             
-            # STEP 4.1: Verificar se A-leg ainda existe após mover para conferência
-            logger.debug("Step 2.1: Checking if A-leg still exists...")
+            # Verificar se A-leg ainda existe após mover
+            logger.info(f"{elapsed()} STEP 2: Verificando A-leg após mover...")
             try:
                 a_exists = await asyncio.wait_for(
                     self.esl.uuid_exists(self.a_leg_uuid),
                     timeout=5.0
                 )
+                logger.info(f"{elapsed()} STEP 2: uuid_exists returned: {a_exists}")
             except asyncio.TimeoutError:
-                logger.error("Step 2.1: TIMEOUT checking A-leg existence (ESL not responding)")
-                # Assumir que existe e continuar
+                logger.warning(f"{elapsed()} STEP 2: ⚠️ TIMEOUT checking A-leg (ESL not responding)")
                 a_exists = True
             except Exception as e:
-                logger.error(f"Step 2.1: Error checking A-leg: {e}")
-                a_exists = True  # Assumir que existe e continuar
-            
-            logger.debug(f"Step 2.1: A-leg exists = {a_exists}")
+                logger.warning(f"{elapsed()} STEP 2: ⚠️ Error checking A-leg: {e}")
+                a_exists = True
             
             if not a_exists:
-                logger.warning("A-leg gone after moving to conference")
+                logger.warning(f"{elapsed()} STEP 2: ❌ A-leg gone after moving to conference")
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.HANGUP,
                     error="Cliente desligou durante transferência"
                 )
+            logger.info(f"{elapsed()} STEP 2: ✅ A-leg still exists in conference")
             
-            logger.info("📋 Step 3: Preparing to originate B-leg...")
-            # STEP 5: Originar B-leg para conferência
+            # ============================================================
+            # STEP 3: Originar B-leg
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 3: Originando B-leg para {destination}...")
             originate_success = await self._originate_b_leg(destination)
+            
             if not originate_success:
-                logger.warning("B-leg originate failed")
+                logger.warning(f"{elapsed()} STEP 3: ❌ B-leg originate failed")
                 await self._cleanup_and_return(reason="Ramal não atendeu")
                 return ConferenceTransferResult(
                     success=False,
@@ -264,18 +281,27 @@ class ConferenceTransferManager:
                     error="Atendente não atendeu",
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
-            logger.info(f"✅ Step 3: B-leg originated: {self.b_leg_uuid}")
+            logger.info(f"{elapsed()} STEP 3: ✅ B-leg originated: {self.b_leg_uuid}")
             
-            # STEP 6: Aguardar B-leg estabilizar
+            # Aguardar B-leg estabilizar
+            logger.info(f"{elapsed()} STEP 3: Aguardando B-leg estabilizar (1.5s)...")
             await asyncio.sleep(1.5)
+            logger.info(f"{elapsed()} STEP 3: ✅ B-leg estável")
             
-            # STEP 7: Fazer anúncio via OpenAI Realtime
+            # ============================================================
+            # STEP 4: Anunciar para B-leg
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 4: Anunciando para B-leg via OpenAI...")
             decision = await self._announce_to_b_leg(announcement, context)
-            logger.info(f"✅ Step 4: B-leg decision: {decision.value}")
+            logger.info(f"{elapsed()} STEP 4: ✅ B-leg decision: {decision.value}")
             
-            # STEP 8: Processar decisão
+            # ============================================================
+            # STEP 5: Processar decisão
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 5: Processando decisão...")
             result = await self._process_decision(decision, context)
             result.duration_ms = int((time.time() - start_time) * 1000)
+            logger.info(f"{elapsed()} STEP 5: ✅ Resultado: success={result.success}, decision={result.decision.value}")
             
             return result
             
@@ -312,16 +338,17 @@ class ConferenceTransferManager:
     
     async def _stop_voiceai_stream(self) -> None:
         """Para o stream de áudio do Voice AI no A-leg."""
+        logger.debug(f"_stop_voiceai_stream: Sending uuid_audio_stream stop for {self.a_leg_uuid}")
         try:
-            await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
                 timeout=3.0
             )
-            logger.debug("Voice AI stream stopped")
+            logger.debug(f"_stop_voiceai_stream: Result: {result}")
         except asyncio.TimeoutError:
-            logger.debug("Voice AI stream stop timeout (continuing)")
+            logger.warning("_stop_voiceai_stream: TIMEOUT (continuing anyway)")
         except Exception as e:
-            logger.debug(f"Could not stop Voice AI stream: {e}")
+            logger.debug(f"_stop_voiceai_stream: Error: {e} (continuing anyway)")
     
     async def _move_a_leg_to_conference(self) -> None:
         """
@@ -332,7 +359,7 @@ class ConferenceTransferManager:
         
         A conferência será criada automaticamente.
         """
-        logger.info("📋 Step 2: Moving A-leg to conference...")
+        logger.info(f"_move_a_leg_to_conference: START - A-leg={self.a_leg_uuid}")
         
         # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
         # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
@@ -346,24 +373,32 @@ class ConferenceTransferManager:
             f"'conference:{self.conference_name}@{profile}+flags{{mute}}' inline"
         )
         
-        logger.debug(f"Transfer command: {transfer_cmd}")
+        logger.info(f"_move_a_leg_to_conference: Sending command: {transfer_cmd}")
         
         try:
+            logger.debug("_move_a_leg_to_conference: Awaiting ESL execute_api...")
             result = await asyncio.wait_for(
                 self.esl.execute_api(transfer_cmd),
                 timeout=5.0
             )
+            logger.info(f"_move_a_leg_to_conference: ESL returned: {result}")
             
             if "-ERR" in str(result):
+                logger.error(f"_move_a_leg_to_conference: ❌ Command failed: {result}")
                 raise Exception(f"uuid_transfer failed: {result}")
             
-            logger.debug(f"A-leg transfer result: {result}")
+            logger.info("_move_a_leg_to_conference: ✅ Transfer command successful")
             
             # Aguardar A-leg entrar na conferência
+            logger.debug("_move_a_leg_to_conference: Waiting 0.5s for A-leg to join conference...")
             await asyncio.sleep(0.5)
+            logger.info("_move_a_leg_to_conference: END - A-leg should be in conference now")
             
+        except asyncio.TimeoutError:
+            logger.error("_move_a_leg_to_conference: ❌ TIMEOUT waiting for ESL response")
+            raise Exception("uuid_transfer timeout")
         except Exception as e:
-            logger.error(f"Failed to move A-leg: {e}")
+            logger.error(f"_move_a_leg_to_conference: ❌ Failed: {e}")
             raise
     
     async def _originate_b_leg(self, destination: str) -> bool:
@@ -378,10 +413,11 @@ class ConferenceTransferManager:
         Returns:
             bool: True se originate teve sucesso
         """
-        logger.info("📋 Step 3: Originating B-leg...")
+        logger.info(f"_originate_b_leg: START - destination={destination}@{self.domain}")
         
         # Gerar UUID para B-leg (local até confirmar que existe)
         candidate_uuid = str(uuid4())
+        logger.info(f"_originate_b_leg: Generated candidate UUID: {candidate_uuid}")
         
         profile = self.config.conference_profile
         timeout = self.config.originate_timeout
@@ -401,25 +437,27 @@ class ConferenceTransferManager:
         # moderator flag libera os membros que estão em wait-mod
         app = f"&conference({self.conference_name}@{profile}+flags{{moderator}})"
         
-        logger.debug(f"Originate: {dial_string} {app}")
+        logger.info(f"_originate_b_leg: Dial string: {dial_string}")
+        logger.info(f"_originate_b_leg: App: {app}")
         
         try:
             # Executar originate via bgapi (assíncrono)
             # bgapi retorna Job-UUID, não o resultado imediato
+            logger.info("_originate_b_leg: Sending bgapi originate...")
             try:
                 result = await asyncio.wait_for(
                     self.esl.execute_api(f"bgapi originate {dial_string} {app}"),
                     timeout=5.0
                 )
+                logger.info(f"_originate_b_leg: bgapi result: {result}")
             except asyncio.TimeoutError:
-                logger.error("Originate bgapi timeout")
+                logger.error("_originate_b_leg: ❌ bgapi TIMEOUT after 5s")
                 return False
-            
-            logger.debug(f"Originate bgapi result: {result}")
             
             # Polling para verificar se B-leg foi criado
             # Máximo de tentativas baseado no timeout de originate
             max_attempts = min(timeout, 30)  # Máximo 30 tentativas (30 segundos)
+            logger.info(f"_originate_b_leg: Starting polling (max {max_attempts} attempts)...")
             
             for attempt in range(int(max_attempts)):
                 await asyncio.sleep(1.0)
@@ -430,14 +468,15 @@ class ConferenceTransferManager:
                         self.esl.uuid_exists(candidate_uuid),
                         timeout=3.0
                     )
+                    logger.debug(f"_originate_b_leg: Attempt {attempt + 1}: B-leg exists = {b_exists}")
                 except asyncio.TimeoutError:
-                    logger.debug(f"uuid_exists timeout at attempt {attempt + 1}")
+                    logger.warning(f"_originate_b_leg: Attempt {attempt + 1}: uuid_exists TIMEOUT")
                     continue  # Tentar novamente
                 
                 if b_exists:
                     # SUCESSO: Agora podemos atribuir o UUID ao estado da classe
                     self.b_leg_uuid = candidate_uuid
-                    logger.info(f"B-leg {self.b_leg_uuid} created after {attempt + 1}s")
+                    logger.info(f"_originate_b_leg: ✅ B-leg {self.b_leg_uuid} answered after {attempt + 1}s")
                     return True
                 
                 # Verificar se A-leg ainda existe (timeout curto)
@@ -447,19 +486,19 @@ class ConferenceTransferManager:
                         timeout=3.0
                     )
                 except asyncio.TimeoutError:
-                    logger.debug("A-leg check timeout, continuing")
+                    logger.debug(f"_originate_b_leg: Attempt {attempt + 1}: A-leg check timeout, assuming exists")
                     a_exists = True  # Assumir que existe
                 
                 if not a_exists:
-                    logger.warning("A-leg gone during originate wait")
+                    logger.warning(f"_originate_b_leg: ❌ A-leg gone during originate wait (attempt {attempt + 1})")
                     # NÃO atribuir b_leg_uuid - nunca existiu
                     return False
                 
                 # Log a cada 5 segundos
                 if (attempt + 1) % 5 == 0:
-                    logger.debug(f"Still waiting for B-leg... ({attempt + 1}s)")
+                    logger.info(f"_originate_b_leg: Still waiting for B-leg... ({attempt + 1}s)")
             
-            logger.warning(f"B-leg {candidate_uuid} not found after {max_attempts}s")
+            logger.warning(f"_originate_b_leg: ❌ B-leg {candidate_uuid} not answered after {max_attempts}s")
             # NÃO atribuir b_leg_uuid - originate falhou
             return False
             
