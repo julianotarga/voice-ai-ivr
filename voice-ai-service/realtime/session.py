@@ -533,6 +533,9 @@ class RealtimeSession:
         self._transfer_manager: Optional[TransferManager] = None
         self._current_transfer: Optional[TransferResult] = None
         self._transfer_in_progress = False
+        # Lock para evitar múltiplas transferências simultâneas
+        # Ref: Bug identificado no log - request_handoff chamado 2x
+        self._transfer_lock = asyncio.Lock()
         
         # Business Hours / Callback Handler
         self._outside_hours_task: Optional[asyncio.Task] = None
@@ -1776,11 +1779,28 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             destination = args.get("destination", "qualquer atendente")
             reason = args.get("reason", "solicitação do cliente")
             
-            # CRÍTICO: Evitar múltiplas transferências simultâneas
+            # CRÍTICO: Evitar múltiplas transferências simultâneas usando lock
             # Isso evita bug onde IA chama request_handoff duas vezes
+            # Ref: Context7 analysis - request_handoff called 2x at 20:22:12 and 20:22:14
+            
+            # Primeiro check rápido sem lock (otimização)
             if self._transfer_in_progress:
                 logger.warning(
-                    "🔄 [HANDOFF] IGNORANDO - Transferência já em progresso",
+                    "🔄 [HANDOFF] IGNORANDO - Transferência já em progresso (flag)",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "destination_raw": destination,
+                    }
+                )
+                return {
+                    "status": "already_in_progress",
+                    "message": "Transferência já está em andamento. Aguarde."
+                }
+            
+            # Segundo check com lock (evita race condition)
+            if self._transfer_lock.locked():
+                logger.warning(
+                    "🔄 [HANDOFF] IGNORANDO - Lock de transferência ativo",
                     extra={
                         "call_uuid": self.call_uuid,
                         "destination_raw": destination,
@@ -3082,6 +3102,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         Usa _wait_for_audio_playback para garantir que o agente 
         termine de falar "Vou transferir você..." antes de iniciar.
         
+        IMPORTANTE: Usa _transfer_lock para evitar múltiplas execuções simultâneas.
+        
         Args:
             destination_text: Texto do destino (ex: "Jeni", "financeiro")
             reason: Motivo do handoff
@@ -3096,9 +3118,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         )
         
         try:
+            # IMPORTANTE: Dar tempo para OpenAI começar a gerar resposta
+            # Sem esse delay, _wait_for_audio_playback retorna imediatamente
+            # porque _assistant_speaking ainda é False
+            await asyncio.sleep(0.3)
+            
             # Esperar áudio terminar de reproduzir
+            # min_wait aumentado para 2.0s para garantir tempo mínimo
             total_wait = await self._wait_for_audio_playback(
-                min_wait=0.5,
+                min_wait=2.0,
                 max_wait=max(delay_seconds, 6.0),
                 context="handoff"
             )
@@ -3110,21 +3138,29 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             logger.info(f"⏳ [DELAYED_HANDOFF] Delay concluído ({total_wait:.1f}s), iniciando handoff...")
             
-            # Mutar o áudio e iniciar o handoff
-            self._set_transfer_in_progress(True, "delayed_handoff_start")
-            
-            # Interromper qualquer resposta do OpenAI
-            try:
-                if self._provider:
-                    await self._provider.interrupt()
-            except Exception as e:
-                logger.warning(f"⏳ [DELAYED_HANDOFF] Interrupt falhou: {e}")
-            
-            # Notificar início de transferência
-            await self._notify_transfer_start()
-            
-            # Executar o handoff inteligente
-            await self._execute_intelligent_handoff(destination_text, reason)
+            # CRÍTICO: Usar lock para evitar múltiplas execuções
+            # Ref: Bug onde request_handoff foi chamado 2x
+            async with self._transfer_lock:
+                # Double-check: alguém já executou?
+                if self._current_transfer is not None:
+                    logger.warning("⏳ [DELAYED_HANDOFF] Outra transferência já foi executada, abortando")
+                    return
+                
+                # Mutar o áudio e iniciar o handoff
+                self._set_transfer_in_progress(True, "delayed_handoff_start")
+                
+                # Interromper qualquer resposta do OpenAI
+                try:
+                    if self._provider:
+                        await self._provider.interrupt()
+                except Exception as e:
+                    logger.warning(f"⏳ [DELAYED_HANDOFF] Interrupt falhou: {e}")
+                
+                # Notificar início de transferência
+                await self._notify_transfer_start()
+                
+                # Executar o handoff inteligente
+                await self._execute_intelligent_handoff(destination_text, reason)
             
         except asyncio.CancelledError:
             logger.info("⏳ [DELAYED_HANDOFF] Task cancelada")

@@ -379,12 +379,32 @@ class ConferenceAnnouncementSession:
             logger.warning("No session.updated confirmation (timeout)")
     
     async def _start_audio_stream(self) -> None:
-        """Inicia stream de áudio bidirecional."""
+        """
+        Inicia stream de áudio bidirecional.
+        
+        IMPORTANTE para Docker:
+        - REALTIME_BLEG_STREAM_BIND: onde o WS server escuta (default: 0.0.0.0)
+        - REALTIME_BLEG_STREAM_HOST: endereço que FreeSWITCH usa para conectar
+          - Se FreeSWITCH está no HOST e container em Docker: usar IP do container
+          - Se ambos em Docker: usar nome do container ou IP interno
+          - Se mesmo host: usar 127.0.0.1
+        
+        Para Docker for Mac/Windows com FreeSWITCH no host:
+        - O container precisa expor a porta
+        - FreeSWITCH precisa conectar ao IP do container (não 127.0.0.1)
+        - Use: REALTIME_BLEG_STREAM_HOST=host.docker.internal (resolve para o host)
+          OU use o IP real do container
+        """
         try:
             bind_host = os.getenv("REALTIME_BLEG_STREAM_BIND", "0.0.0.0")
+            # IMPORTANTE: Para Docker, usar host.docker.internal ou IP do container
+            # 127.0.0.1 não funciona se FreeSWITCH está no host
             connect_host = os.getenv("REALTIME_BLEG_STREAM_HOST", "127.0.0.1")
             bleg_port_str = os.getenv("REALTIME_BLEG_STREAM_PORT", "")
             base_port = int(bleg_port_str) if bleg_port_str else 0
+            
+            # Log para debug de networking
+            logger.info(f"🔊 Audio stream config: bind={bind_host}, connect={connect_host}, port={bleg_port_str or 'random'}")
             
             # Se porta configurada, tentar um range para suportar sessões simultâneas
             # Se porta 0, o OS escolhe uma porta livre
@@ -422,6 +442,15 @@ class ConferenceAnnouncementSession:
             ws_url = f"ws://{connect_host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
             
             logger.info(f"🔊 Audio WS ready: {ws_url}")
+            
+            # Verificar conexão ESL antes de executar comando
+            if not self.esl.connected:
+                logger.warning("🔌 ESL disconnected, attempting reconnect...")
+                try:
+                    await self.esl.connect()
+                    logger.info("🔌 ESL reconnected successfully")
+                except Exception as e:
+                    logger.error(f"🔌 ESL reconnect failed: {e}")
             
             # Iniciar mod_audio_stream no B-leg
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
@@ -481,7 +510,24 @@ class ConferenceAnnouncementSession:
                     logger.warning("⚠️ No FS WebSocket - using TTS fallback")
                     await self._play_audio_fallback(audio_bytes)
         
-        # FUNCTION CALL - Decisão do atendente
+        # FUNCTION CALL - Acumular argumentos (streaming)
+        # Ref: Context7 /websites/platform_openai - response.function_call_arguments.delta
+        elif etype == "response.function_call_arguments.delta":
+            # Acumular argumentos para processar quando chegar .done
+            output_index = event.get("output_index", 0)
+            delta = event.get("delta", "")
+            if not hasattr(self, "_function_call_args"):
+                self._function_call_args = {}
+            if output_index not in self._function_call_args:
+                self._function_call_args[output_index] = {
+                    "name": "",
+                    "arguments": "",
+                    "call_id": event.get("call_id", "")
+                }
+            self._function_call_args[output_index]["arguments"] += delta
+        
+        # FUNCTION CALL - Processamento final (argumentos completos)
+        # Ref: Context7 /websites/platform_openai - response.function_call_arguments.done
         elif etype == "response.function_call_arguments.done":
             await self._handle_function_call(event)
         
@@ -820,7 +866,10 @@ class ConferenceAnnouncementSession:
     
     async def _handle_fs_ws(self, websocket: ServerConnection) -> None:
         """Recebe áudio do FreeSWITCH e envia ao OpenAI."""
+        logger.info(f"🔌 FS WebSocket connection received from FreeSWITCH")
+        
         if self._fs_ws:
+            logger.warning("🔌 FS WebSocket already connected, rejecting new connection")
             await websocket.close(1008, "Already connected")
             return
         
@@ -829,13 +878,23 @@ class ConferenceAnnouncementSession:
         self._fs_rawaudio_sent = False
         self._fs_sender_task = asyncio.create_task(self._fs_sender_loop())
         
+        total_bytes_received = 0
+        messages_received = 0
+        
         try:
             async for message in websocket:
                 if isinstance(message, bytes):
+                    total_bytes_received += len(message)
+                    messages_received += 1
                     await self._handle_fs_audio(message)
+                    
+                    # Log a cada 100 mensagens (~2 segundos)
+                    if messages_received % 100 == 0:
+                        logger.debug(f"🎤 FS audio IN: {messages_received} frames ({total_bytes_received} bytes)")
         except Exception as e:
-            logger.debug(f"FS WS closed: {e}")
+            logger.debug(f"🔌 FS WS closed: {e}")
         finally:
+            logger.info(f"🔌 FS WebSocket ended: received {messages_received} frames ({total_bytes_received} bytes)")
             if self._fs_sender_task:
                 self._fs_sender_task.cancel()
                 self._fs_sender_task = None
@@ -886,30 +945,48 @@ class ConferenceAnnouncementSession:
     async def _fs_sender_loop(self) -> None:
         """Envia áudio para o FreeSWITCH."""
         if not self._fs_ws:
+            logger.warning("🔊 _fs_sender_loop: No FS WebSocket!")
             return
         
+        total_bytes_sent = 0
+        chunks_sent = 0
+        
         try:
+            # Enviar mensagem de configuração inicial
             if not self._fs_rawaudio_sent:
-                await self._fs_ws.send(json.dumps({
+                config_msg = json.dumps({
                     "type": "rawAudio",
                     "data": {"sampleRate": 16000}
-                }))
+                })
+                await self._fs_ws.send(config_msg)
                 self._fs_rawaudio_sent = True
+                logger.info("🔊 FS sender: rawAudio config sent (16kHz)")
             
             while self._running and self._fs_ws:
                 try:
                     # Timeout para evitar bloqueio indefinido
-                    # Verifica self._running a cada 500ms
                     chunk = await asyncio.wait_for(
                         self._fs_audio_queue.get(),
                         timeout=0.5
                     )
                     await self._fs_ws.send(chunk)
+                    total_bytes_sent += len(chunk)
+                    chunks_sent += 1
+                    
+                    # Log a cada 50 chunks (~1 segundo de áudio)
+                    if chunks_sent % 50 == 0:
+                        logger.debug(f"🔊 FS sender: {chunks_sent} chunks sent ({total_bytes_sent} bytes total)")
+                        
                 except asyncio.TimeoutError:
                     # Continuar loop para verificar self._running
                     continue
+                    
         except asyncio.CancelledError:
-            # Cleanup normal
-            pass
+            logger.debug(f"🔊 FS sender: cancelled after {chunks_sent} chunks ({total_bytes_sent} bytes)")
         except Exception as e:
-            logger.debug(f"FS sender loop ended: {e}")
+            logger.debug(f"🔊 FS sender loop ended: {e} (sent {chunks_sent} chunks, {total_bytes_sent} bytes)")
+        finally:
+            if chunks_sent > 0:
+                logger.info(f"🔊 FS sender: TOTAL sent {chunks_sent} chunks ({total_bytes_sent} bytes)")
+            else:
+                logger.warning("🔊 FS sender: NO audio was sent to FreeSWITCH!")

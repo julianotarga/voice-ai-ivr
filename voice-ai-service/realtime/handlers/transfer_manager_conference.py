@@ -142,6 +142,35 @@ class ConferenceTransferManager:
         self._transfer_active = False
         self._hangup_handler_id: Optional[str] = None
     
+    async def _ensure_esl_connected(self, context: str = "") -> bool:
+        """
+        Verifica e garante que ESL está conectado.
+        
+        Se desconectado, tenta reconectar automaticamente.
+        
+        Args:
+            context: Contexto para log (ex: "STEP 3")
+            
+        Returns:
+            True se conectado, False se falhou
+        """
+        try:
+            is_connected = getattr(self.esl, '_connected', False) or getattr(self.esl, 'connected', False)
+            
+            if not is_connected:
+                logger.warning(f"🔌 [{context}] ESL disconnected, attempting reconnect...")
+                try:
+                    await asyncio.wait_for(self.esl.connect(), timeout=5.0)
+                    logger.info(f"🔌 [{context}] ESL reconnected successfully")
+                    return True
+                except Exception as e:
+                    logger.error(f"🔌 [{context}] ESL reconnect failed: {e}")
+                    return False
+            return True
+        except Exception as e:
+            logger.error(f"🔌 [{context}] Error checking ESL connection: {e}")
+            return False
+    
     async def execute_announced_transfer(
         self,
         destination: str,
@@ -628,17 +657,33 @@ class ConferenceTransferManager:
         Move A-leg (cliente) para conferência com flags especiais.
         
         Flags:
-        - mute: Cliente não pode falar (ainda)
+        - mute: Cliente não pode falar (ainda, será desmutado após aceitação)
+        
+        IMPORTANTE: Configura hangup_after_conference ANTES de mover.
+        Isso garante que quando o B-leg sair (com endconf), o A-leg também desliga.
         
         A conferência será criada automaticamente.
+        
+        Ref: Context7 /signalwire/freeswitch-docs - hangup_after_conference, endconf
         """
         logger.info(f"_move_a_leg_to_conference: START - A-leg={self.a_leg_uuid}")
         
-        # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
-        # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
         profile = self.config.conference_profile
         
-        # Usar uuid_transfer com inline dialplan
+        # IMPORTANTE: Setar hangup_after_conference ANTES de mover para conferência
+        # Isso garante que quando a conferência terminar (endconf do B-leg), A-leg desliga
+        # Ref: Context7 - hangup_after_conference channel variable
+        try:
+            await asyncio.wait_for(
+                self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_conference true"),
+                timeout=2.0
+            )
+            logger.debug("_move_a_leg_to_conference: hangup_after_conference=true set on A-leg")
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.debug(f"_move_a_leg_to_conference: Could not set hangup_after_conference: {e}")
+        
+        # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
+        # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
         # NOTA: As chaves simples {mute} são interpretadas pelo FreeSWITCH
         # Python f-string requer {{ }} para escapar, resultando em { } no output
         transfer_cmd = (
@@ -749,9 +794,20 @@ class ConferenceTransferManager:
             )
             logger.warning(f"_originate_b_leg: ⚠️ Using user lookup (no direct contact, may cause loop)")
         
-        # App: conferência como moderador
-        # moderator flag libera os membros que estão em wait-mod
-        app = f"&conference({self.conference_name}@{profile}+flags{{moderator}})"
+        # IMPORTANTE: Originar B-leg para &park() primeiro, NÃO para conferência!
+        # 
+        # Motivo: uuid_audio_stream NÃO funciona em canais que já estão em conferência
+        # porque mod_conference gerencia o áudio internamente.
+        #
+        # Fluxo CORRETO:
+        # 1. Originar B-leg para &park() (canal em espera)
+        # 2. Iniciar uuid_audio_stream no B-leg (funciona porque não está em conferência)
+        # 3. Fazer anúncio via OpenAI
+        # 4. Se ACEITO: Mover B-leg para conferência via uuid_transfer
+        # 5. Se RECUSADO: Desligar B-leg
+        #
+        # Ref: Problema identificado em log - "Audio stream did not connect"
+        app = "&park()"
         
         logger.info(f"_originate_b_leg: Dial string: {dial_string}")
         logger.info(f"_originate_b_leg: App: {app}")
@@ -935,37 +991,80 @@ class ConferenceTransferManager:
             return TransferDecision.ERROR
     
     def _build_announcement_prompt(self, context: str) -> str:
-        """Constrói prompt de sistema para o anúncio."""
-        return f"""Você é uma secretária virtual de uma empresa. Você está anunciando uma ligação para um atendente humano.
+        """
+        Constrói prompt de sistema para o anúncio.
+        
+        IMPORTANTE: Este prompt é crítico para garantir que a IA:
+        1. Não interprete saudações como aceitação
+        2. Faça um anúncio claro e breve
+        3. Aguarde confirmação EXPLÍCITA antes de chamar accept_transfer
+        
+        Ref: Bug identificado no log - IA interpretou "Alô" como aceitação
+        """
+        return f"""Você é uma secretária virtual profissional fazendo uma ligação para anunciar que há um cliente aguardando.
 
-CONTEXTO DA LIGAÇÃO: {context}
+CONTEXTO: {context}
 
-SEU OBJETIVO:
-1. Anunciar que há um cliente na linha aguardando
-2. Perguntar se o atendente pode atender AGORA
-3. Aguardar uma resposta CLARA do atendente
+═══════════════════════════════════════════════════════
+REGRAS ABSOLUTAS (NÃO VIOLE NUNCA):
+═══════════════════════════════════════════════════════
 
+1. SAUDAÇÕES NÃO SÃO ACEITAÇÃO
+   "Alô", "Oi", "Olá", "Pois não", "Sim?" (apenas tom de pergunta)
+   → Estas são APENAS saudações iniciais. CONTINUE a conversa!
+   → NUNCA chame accept_transfer após ouvir apenas uma saudação
+
+2. ACEITAÇÃO DEVE SER EXPLÍCITA
+   Só chame accept_transfer() quando ouvir CLARAMENTE:
+   - "Sim, pode passar"
+   - "Pode conectar"
+   - "Manda"
+   - "Transfira"
+   - "Aceito"
+   - "Pode ser"
+   - "Tá bom, pode passar"
+
+3. RECUSA
+   Chame reject_transfer() quando ouvir:
+   - "Não posso agora"
+   - "Estou ocupado/a"
+   - "Liga depois"
+   - "Não quero"
+   - "Estou em reunião"
+
+═══════════════════════════════════════════════════════
 FLUXO DA CONVERSA:
-1. PRIMEIRO: Faça o anúncio (máximo 2 frases)
-2. DEPOIS: Aguarde a resposta do atendente
-3. SÓ ENTÃO: Chame a função apropriada
+═══════════════════════════════════════════════════════
 
-QUANDO CHAMAR AS FUNÇÕES:
-- accept_transfer(): APENAS se o atendente disser CLARAMENTE: "sim", "pode passar", "pode conectar", "aceito", "manda", "transfira"
-- reject_transfer(): Se o atendente disser: "não", "não posso", "ocupado", "estou em reunião", "depois", "liga depois"
+PASSO 1: Faça o anúncio (já está pronto na primeira mensagem)
+PASSO 2: Aguarde a resposta
+PASSO 3: Se for saudação, REPITA a pergunta
+PASSO 4: Se for confirmação clara, chame accept_transfer()
 
-IMPORTANTE:
-- "Alô", "Oi", "Olá", "Pois não" NÃO SÃO aceitação - são apenas saudações. Continue a conversa!
-- Se o atendente apenas atender com saudação, REPITA a pergunta se ele pode atender
-- NÃO assuma aceitação sem confirmação explícita
-- Seja BREVE - o cliente está aguardando na linha
+═══════════════════════════════════════════════════════
+EXEMPLO CORRETO:
+═══════════════════════════════════════════════════════
 
-EXEMPLO DE CONVERSA CORRETA:
-Você: "Olá, tenho um cliente na linha sobre vendas. Você pode atender agora?"
+Você: "Olá, tenho um cliente aguardando sobre vendas. Pode atendê-lo agora?"
 Atendente: "Alô"
-Você: "Há um cliente aguardando para falar sobre vendas. Pode atendê-lo?"
+Você: "Há um cliente na linha querendo falar sobre vendas. Você pode atendê-lo?"
 Atendente: "Sim, pode passar"
-[Agora sim chamar accept_transfer()]
+→ AGORA chame accept_transfer()
+
+═══════════════════════════════════════════════════════
+EXEMPLO ERRADO (NÃO FAÇA ISSO):
+═══════════════════════════════════════════════════════
+
+Você: "Olá, tenho um cliente aguardando..."
+Atendente: "Alô"
+→ ERRADO chamar accept_transfer() aqui!
+
+═══════════════════════════════════════════════════════
+ESTILO:
+═══════════════════════════════════════════════════════
+- Seja BREVE (o cliente está esperando)
+- Fale naturalmente, como uma pessoa real
+- Tom profissional mas amigável
 """
     
     async def _process_decision(
@@ -1017,101 +1116,98 @@ Atendente: "Sim, pode passar"
         logger.info("✅ Transfer ACCEPTED")
         
         try:
-            # CRÍTICO: Parar stream de áudio do OpenAI no B-leg ANTES de unmute
-            # Isso evita que o áudio do OpenAI continue tocando após a conexão
+            # =========================================================================
+            # FLUXO CORRETO após aceitação:
+            # 
+            # Estado atual:
+            # - A-leg está na conferência (mutado)
+            # - B-leg está em &park() (fora da conferência)
+            # 
+            # Passos:
+            # 1. Parar uuid_audio_stream do B-leg
+            # 2. Mover B-leg para conferência com flags {moderator|endconf}
+            # 3. Desmutar A-leg na conferência
+            # 
+            # Ref: Context7 /signalwire/freeswitch-docs - conference, endconf
+            # =========================================================================
+            
+            profile = self.config.conference_profile
+            
+            # 1. Parar stream de áudio do OpenAI no B-leg
             if self.b_leg_uuid:
                 try:
                     await asyncio.wait_for(
                         self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
                         timeout=3.0
                     )
-                    logger.debug("B-leg audio stream stopped before unmute")
-                    # Pequeno delay para garantir que o stream parou
+                    logger.debug("B-leg audio stream stopped")
                     await asyncio.sleep(0.2)
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.debug(f"Could not stop B-leg stream: {e}")
             
-            # Desmute A-leg na conferência (timeout curto)
-            unmute_cmd = f"conference {self.conference_name} unmute {self.a_leg_uuid}"
-            logger.debug(f"Unmute command: {unmute_cmd}")
+            # 2. Mover B-leg para conferência com flags corretas
+            # moderator: pode controlar a conferência
+            # endconf: quando B-leg sair, TODOS os membros são desconectados
+            transfer_b_cmd = (
+                f"uuid_transfer {self.b_leg_uuid} "
+                f"'conference:{self.conference_name}@{profile}+flags{{moderator|endconf}}' inline"
+            )
+            logger.info(f"Moving B-leg to conference: {transfer_b_cmd}")
             
             try:
                 result = await asyncio.wait_for(
-                    self.esl.execute_api(unmute_cmd),
-                    timeout=3.0
+                    self.esl.execute_api(transfer_b_cmd),
+                    timeout=5.0
                 )
+                logger.info(f"B-leg transfer result: {result}")
+                
+                if "-ERR" in str(result):
+                    logger.error(f"Failed to move B-leg to conference: {result}")
+                    # Tentar continuar mesmo assim
+                else:
+                    # Aguardar B-leg entrar na conferência
+                    await asyncio.sleep(0.5)
+                    
             except asyncio.TimeoutError:
-                logger.warning("Unmute command timeout")
-                result = ""
+                logger.warning("B-leg transfer timeout, continuing anyway")
             
-            if "-ERR" in str(result):
-                logger.warning(f"Unmute may have failed: {result}")
+            # 3. Desmutar A-leg na conferência
+            # NOTA: O comando unmute requer member_id (número), não UUID
+            # Ref: Context7 - conference <confname> unmute <member_id>|all|last|non_moderator
+            
+            member_id = await self._get_conference_member_id(self.a_leg_uuid)
+            
+            if member_id:
+                unmute_cmd = f"conference {self.conference_name} unmute {member_id}"
+                logger.debug(f"Unmute command: {unmute_cmd}")
+                
+                try:
+                    result = await asyncio.wait_for(
+                        self.esl.execute_api(unmute_cmd),
+                        timeout=3.0
+                    )
+                    if "-ERR" in str(result):
+                        logger.warning(f"Unmute may have failed: {result}")
+                    else:
+                        logger.info(f"A-leg unmuted (member_id={member_id})")
+                except asyncio.TimeoutError:
+                    logger.warning("Unmute command timeout")
             else:
-                logger.info(f"A-leg unmuted: {result}")
+                # Fallback: desmutar todos os não-moderadores
+                logger.warning("Could not find A-leg member_id, unmuting all non_moderator")
+                try:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"conference {self.conference_name} unmute non_moderator"),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    pass
             
-            # CRÍTICO: Configurar para terminar conferência quando um participante sair
-            # Opção 1: Setar variável no A-leg para kickar quando B-leg sair
-            # Opção 2: Setar variável no B-leg para kickar quando A-leg sair
-            # 
-            # Usamos conference_set_auto_outcall para monitorar e encerrar
-            # Mas a forma mais simples é usar uuid_bridge após a conferência
-            #
-            # SOLUÇÃO: Usar uuid_bridge direto entre A-leg e B-leg
-            # Isso é mais simples e funciona melhor que conferência para 2 pessoas
-            logger.info("🔄 Converting conference to direct bridge...")
-            
-            try:
-                # Primeiro, tirar ambos da conferência
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"conference {self.conference_name} kick {self.a_leg_uuid}"),
-                    timeout=2.0
-                )
-            except (asyncio.TimeoutError, Exception):
-                pass
-            
-            try:
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"conference {self.conference_name} kick {self.b_leg_uuid}"),
-                    timeout=2.0
-                )
-            except (asyncio.TimeoutError, Exception):
-                pass
-            
-            # Pequeno delay para os kicks processarem
-            await asyncio.sleep(0.3)
-            
-            # Agora fazer bridge direto entre A-leg e B-leg
-            # hangup_after_bridge garante que ambos desligam juntos
-            try:
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_bridge true"),
-                    timeout=2.0
-                )
-            except asyncio.TimeoutError:
-                pass
-            
-            try:
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_setvar {self.b_leg_uuid} hangup_after_bridge true"),
-                    timeout=2.0
-                )
-            except asyncio.TimeoutError:
-                pass
-            
-            # Bridge direto
-            bridge_cmd = f"uuid_bridge {self.a_leg_uuid} {self.b_leg_uuid}"
-            logger.info(f"Bridge command: {bridge_cmd}")
-            
-            try:
-                bridge_result = await asyncio.wait_for(
-                    self.esl.execute_api(bridge_cmd),
-                    timeout=3.0
-                )
-                logger.info(f"Bridge result: {bridge_result}")
-            except asyncio.TimeoutError:
-                logger.warning("Bridge command timeout")
-            
-            logger.info("🎉 Transfer completed - both parties bridged directly")
+            # 4. Pronto! Ambos estão na conferência
+            logger.info("🎉 Transfer completed - both parties in conference")
+            logger.info(f"   Conference: {self.conference_name}")
+            logger.info(f"   A-leg (cliente): {self.a_leg_uuid} - unmuted")
+            logger.info(f"   B-leg (atendente): {self.b_leg_uuid} - moderator|endconf")
             
             return ConferenceTransferResult(
                 success=True,
@@ -1127,6 +1223,56 @@ Atendente: "Sim, pode passar"
                 decision=TransferDecision.ERROR,
                 error=str(e)
             )
+    
+    async def _get_conference_member_id(self, uuid: str) -> Optional[str]:
+        """
+        Obtém o member_id de um participante da conferência pelo UUID.
+        
+        O comando 'conference list' retorna linhas no formato:
+        member_id;register_string;uuid;caller_id_name;caller_id_number;flags;...
+        
+        Ref: Context7 /signalwire/freeswitch-docs - conference list output
+        
+        Args:
+            uuid: UUID do participante
+            
+        Returns:
+            member_id (string numérica) ou None se não encontrado
+        """
+        try:
+            result = await asyncio.wait_for(
+                self.esl.execute_api(f"conference {self.conference_name} list"),
+                timeout=3.0
+            )
+            
+            if not result or "-ERR" in str(result):
+                logger.debug(f"Conference list failed: {result}")
+                return None
+            
+            # Parsear o output linha por linha
+            # Formato: member_id;register;uuid;name;number;flags;...
+            for line in str(result).strip().split('\n'):
+                if not line or line.startswith('Conference'):
+                    continue
+                
+                parts = line.split(';')
+                if len(parts) >= 3:
+                    member_id = parts[0].strip()
+                    member_uuid = parts[2].strip()
+                    
+                    if member_uuid == uuid:
+                        logger.debug(f"Found member_id={member_id} for uuid={uuid}")
+                        return member_id
+            
+            logger.debug(f"UUID {uuid} not found in conference list")
+            return None
+            
+        except asyncio.TimeoutError:
+            logger.warning("Conference list timeout")
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting member_id: {e}")
+            return None
     
     async def _handle_rejected(
         self,
