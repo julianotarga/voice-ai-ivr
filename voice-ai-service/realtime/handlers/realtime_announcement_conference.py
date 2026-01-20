@@ -415,14 +415,27 @@ class ConferenceAnnouncementSession:
                 # Tentar porta base e próximas 10 portas
                 ports_to_try = list(range(base_port, base_port + 10))
             
+            # Wrapper para logar conexões e erros
+            async def ws_handler_with_logging(websocket):
+                try:
+                    logger.info(f"🔌 WS HANDLER CALLED - new connection incoming")
+                    await self._handle_fs_ws(websocket)
+                except Exception as e:
+                    logger.error(f"🔌 WS HANDLER ERROR: {type(e).__name__}: {e}")
+                    raise
+            
             for port in ports_to_try:
                 try:
                     logger.debug(f"Trying audio WS on {bind_host}:{port or 'random'}...")
                     self._audio_ws_server = await websockets.serve(
-                        self._handle_fs_ws,
+                        ws_handler_with_logging,
                         bind_host,
                         port,
                         max_size=None,
+                        # Sem restrição de origin para aceitar conexão do FreeSWITCH
+                        origins=None,
+                        # Log de conexões no nível do servidor
+                        logger=logger,
                     )
                     break  # Sucesso
                 except OSError as e:
@@ -913,7 +926,13 @@ class ConferenceAnnouncementSession:
     
     async def _handle_fs_ws(self, websocket: ServerConnection) -> None:
         """Recebe áudio do FreeSWITCH e envia ao OpenAI."""
-        logger.info(f"🔌 FS WebSocket connection received from FreeSWITCH")
+        # Log detalhado da conexão
+        try:
+            remote = websocket.remote_address
+            path = getattr(websocket, 'path', getattr(websocket, 'request', {}).path if hasattr(getattr(websocket, 'request', {}), 'path') else 'unknown')
+            logger.info(f"🔌 FS WebSocket connection from: {remote}, path: {path}")
+        except Exception as e:
+            logger.info(f"🔌 FS WebSocket connection received (details unavailable: {e})")
         
         if self._fs_ws:
             logger.warning("🔌 FS WebSocket already connected, rejecting new connection")
