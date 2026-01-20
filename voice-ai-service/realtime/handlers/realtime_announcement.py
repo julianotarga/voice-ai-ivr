@@ -128,22 +128,41 @@ class RealtimeAnnouncementSession:
         import time
         start_time = time.time()
         
+        # Debug: Log início da sessão
+        logger.info("=" * 60)
+        logger.info("🎤 REALTIME ANNOUNCEMENT STARTING")
+        logger.info(f"B-leg UUID: {self.b_leg_uuid}")
+        logger.info(f"Model: {self.model}")
+        logger.info(f"Voice: {self.voice}")
+        logger.info(f"Timeout: {timeout}s")
+        logger.info(f"Initial message: {self.initial_message[:100] if self.initial_message else 'None'}...")
+        logger.info("=" * 60)
+        
         try:
             self._running = True
             
             # 1. Conectar ao OpenAI Realtime
+            logger.info("🔌 Step 1: Connecting to OpenAI Realtime...")
             await self._connect_openai()
+            logger.info("✅ Step 1: Connected to OpenAI Realtime")
             
             # 2. Configurar sessão
+            logger.info("⚙️ Step 2: Configuring session...")
             await self._configure_session()
+            logger.info("✅ Step 2: Session configured")
             
             # 3. Iniciar stream de áudio do FreeSWITCH
+            logger.info("🎤 Step 3: Starting audio stream...")
             await self._start_audio_stream()
+            logger.info("✅ Step 3: Audio stream started")
             
             # 4. Enviar mensagem inicial
+            logger.info("💬 Step 4: Sending initial message...")
             await self._send_initial_message()
+            logger.info("✅ Step 4: Initial message sent")
             
             # 5. Loop principal - processar eventos até decisão ou timeout
+            logger.info("▶️ Step 5: Starting event loop...")
             await asyncio.wait_for(
                 self._event_loop(),
                 timeout=timeout
@@ -301,25 +320,35 @@ class RealtimeAnnouncementSession:
             self._audio_buffer = bytearray()
             self._human_transcript = ""
             
-            # 1) Subir WS server local para receber áudio do B-leg
-            host = os.getenv("REALTIME_BLEG_STREAM_HOST", "127.0.0.1")
+            # 1) Subir WS server para receber áudio do B-leg
+            # bind_host: onde o server escuta (0.0.0.0 para todas interfaces)
+            # connect_host: como o FreeSWITCH vai conectar (IP externo ou hostname)
+            bind_host = os.getenv("REALTIME_BLEG_STREAM_BIND", "0.0.0.0")
+            connect_host = os.getenv("REALTIME_BLEG_STREAM_HOST", "host.docker.internal")
+            
+            logger.info(f"🔊 Starting B-leg audio WS server on {bind_host}...")
+            
             self._audio_ws_server = await websockets.serve(
                 self._handle_fs_ws,
-                host,
-                0,
+                bind_host,
+                0,  # Porta aleatória
                 max_size=None,
             )
             if not self._audio_ws_server.sockets:
                 raise RuntimeError("Failed to allocate port for B-leg audio WS")
             
             self._audio_ws_port = self._audio_ws_server.sockets[0].getsockname()[1]
-            ws_url = f"ws://{host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
+            ws_url = f"ws://{connect_host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
+            
+            logger.info(f"🔊 B-leg audio WS server ready at {ws_url}")
             
             # 2) Iniciar mod_audio_stream no B-leg
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
+            logger.info(f"🔊 Executing ESL command: {cmd}")
+            
             response = await self.esl.execute_api(cmd)
             logger.info(
-                "B-leg audio stream started",
+                f"🔊 B-leg audio stream command result: {response[:200] if response else 'None'}",
                 extra={
                     "b_leg_uuid": self.b_leg_uuid,
                     "ws_url": ws_url,
