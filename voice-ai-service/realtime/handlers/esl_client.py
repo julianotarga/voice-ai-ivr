@@ -448,6 +448,71 @@ class AsyncESLClient:
             
             raise ESLError("Max retries reached reading command response")
     
+    async def _read_response_unlocked(self, timeout: float = 10.0) -> str:
+        """
+        Lê resposta do ESL SEM usar lock (chamador já deve ter o lock).
+        
+        Descarta eventos automaticamente até receber resposta de comando.
+        
+        Args:
+            timeout: Timeout em segundos
+            
+        Returns:
+            Resposta do comando
+        """
+        if not self._reader:
+            raise ESLConnectionError("Not connected")
+        
+        max_retries = 10
+        
+        for attempt in range(max_retries):
+            try:
+                lines = []
+                content_length = 0
+                content_type = ""
+                
+                # Ler headers
+                while True:
+                    line = await asyncio.wait_for(
+                        self._reader.readline(),
+                        timeout=timeout
+                    )
+                    line_str = line.decode().rstrip("\r\n")
+                    
+                    if not line_str:
+                        # Linha vazia = fim dos headers
+                        break
+                    
+                    lines.append(line_str)
+                    
+                    if line_str.startswith("Content-Length:"):
+                        content_length = int(line_str.split(":")[1].strip())
+                    
+                    if line_str.startswith("Content-Type:"):
+                        content_type = line_str.split(":", 1)[1].strip()
+                
+                # Ler body se houver
+                body = ""
+                if content_length > 0:
+                    body_bytes = await asyncio.wait_for(
+                        self._reader.read(content_length),
+                        timeout=timeout
+                    )
+                    body = body_bytes.decode()
+                
+                # Descartar eventos
+                if content_type.startswith("text/event-plain"):
+                    logger.debug(f"Discarding event during command: {body[:50]}...")
+                    continue
+                
+                # É uma resposta de comando
+                return "\n".join(lines) + ("\n\n" + body if body else "")
+                
+            except asyncio.TimeoutError:
+                raise
+        
+        raise ESLError("Max retries reached reading command response")
+    
     async def _event_reader_loop(self) -> None:
         """
         Loop de leitura de eventos em background.
@@ -500,9 +565,9 @@ class AsyncESLClient:
     async def _read_event(self) -> Optional[ESLEvent]:
         """Lê e parseia um evento do ESL."""
         try:
-            # NOTA: Este método NÃO usa lock porque roda no _event_reader_loop
-            # O lock é usado apenas em execute_api() que pausa este loop
-            response = await self._read_response(timeout=60.0, discard_events=False)
+            # NOTA: Timeout curto (0.5s) para liberar lock frequentemente
+            # Isso permite que execute_api() adquira o lock rapidamente
+            response = await self._read_response(timeout=0.5, discard_events=False)
             
             # Verificar se é evento
             if "Event-Name:" not in response:
@@ -573,8 +638,7 @@ class AsyncESLClient:
         """
         Executa comando API síncrono e retorna resposta.
         
-        IMPORTANTE: NÃO pausa event reader - usa discard_events para ignorar eventos.
-        O event reader continua rodando em paralelo.
+        IMPORTANTE: Pausa o event reader loop para evitar conflito de leitura.
         
         Args:
             command: Comando a executar (ex: "show calls", "uuid_getvar uuid var")
@@ -591,27 +655,57 @@ class AsyncESLClient:
                 if not await self.connect():
                     raise ESLConnectionError("Failed to connect to ESL")
             
+            # Sinalizar que comando está em progresso
+            self._command_in_progress = True
+            self._reader_paused.clear()
+            
             try:
-                # Enviar comando
-                await self._send(f"api {command}\n\n")
+                # Aguardar event reader liberar o _read_lock
+                # Tentar adquirir com timeout curto para evitar deadlock
+                lock_acquired = False
+                for _ in range(10):  # 10 tentativas de 100ms = 1s máximo
+                    try:
+                        await asyncio.wait_for(
+                            self._read_lock.acquire(),
+                            timeout=0.1
+                        )
+                        lock_acquired = True
+                        break
+                    except asyncio.TimeoutError:
+                        # Event reader ainda está lendo, esperar
+                        await asyncio.sleep(0.05)
                 
-                # Ler resposta (descartando eventos no caminho)
-                response = await asyncio.wait_for(
-                    self._read_response(discard_events=True),
-                    timeout=timeout
-                )
+                if not lock_acquired:
+                    logger.warning("Could not acquire read lock, forcing read anyway")
+                    # Forçar aquisição - pode causar problemas mas evita deadlock total
+                    await self._read_lock.acquire()
                 
-                # Extrair body da resposta
-                if "Content-Length:" in response:
-                    parts = response.split("\n\n", 1)
-                    if len(parts) > 1:
-                        return parts[1]
-                
-                return response
+                try:
+                    # Enviar comando
+                    await self._send(f"api {command}\n\n")
+                    
+                    # Ler resposta diretamente (sem usar _read_response para evitar lock duplo)
+                    response = await self._read_response_unlocked(timeout=timeout)
+                    
+                    # Extrair body da resposta
+                    if "Content-Length:" in response:
+                        parts = response.split("\n\n", 1)
+                        if len(parts) > 1:
+                            return parts[1]
+                    
+                    return response
+                    
+                finally:
+                    self._read_lock.release()
                 
             except asyncio.TimeoutError:
                 logger.error(f"execute_api timeout ({timeout}s) for command: {command[:50]}...")
                 raise ESLError(f"API command timeout: {command[:50]}")
+            
+            finally:
+                # Restaurar flags
+                self._command_in_progress = False
+                self._reader_paused.set()
     
     async def execute_bgapi(self, command: str) -> str:
         """
