@@ -236,43 +236,48 @@ class RealtimeAnnouncementSession:
         NOTA: Para anúncios curtos, usamos semantic_vad com eagerness=high
         para responder rapidamente quando o humano aceitar/recusar.
         """
-        # FORMATO GA (gpt-4o-realtime-preview-2024-12-17):
-        # - session.type é OBRIGATÓRIO
-        # - Parâmetros de áudio são flat (não aninhados em audio.input/output)
+        # FORMATO GA - Usar mesma estrutura do provider principal que funciona
+        # Estrutura aninhada com audio.input e audio.output
         config = {
             "type": "session.update",
             "session": {
                 # Tipo de sessão (OBRIGATÓRIO na API GA)
-                # Valores válidos: 'realtime' ou 'transcription'
                 "type": "realtime",
                 
-                # Modelo e voz
-                "model": "gpt-4o-realtime-preview-2024-12-17",
-                "voice": self.voice,
+                # Modalidades de saída
+                "output_modalities": ["audio"],
                 
                 # Instruções do sistema
                 "instructions": self.system_prompt,
                 
-                # Formatos de áudio (flat, não aninhados)
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                
-                # Transcrição de entrada
-                "input_audio_transcription": {
-                    "model": "whisper-1"
+                # Configuração de áudio (estrutura aninhada)
+                "audio": {
+                    "input": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                        "noise_reduction": {"type": "far_field"},
+                        # VAD para detectar quando humano fala
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 500
+                        },
+                        # Transcrição do que o humano fala
+                        "transcription": {
+                            "model": "gpt-4o-transcribe"
+                        },
+                    },
+                    "output": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                        "voice": self.voice,
+                    },
                 },
-                
-                # Detecção de atividade de voz
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
-                },
-                
-                # Parâmetros de geração
-                "temperature": 0.8,
-                "max_response_output_tokens": 4096
             }
         }
         
