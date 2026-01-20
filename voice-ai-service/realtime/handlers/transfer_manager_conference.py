@@ -686,14 +686,17 @@ class ConferenceTransferManager:
         timeout = self.config.originate_timeout
         
         # Construir dial string
-        # Format: {vars}user/destination@domain
+        # NOTA: Usar sofia/internal/ em vez de user/ para garantir que o domínio
+        # seja preservado corretamente. user/ pode fazer lookup incorreto.
+        # Format: {vars}sofia/internal/destination@domain
         dial_string = (
             f"{{origination_uuid={candidate_uuid},"
             f"origination_caller_id_number={self.caller_id},"
             f"origination_caller_id_name=Secretaria_Virtual,"
             f"originate_timeout={timeout},"
-            f"ignore_early_media=true}}"
-            f"user/{destination}@{self.domain}"
+            f"ignore_early_media=true,"
+            f"sip_invite_domain={self.domain}}}"
+            f"sofia/internal/{destination}@{self.domain}"
         )
         
         # App: conferência como moderador
