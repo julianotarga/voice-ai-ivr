@@ -248,8 +248,7 @@ class RealtimeAnnouncementSession:
                     },
                     "output": {
                         "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
+                            "type": "audio/pcm"
                         },
                         "voice": self.voice,
                     },
