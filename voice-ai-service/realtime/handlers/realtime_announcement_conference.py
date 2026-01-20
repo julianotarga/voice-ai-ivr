@@ -473,6 +473,32 @@ class ConferenceAnnouncementSession:
                 except Exception as e:
                     logger.error(f"🔌 ESL reconnect failed: {e}")
             
+            # DIAGNÓSTICO: Verificar estado do canal B-leg antes de iniciar stream
+            try:
+                # Verificar se canal existe
+                exists_response = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_exists {self.b_leg_uuid}"),
+                    timeout=3.0
+                )
+                logger.info(f"🔍 B-leg exists check: {exists_response}")
+                
+                # Verificar estado do canal
+                state_response = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Channel-Call-State"),
+                    timeout=3.0
+                )
+                logger.info(f"🔍 B-leg Channel-Call-State: {state_response}")
+                
+                # Verificar se está answered
+                answered_response = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Caller-Channel-Answered-Time"),
+                    timeout=3.0
+                )
+                logger.info(f"🔍 B-leg Answered-Time: {answered_response}")
+                
+            except Exception as diag_e:
+                logger.warning(f"🔍 Diagnóstico falhou: {diag_e}")
+            
             # Iniciar mod_audio_stream no B-leg
             # IMPORTANTE: Tentar até 3 vezes com reconexão ESL entre tentativas
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
