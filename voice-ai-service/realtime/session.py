@@ -3238,16 +3238,20 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     # Mais robusto e confiável que &park()
                     logger.info("Using CONFERENCE mode for announced transfer (mod_conference)")
                     
-                    # Criar ConferenceTransferManager
-                    # Obter ESL client da melhor forma disponível
+                    # Obter ESL client do TransferManager existente (já conectado)
+                    # O TransferManager é inicializado no início da sessão e mantém conexão ESL
                     esl_client = None
-                    if hasattr(self, '_esl_adapter') and hasattr(self._esl_adapter, '_esl'):
-                        esl_client = self._esl_adapter._esl
-                    elif hasattr(self, '_transfer_manager') and hasattr(self._transfer_manager, '_esl'):
+                    if self._transfer_manager and hasattr(self._transfer_manager, '_esl'):
                         esl_client = self._transfer_manager._esl
+                        logger.debug("Using ESL from existing TransferManager")
                     else:
-                        from .handlers.esl_client import AsyncESLClient
-                        esl_client = AsyncESLClient()
+                        # Fallback: criar novo ESL client e conectar
+                        from .handlers.esl_client import AsyncESLClient, get_esl_client
+                        esl_client = get_esl_client()
+                        if not esl_client._connected:
+                            logger.info("ESL not connected, connecting...")
+                            await esl_client.connect()
+                        logger.debug("Using new ESL client")
                     
                     conf_manager = ConferenceTransferManager(
                         esl_client=esl_client,

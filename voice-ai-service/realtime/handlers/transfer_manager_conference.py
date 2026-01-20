@@ -166,11 +166,23 @@ class ConferenceTransferManager:
         logger.info("=" * 70)
         
         try:
-            # STEP 0: Garantir conexão ESL
-            if hasattr(self.esl, 'is_connected') and not self.esl.is_connected:
+            # STEP 0: Verificar e garantir conexão ESL
+            logger.debug(f"Step 0: ESL client type: {type(self.esl).__name__}")
+            
+            # Verificar se ESL está conectado
+            is_connected = False
+            if hasattr(self.esl, '_connected'):
+                is_connected = self.esl._connected
+            elif hasattr(self.esl, 'is_connected'):
+                is_connected = self.esl.is_connected
+            
+            logger.debug(f"Step 0: ESL connected = {is_connected}")
+            
+            if not is_connected:
                 logger.info("ESL not connected, attempting connection...")
                 try:
                     await asyncio.wait_for(self.esl.connect(), timeout=5.0)
+                    logger.info("ESL connected successfully")
                 except Exception as e:
                     logger.error(f"Failed to connect ESL: {e}")
                     return ConferenceTransferResult(
@@ -201,7 +213,22 @@ class ConferenceTransferManager:
             logger.info("✅ Step 2: A-leg in conference (muted)")
             
             # STEP 4.1: Verificar se A-leg ainda existe após mover para conferência
-            a_exists = await self.esl.uuid_exists(self.a_leg_uuid)
+            logger.debug("Step 2.1: Checking if A-leg still exists...")
+            try:
+                a_exists = await asyncio.wait_for(
+                    self.esl.uuid_exists(self.a_leg_uuid),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Step 2.1: TIMEOUT checking A-leg existence (ESL not responding)")
+                # Assumir que existe e continuar
+                a_exists = True
+            except Exception as e:
+                logger.error(f"Step 2.1: Error checking A-leg: {e}")
+                a_exists = True  # Assumir que existe e continuar
+            
+            logger.debug(f"Step 2.1: A-leg exists = {a_exists}")
+            
             if not a_exists:
                 logger.warning("A-leg gone after moving to conference")
                 return ConferenceTransferResult(
@@ -210,6 +237,7 @@ class ConferenceTransferManager:
                     error="Cliente desligou durante transferência"
                 )
             
+            logger.info("📋 Step 3: Preparing to originate B-leg...")
             # STEP 5: Originar B-leg para conferência
             originate_success = await self._originate_b_leg(destination)
             if not originate_success:
