@@ -1388,6 +1388,75 @@ class AsyncESLClient:
         except Exception:
             return False
     
+    def _parse_sofia_registrations(self, output: str) -> List[Dict[str, str]]:
+        """
+        Parse robusto da saída de 'sofia status profile internal reg'.
+        
+        Retorna lista de dicionários com informações de cada registro:
+        {
+            'user': '1001@ativo.netplay.net.br',
+            'contact': 'sip:1001@177.72.14.10:5060',
+            'status': 'Registered(AUTO-NAT)',
+            'call_id': '...',
+            'ip': '...',
+            'port': '...'
+        }
+        """
+        import re
+        
+        registrations = []
+        current_reg: Dict[str, str] = {}
+        
+        lines = output.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip linhas de cabeçalho/rodapé
+            if not line or line.startswith('=') or line.startswith('Registrations') or line.startswith('Total items'):
+                continue
+            
+            # Parse formato "Key:\tValue" ou "Key:    \tValue"
+            if ':' in line:
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    value = parts[1].strip()
+                    
+                    # Mapear campos importantes
+                    if key == 'Call-ID':
+                        # Call-ID é o PRIMEIRO campo de cada registro
+                        # Se já temos um registro com user, salvar e começar novo
+                        if current_reg.get('user'):
+                            registrations.append(current_reg)
+                        current_reg = {'call_id': value}
+                    
+                    elif key == 'User':
+                        current_reg['user'] = value
+                    
+                    elif key == 'Contact':
+                        # Extrair SIP URI do formato: "" <sip:1001@177.72.14.10:5060;...>
+                        match = re.search(r'<sip:([^;>]+)', value)
+                        if match:
+                            current_reg['contact'] = f"sip:{match.group(1)}"
+                        else:
+                            current_reg['contact'] = value
+                    
+                    elif key == 'Status':
+                        current_reg['status'] = value
+                    
+                    elif key == 'IP':
+                        current_reg['ip'] = value
+                    
+                    elif key == 'Port':
+                        current_reg['port'] = value
+        
+        # Adicionar último registro se tiver user
+        if current_reg.get('user'):
+            registrations.append(current_reg)
+        
+        return registrations
+    
     async def check_extension_registered(self, extension: str, domain: str) -> tuple[bool, Optional[str], bool]:
         """
         Verifica se uma extensão está registrada (online) no FreeSWITCH.
@@ -1422,8 +1491,7 @@ class AsyncESLClient:
         )
         
         try:
-            # Buscar TODOS os registros e procurar pelo número
-            # NOTA: Não filtrar por domínio pois FreeSWITCH pode usar domínio interno diferente
+            # Buscar TODOS os registros
             logger.debug(f"📞 [CHECK_EXTENSION] Executando: sofia status profile internal reg")
             result = await asyncio.wait_for(
                 self.execute_api("sofia status profile internal reg"),
@@ -1435,61 +1503,37 @@ class AsyncESLClient:
                 return (False, None, True)
             
             # DEBUG: Logar resultado completo para diagnóstico
-            logger.debug(f"📞 [CHECK_EXTENSION] Resultado bruto:\n{result[:800]}...")
+            logger.debug(f"📞 [CHECK_EXTENSION] Resultado bruto:\n{result[:1000]}...")
             
-            # Procurar pelo número do ramal E domínio na saída
-            # SEGURANÇA MULTI-TENANT: SEMPRE verificar AMBOS número E domínio
-            # Nunca aceitar match só pelo número!
-            extension_found = False
-            contact = None
+            # Parser robusto dos registros
+            registrations = self._parse_sofia_registrations(result)
+            logger.debug(f"📞 [CHECK_EXTENSION] Encontrados {len(registrations)} registros ativos")
             
-            # Padrões válidos para match (número@domínio)
-            # O domínio pode ter variações (com/sem porta, etc)
-            domain_base = domain.split(":")[0].lower()  # Remove porta se houver
+            # Procurar pelo usuário exato (MULTI-TENANT SAFE)
+            # Normalizar domínio para comparação
+            domain_base = domain.split(":")[0].lower()
             target_user = f"{extension}@{domain_base}"
             
-            for line in result.split("\n"):
-                line_lower = line.lower().strip()
+            for reg in registrations:
+                reg_user = reg.get('user', '').lower()
                 
-                # Skip linhas vazias
-                if not line_lower:
-                    continue
-                
-                # MULTI-TENANT SAFE: Sempre verificar número E domínio juntos
-                # Match 1: número@domínio completo na linha
-                if target_user in line_lower:
-                    extension_found = True
-                    logger.debug(f"📞 [CHECK_EXTENSION] Match encontrado: {line.strip()}")
-                    continue
-                
-                # Match 2: número@ E domínio ambos presentes na mesma linha
-                # (para formatos onde aparecem separados mas na mesma linha)
-                if f"{extension}@" in line_lower and domain_base in line_lower:
-                    extension_found = True
-                    logger.debug(f"📞 [CHECK_EXTENSION] Match (num+domain): {line.strip()}")
-                    continue
-                
-                # Se encontramos o usuário, procurar o Contact na próxima linha
-                if extension_found and "contact" in line_lower:
-                    # Extrair endereço de contato
-                    if ":" in line:
-                        parts = line.split(":", 1)
-                        if len(parts) > 1:
-                            contact = parts[1].strip().split()[0] if parts[1].strip() else None
-                    break
+                # Match exato: número@domínio
+                if reg_user == target_user:
+                    contact = reg.get('contact', '')
+                    status = reg.get('status', '')
+                    
+                    logger.info(f"✅ Extension {extension}@{domain} is REGISTERED")
+                    logger.debug(f"   Contact: {contact}")
+                    logger.debug(f"   Status: {status}")
+                    
+                    return (True, contact, True)
             
-            if extension_found:
-                logger.info(f"✅ Extension {extension}@{domain} is REGISTERED (contact={contact})")
-                return (True, contact, True)
+            # Não encontrado - logar registros disponíveis para debug
+            available_users = [r.get('user', '?') for r in registrations]
+            logger.debug(f"❌ Extension {extension}@{domain} NOT found")
+            logger.debug(f"   Procurando: '{target_user}'")
+            logger.debug(f"   Disponíveis: {available_users}")
             
-            # Verificar total de registros
-            if "Total items returned: 0" in result:
-                logger.debug(f"Extension {extension} is NOT registered (no registrations)")
-                return (False, None, True)
-            
-            # Log mais detalhado para diagnóstico
-            logger.debug(f"Extension {extension} is NOT registered (not found in {len(result)} chars)")
-            logger.debug(f"📞 [CHECK_EXTENSION] Procurando por: '{target_user}' (multi-tenant safe)")
             return (False, None, True)
             
         except asyncio.TimeoutError:
