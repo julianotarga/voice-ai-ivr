@@ -800,19 +800,21 @@ class ConferenceTransferManager:
         # porque mod_conference gerencia o áudio internamente.
         #
         # Fluxo CORRETO:
-        # 1. Originar B-leg para &answer &park() (canal answered e em espera)
+        # 1. Originar B-leg com inline dialplan (answer + park)
         # 2. Iniciar uuid_audio_stream no B-leg (funciona porque está answered)
         # 3. Fazer anúncio via OpenAI
         # 4. Se ACEITO: Mover B-leg para conferência via uuid_transfer
         # 5. Se RECUSADO: Desligar B-leg
         #
-        # CRÍTICO: Usar "&answer &park()" com ESPAÇO entre as apps!
-        # - "&answer,park()" é INVÁLIDO (FreeSWITCH não reconhece)
-        # - "&park()" deixa canal em "Pre-Answer" state
-        # - uuid_audio_stream requer canal em "ACTIVE/ANSWERED" state
+        # SINTAXE FREESWITCH para múltiplas aplicações:
+        # - "&app()" aceita apenas UMA aplicação
+        # - Para múltiplas: usar inline dialplan 'app1:arg1,app2:arg2' inline
+        # - Ref: https://github.com/signalwire/freeswitch-docs - Inline-Dialplan
         #
-        # Ref: "Invalid Application answer,park" error in FreeSWITCH logs
-        app = "&answer &park()"
+        # Formato: 'answer:,park:' inline
+        # - answer: faz answer do canal (estado ACTIVE)
+        # - park: coloca em espera aguardando comandos
+        app = "'answer:,park:' inline"
         
         logger.info(f"_originate_b_leg: Dial string: {dial_string}")
         logger.info(f"_originate_b_leg: App: {app}")
