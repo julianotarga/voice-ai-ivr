@@ -433,22 +433,34 @@ class RealtimeAnnouncementSession:
         """Loop principal de processamento de eventos."""
         while self._running and not self._accepted and not self._rejected:
             try:
+                # Verificar se WebSocket ainda está conectado
+                if not self._ws or self._ws.closed:
+                    logger.warning("OpenAI WebSocket closed unexpectedly")
+                    break
+                
                 msg = await asyncio.wait_for(self._ws.recv(), timeout=1.0)
                 event = json.loads(msg)
                 await self._handle_event(event)
                 
             except asyncio.TimeoutError:
-                # Verificar se B-leg ainda existe (com timeout curto para não bloquear)
+                # Verificar se B-leg ainda existe usando conexão ESL dedicada
+                # para evitar conflito com singleton
                 try:
-                    b_leg_exists = await asyncio.wait_for(
-                        self.esl.uuid_exists(self.b_leg_uuid),
-                        timeout=1.0
-                    )
-                    if not b_leg_exists:
-                        logger.info("B-leg hangup detected")
-                        self._rejected = True
-                        self._rejection_message = "Humano desligou"
-                        break
+                    dedicated_esl = AsyncESLClient()
+                    try:
+                        connected = await asyncio.wait_for(dedicated_esl.connect(), timeout=1.0)
+                        if connected:
+                            b_leg_exists = await asyncio.wait_for(
+                                dedicated_esl.uuid_exists(self.b_leg_uuid),
+                                timeout=1.0
+                            )
+                            if not b_leg_exists:
+                                logger.info("B-leg hangup detected")
+                                self._rejected = True
+                                self._rejection_message = "Humano desligou"
+                                break
+                    finally:
+                        await dedicated_esl.disconnect()
                 except (asyncio.TimeoutError, Exception) as e:
                     # ESL check falhou - não assumir hangup, continuar
                     logger.debug(f"B-leg check failed (continuing): {e}")
@@ -634,11 +646,23 @@ class RealtimeAnnouncementSession:
             
             if process.returncode == 0 and Path(wav_path).exists():
                 # Tocar via uuid_broadcast no B-leg (humano)
-                # Sem argumento = canal atual (B-leg), 'aleg' seria o cliente (errado)
-                await self.esl.execute_api(
-                    f"uuid_broadcast {self.b_leg_uuid} {wav_path} both"
-                )
-                logger.debug(f"Played {len(self._audio_buffer)} bytes to B-leg via TTS fallback")
+                # Usar ESL dedicado para evitar conflito com singleton
+                try:
+                    dedicated_esl = AsyncESLClient()
+                    try:
+                        connected = await asyncio.wait_for(dedicated_esl.connect(), timeout=1.0)
+                        if connected:
+                            await asyncio.wait_for(
+                                dedicated_esl.execute_api(
+                                    f"uuid_broadcast {self.b_leg_uuid} {wav_path} both"
+                                ),
+                                timeout=2.0
+                            )
+                            logger.debug(f"Played {len(self._audio_buffer)} bytes to B-leg via TTS fallback")
+                    finally:
+                        await dedicated_esl.disconnect()
+                except Exception as e:
+                    logger.warning(f"Failed to play audio via ESL: {e}")
             else:
                 error_msg = stderr.decode()[:200] if stderr else "unknown"
                 logger.warning(f"ffmpeg conversion failed: {error_msg}")
@@ -685,7 +709,17 @@ class RealtimeAnnouncementSession:
         # Opcional: parar stream no B-leg (pode derrubar canal em alguns ambientes)
         if os.getenv("REALTIME_BLEG_STREAM_STOP", "false").lower() in ("1", "true", "yes"):
             try:
-                await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
+                # Usar ESL dedicado para evitar conflito com singleton
+                dedicated_esl = AsyncESLClient()
+                try:
+                    connected = await asyncio.wait_for(dedicated_esl.connect(), timeout=1.0)
+                    if connected:
+                        await asyncio.wait_for(
+                            dedicated_esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                            timeout=2.0
+                        )
+                finally:
+                    await dedicated_esl.disconnect()
             except Exception:
                 pass
         
