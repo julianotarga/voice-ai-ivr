@@ -368,7 +368,7 @@ class AnnouncementTTS:
     
     async def _convert_to_wav(self, mp3_path: str, wav_path: Path) -> Optional[str]:
         """
-        Converte MP3 para WAV PCM 16kHz mono.
+        Converte MP3 para WAV PCM 8kHz mono (padrão telefonia).
         
         Usa ffmpeg para conversão.
         
@@ -381,13 +381,13 @@ class AnnouncementTTS:
         """
         try:
             # Usar ffmpeg para converter
-            # -ar 16000: sample rate 16kHz
+            # -ar 8000: sample rate 8kHz (padrão telefonia)
             # -ac 1: mono
             # -acodec pcm_s16le: PCM 16-bit little-endian
             cmd = [
                 "ffmpeg", "-y",
                 "-i", mp3_path,
-                "-ar", "16000",
+                "-ar", "8000",
                 "-ac", "1",
                 "-acodec", "pcm_s16le",
                 str(wav_path)

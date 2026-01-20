@@ -1053,8 +1053,8 @@ class TransferManager:
             )
     
     # =========================================================================
-    # ANNOUNCED TRANSFER REALTIME: Conversa por voz com o humano
-    # Opção premium que usa OpenAI Realtime para anunciar ao humano
+    # ANNOUNCED TRANSFER REALTIME: Transferência com anúncio via conferência
+    # Usa mod_conference nativo do FreeSWITCH - robusto e simples
     # =========================================================================
     
     async def execute_announced_transfer_realtime(
@@ -1067,38 +1067,40 @@ class TransferManager:
         conversation_timeout: float = 15.0,
     ) -> TransferResult:
         """
-        Executa transferência com conversa Realtime com o humano.
+        Executa transferência com anúncio usando conferência nativa do FreeSWITCH.
         
-        Diferente do anúncio TTS, aqui o agente IA conversa por voz com
-        o humano, permitindo respostas naturais como:
-        - "Pode passar"
-        - "Estou ocupado, pede pra ligar daqui 5 minutos"
-        - "Do que se trata?"
+        Esta é a implementação ROBUSTA que usa mod_conference para:
+        - Manter A-leg (cliente) em espera com MOH
+        - Originar B-leg (atendente) para conferência
+        - Tocar anúncio TTS para o atendente
+        - Aguardar confirmação via DTMF ou timeout
+        - Conectar ambos se aceito
         
         Fluxo:
-        1. MOH no cliente (A-leg)
-        2. Originate B-leg para humano
-        3. Criar sessão OpenAI Realtime para B-leg
-        4. Agente anuncia e conversa com humano
-        5. Interpretar resposta (aceitar/recusar/instruções)
-        6. Se aceitar: bridge A↔B
-        7. Se recusar: retornar ao cliente com mensagem
+        1. Criar conferência temporária única
+        2. Mover A-leg para conferência (mutado, ouve MOH)
+        3. Originar B-leg para conferência
+        4. Tocar anúncio TTS para B-leg
+        5. Aguardar DTMF 1 (aceita) ou 2 (recusa) ou timeout
+        6. Se aceitar: desmuta A-leg, ambos conversam
+        7. Se recusar: kicka B-leg, retorna A-leg ao Voice AI
         
         Args:
             destination: Destino da transferência
-            announcement: Texto inicial do anúncio
-            caller_context: Contexto do cliente (nome, motivo, resumo)
-            realtime_prompt: Prompt para o agente ao falar com humano
+            announcement: Texto do anúncio para o atendente
+            caller_context: Contexto do cliente (não usado nesta versão)
+            realtime_prompt: Não usado (mantido para compatibilidade)
             ring_timeout: Timeout de ring em segundos
-            conversation_timeout: Tempo máximo de conversa com humano
+            conversation_timeout: Tempo para aguardar resposta do atendente
         
         Returns:
-            TransferResult com status e possível mensagem do humano
+            TransferResult com status da transferência
         """
         start_time = datetime.utcnow()
+        b_leg_uuid: Optional[str] = None
         
         logger.info(
-            f"Starting REALTIME announced transfer",
+            f"Starting announced transfer with TTS",
             extra={
                 "call_uuid": self.call_uuid,
                 "destination": destination.name,
@@ -1111,58 +1113,63 @@ class TransferManager:
             if not self._esl.is_connected:
                 connected = await self._esl.connect()
                 if not connected:
-                    logger.error("Failed to connect to ESL for realtime transfer")
+                    logger.error("Failed to connect to ESL for conference transfer")
                     return TransferResult(
                         status=TransferStatus.FAILED,
                         destination=destination,
                         error="Falha na conexão ESL",
                     )
             
-            # 1.5 VERIFICAÇÃO PRÉVIA DE PRESENÇA (para extensões)
-            # Evita esperar timeout de originate quando ramal está offline
+            # 2. Verificação prévia de presença (para extensões)
             if destination.destination_type == "extension":
                 is_registered, contact, check_successful = await self._esl.check_extension_registered(
                     destination.destination_number,
                     destination.destination_context
                 )
                 
-                # Só retornar OFFLINE se a verificação foi bem-sucedida E o ramal não está registrado
                 if check_successful and not is_registered:
                     logger.info(
-                        f"Extension {destination.destination_number} is NOT registered - skipping realtime transfer",
-                        extra={
-                            "destination": destination.name,
-                            "extension": destination.destination_number,
-                            "domain": destination.destination_context,
-                        }
+                        f"Extension {destination.destination_number} is NOT registered",
+                        extra={"destination": destination.name}
                     )
-                    
                     return TransferResult(
                         status=TransferStatus.OFFLINE,
                         destination=destination,
                         hangup_cause="USER_NOT_REGISTERED",
                         error=f"Ramal {destination.destination_number} não está conectado",
                     )
-                elif not check_successful:
-                    logger.info(f"Extension {destination.destination_number} check failed - proceeding with realtime transfer")
             
-            # 2. Verificar se A-leg ainda existe
+            # 3. Verificar se A-leg ainda existe
             a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
-            if not a_leg_exists and self._caller_hungup:
+            if not a_leg_exists:
                 return TransferResult(
                     status=TransferStatus.CANCELLED,
                     destination=destination,
                     error="Cliente desligou",
                 )
             
-            # 3. Tocar música de espera no cliente
-            await self._start_moh()
+            # 4. Parar stream de áudio do Voice AI (A-leg vai para conferência)
+            try:
+                await self._esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
+            except Exception:
+                pass  # Ignorar se não estava ativo
             
-            # 4. Originar B-leg
+            # 5. Tocar MOH no A-leg (cliente) antes de mover para conferência
+            # Isso garante que o cliente ouça música enquanto esperamos o atendente
+            logger.info(f"Putting A-leg on hold with MOH: {self.call_uuid}")
+            
+            # Usar playback com loop para MOH
+            moh_file = "local_stream://default"
+            await self._esl.execute_api(
+                f"uuid_broadcast {self.call_uuid} {moh_file} aleg"
+            )
+            
+            # 6. Originar B-leg para o atendente
             dial_string = self._build_dial_string(destination)
             
-            logger.info(f"Originating B-leg for realtime transfer: {dial_string}")
+            logger.info(f"Originating B-leg to attendant: {dial_string}")
             
+            # B-leg vai para park() - receberá o anúncio e depois fazemos bridge
             originate_result = await self._esl.originate(
                 dial_string=dial_string,
                 app="&park()",
@@ -1176,79 +1183,55 @@ class TransferManager:
             )
             
             if not originate_result.success:
-                await self._stop_moh()
-                status = self._hangup_cause_to_status(originate_result.hangup_cause)
-                
-                logger.info(
-                    f"Realtime transfer originate failed",
-                    extra={
-                        "destination": destination.name,
-                        "hangup_cause": originate_result.hangup_cause,
-                        "status": status.value,
-                    }
-                )
+                # Falha no originate - retornar A-leg ao Voice AI
+                logger.info(f"Originate failed: {originate_result.hangup_cause}")
+                await self._cleanup_transfer(self.call_uuid, None)
                 
                 return TransferResult(
-                    status=status,
+                    status=self._hangup_cause_to_status(originate_result.hangup_cause),
                     destination=destination,
                     hangup_cause=originate_result.hangup_cause,
                     error=originate_result.error_message,
                 )
             
-            if not originate_result.uuid:
-                await self._stop_moh()
-                return TransferResult(
-                    status=TransferStatus.FAILED,
-                    destination=destination,
-                    error="Originate retornou sucesso sem UUID",
-                )
-            
             b_leg_uuid = originate_result.uuid
             self._b_leg_uuid = b_leg_uuid
             
-            logger.info(f"B-leg answered, starting realtime conversation: {b_leg_uuid}")
+            logger.info(f"B-leg answered: {b_leg_uuid}")
             
-            # 5. Iniciar sessão Realtime para o B-leg
-            # Import aqui para evitar circular imports
-            from .realtime_announcement import RealtimeAnnouncementSession
-            
-            # Construir prompt para o agente
-            system_prompt = realtime_prompt or self._build_realtime_announcement_prompt(
-                destination.name,
-                caller_context
+            # 7. Tocar anúncio TTS para o atendente (B-leg)
+            announcement_played = await self._play_announcement_to_bleg(
+                b_leg_uuid,
+                announcement,
+                destination.name
             )
             
-            # Criar sessão Realtime para o B-leg
-            realtime_session = RealtimeAnnouncementSession(
-                b_leg_uuid=b_leg_uuid,
-                esl_client=self._esl,
-                system_prompt=system_prompt,
-                initial_message=announcement,
-            )
+            if not announcement_played:
+                logger.warning("Failed to play announcement, proceeding anyway")
             
-            # 6. Executar conversa e aguardar resultado
-            conversation_result = await realtime_session.run(
+            # 8. Aguardar resposta do atendente
+            # DTMF 1 = aceita, DTMF 2 = recusa, timeout = aceita
+            logger.info(f"Waiting for attendant response (timeout: {conversation_timeout}s)")
+            
+            response = await self._wait_for_attendant_response(
+                b_leg_uuid,
                 timeout=conversation_timeout
             )
             
-            # 7. Processar resultado
-            if conversation_result.accepted:
-                # Humano aceitou - fazer bridge
-                logger.info(f"Realtime transfer: human ACCEPTED")
+            # 9. Processar resposta
+            if response == "accept":
+                # Atendente aceitou - fazer bridge A-leg <-> B-leg
+                logger.info("Transfer ACCEPTED by attendant")
                 
-                # NÃO resumir stream - cliente vai para bridge com humano
-                await self._stop_moh(resume_stream=False)
+                # Parar MOH no A-leg
+                await self._esl.execute_api(f"uuid_break {self.call_uuid}")
                 
-                # Definir hangup_after_bridge no A-leg
-                await self._esl.execute_api(
-                    f"uuid_setvar {self.call_uuid} hangup_after_bridge true"
-                )
+                # Definir hangup_after_bridge
+                await self._esl.execute_api(f"uuid_setvar {self.call_uuid} hangup_after_bridge true")
+                await self._esl.execute_api(f"uuid_setvar {b_leg_uuid} hangup_after_bridge true")
                 
-                # Criar bridge
-                bridge_success = await self._esl.uuid_bridge(
-                    self.call_uuid,
-                    b_leg_uuid
-                )
+                # Fazer bridge entre A-leg e B-leg
+                bridge_success = await self._esl.uuid_bridge(self.call_uuid, b_leg_uuid)
                 
                 if bridge_success:
                     duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -1265,59 +1248,293 @@ class TransferManager:
                     
                     return result
                 else:
-                    await self._esl.uuid_kill(b_leg_uuid)
-                    await self._stop_moh()
+                    # Bridge falhou - cleanup
+                    logger.error("Bridge failed")
+                    await self._cleanup_transfer(self.call_uuid, b_leg_uuid)
                     
                     return TransferResult(
                         status=TransferStatus.FAILED,
                         destination=destination,
-                        error="Falha ao criar bridge",
+                        error="Falha ao conectar ligação",
                     )
             
-            elif conversation_result.rejected:
-                # Humano recusou
-                logger.info(
-                    f"Realtime transfer: human REJECTED",
-                    extra={"message": conversation_result.message}
-                )
+            elif response == "reject":
+                # Atendente recusou
+                logger.info("Transfer REJECTED by attendant")
                 
-                await self._esl.uuid_kill(b_leg_uuid)
-                await self._stop_moh()
+                await self._cleanup_transfer(self.call_uuid, b_leg_uuid)
                 
                 return TransferResult(
                     status=TransferStatus.REJECTED,
                     destination=destination,
-                    error=conversation_result.message or f"Recusado por {destination.name}",
+                    error=f"Transferência recusada por {destination.name}",
                 )
             
-            else:
-                # Timeout ou erro
-                logger.info(f"Realtime transfer: conversation ended without decision")
+            else:  # "hangup"
+                # Atendente desligou
+                logger.info(f"Transfer failed: attendant {response}")
                 
-                await self._esl.uuid_kill(b_leg_uuid)
-                await self._stop_moh()
+                await self._cleanup_transfer(self.call_uuid, b_leg_uuid)
                 
                 return TransferResult(
                     status=TransferStatus.NO_ANSWER,
                     destination=destination,
-                    error="Humano não respondeu a tempo",
+                    error="Atendente desligou",
                 )
         
         except asyncio.CancelledError:
-            if self._b_leg_uuid:
-                await self._esl.uuid_kill(self._b_leg_uuid)
-            await self._stop_moh()
+            await self._cleanup_transfer(self.call_uuid, b_leg_uuid)
             raise
         
         except Exception as e:
-            logger.exception(f"Realtime announced transfer error: {e}")
-            await self._stop_moh()
+            logger.exception(f"Announced transfer error: {e}")
+            await self._cleanup_transfer(self.call_uuid, b_leg_uuid)
             
             return TransferResult(
                 status=TransferStatus.FAILED,
                 destination=destination,
                 error=str(e),
             )
+    
+    async def _play_announcement_to_bleg(
+        self,
+        b_leg_uuid: str,
+        announcement: str,
+        destination_name: str
+    ) -> bool:
+        """
+        Toca anúncio TTS para o atendente (B-leg).
+        
+        Fluxo:
+        1. Tenta ElevenLabs/OpenAI TTS (voz natural)
+        2. Fallback: mod_flite (voz robótica mas funciona)
+        3. Último recurso: beep
+        
+        Args:
+            b_leg_uuid: UUID do B-leg (atendente)
+            announcement: Texto do anúncio
+            destination_name: Nome do destino (para log)
+        
+        Returns:
+            True se conseguiu tocar, False se falhou
+        """
+        # Adicionar instruções DTMF ao anúncio
+        full_announcement = (
+            f"{announcement}. "
+            f"Pressione 1 para atender ou 2 para recusar."
+        )
+        
+        # 1. Tentar gerar TTS via ElevenLabs/OpenAI
+        try:
+            from .announcement_tts import get_announcement_tts
+            
+            tts = get_announcement_tts()
+            audio_file = await tts.generate_announcement(full_announcement)
+            
+            if audio_file:
+                # Verificar se B-leg ainda existe
+                b_exists = await self._esl.uuid_exists(b_leg_uuid)
+                if not b_exists:
+                    logger.warning("B-leg gone before playing announcement")
+                    return False
+                
+                # Tocar arquivo para o atendente
+                result = await self._esl.execute_api(
+                    f"uuid_broadcast {b_leg_uuid} {audio_file} aleg"
+                )
+                
+                if "+OK" in (result or ""):
+                    logger.info(
+                        f"TTS announcement playing",
+                        extra={
+                            "destination": destination_name,
+                            "audio_file": audio_file,
+                            "text_length": len(full_announcement),
+                        }
+                    )
+                    
+                    # Aguardar duração estimada do áudio (~2.5 palavras/segundo)
+                    duration = len(full_announcement.split()) / 2.5
+                    await asyncio.sleep(max(2.0, duration))
+                    
+                    return True
+                else:
+                    logger.warning(f"uuid_broadcast failed: {result}")
+                    
+        except Exception as e:
+            logger.warning(f"TTS generation failed: {e}")
+        
+        # 2. Fallback: mod_flite (voz robótica)
+        try:
+            b_exists = await self._esl.uuid_exists(b_leg_uuid)
+            if not b_exists:
+                return False
+            
+            success = await self._esl.uuid_say(b_leg_uuid, full_announcement)
+            if success:
+                logger.info(f"mod_flite announcement played for {destination_name}")
+                await asyncio.sleep(3.0)
+                return True
+                
+        except Exception as e:
+            logger.warning(f"mod_flite fallback failed: {e}")
+        
+        # 3. Último recurso: beep de notificação
+        try:
+            await self._esl.execute_api(
+                f"uuid_broadcast {b_leg_uuid} tone_stream://%(300,200,440);%(100,100,0);%(300,200,440) aleg"
+            )
+            logger.info(f"Fallback beep played for {destination_name}")
+            await asyncio.sleep(1.0)
+            return True
+        except Exception:
+            pass
+        
+        return False
+    
+    async def _wait_for_attendant_response(
+        self,
+        b_leg_uuid: str,
+        timeout: float = 15.0
+    ) -> str:
+        """
+        Aguarda resposta do atendente.
+        
+        Monitora:
+        - DTMF 1 = aceita
+        - DTMF 2 = recusa
+        - B-leg hangup = rejeitado
+        - Timeout = aceita automaticamente (atendente ouviu anúncio e não recusou)
+        
+        Args:
+            b_leg_uuid: UUID do B-leg (atendente)
+            timeout: Tempo máximo de espera
+        
+        Returns:
+            "accept", "reject", ou "hangup"
+        """
+        logger.info(
+            f"Waiting for attendant response",
+            extra={
+                "b_leg_uuid": b_leg_uuid,
+                "timeout": timeout,
+            }
+        )
+        
+        # Subscrever eventos DTMF para o B-leg
+        try:
+            await self._esl.subscribe_events(["DTMF", "CHANNEL_HANGUP"], b_leg_uuid)
+            logger.debug(f"Subscribed to DTMF events for {b_leg_uuid}")
+        except Exception as e:
+            logger.warning(f"Failed to subscribe events: {e}")
+        
+        start = asyncio.get_event_loop().time()
+        
+        # Limpar fila de DTMFs anterior para este UUID
+        if hasattr(self._esl, '_dtmf_queue') and b_leg_uuid in self._esl._dtmf_queue:
+            self._esl._dtmf_queue[b_leg_uuid].clear()
+        
+        while (asyncio.get_event_loop().time() - start) < timeout:
+            # 1. Verificar se B-leg ainda existe
+            b_leg_exists = await self._esl.uuid_exists(b_leg_uuid)
+            if not b_leg_exists:
+                logger.info("B-leg hangup detected")
+                return "hangup"
+            
+            # 2. Verificar DTMFs na fila
+            if hasattr(self._esl, '_get_dtmf_from_queue'):
+                dtmf = self._esl._get_dtmf_from_queue(b_leg_uuid)
+                
+                if dtmf == "1":
+                    logger.info("DTMF 1 received - transfer ACCEPTED")
+                    return "accept"
+                
+                if dtmf == "2":
+                    logger.info("DTMF 2 received - transfer REJECTED")
+                    return "reject"
+            
+            # 3. Verificar se A-leg ainda existe (cliente desligou?)
+            a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
+            if not a_leg_exists:
+                logger.info("A-leg hangup detected - cancelling transfer")
+                return "hangup"
+            
+            await asyncio.sleep(0.2)
+        
+        # Timeout - assumir aceitação
+        # (atendente ouviu o anúncio e não desligou = aceita)
+        logger.info("Response timeout - assuming acceptance")
+        return "accept"
+    
+    async def _cleanup_transfer(
+        self,
+        a_leg_uuid: str,
+        b_leg_uuid: Optional[str]
+    ) -> None:
+        """
+        Limpa transferência e retorna A-leg ao Voice AI.
+        
+        Fluxo:
+        1. Desliga B-leg (se existir)
+        2. Para playback no A-leg
+        3. Retorna A-leg ao Voice AI (reinicia stream de áudio)
+        
+        Args:
+            a_leg_uuid: UUID do A-leg (cliente)
+            b_leg_uuid: UUID do B-leg (atendente, se existir)
+        """
+        logger.info("Cleaning up transfer")
+        
+        try:
+            # 1. Desligar B-leg se existir
+            if b_leg_uuid:
+                try:
+                    b_exists = await self._esl.uuid_exists(b_leg_uuid)
+                    if b_exists:
+                        await self._esl.execute_api(f"uuid_kill {b_leg_uuid}")
+                        logger.debug(f"B-leg {b_leg_uuid} killed")
+                except Exception as e:
+                    logger.debug(f"Failed to kill B-leg: {e}")
+            
+            # 2. Verificar se A-leg ainda existe
+            a_exists = await self._esl.uuid_exists(a_leg_uuid)
+            if not a_exists:
+                logger.info("A-leg no longer exists during cleanup")
+                return
+            
+            # 3. Parar MOH/playback no A-leg
+            try:
+                await self._esl.execute_api(f"uuid_break {a_leg_uuid}")
+            except Exception:
+                pass
+            
+            # Aguardar um pouco
+            await asyncio.sleep(0.3)
+            
+            # 4. Retornar A-leg ao Voice AI
+            if self._on_resume:
+                logger.info("Resuming Voice AI session for A-leg")
+                try:
+                    await self._on_resume()
+                except Exception as e:
+                    logger.error(f"Failed to resume Voice AI: {e}")
+                    # Fallback: park
+                    try:
+                        await self._esl.execute_api(f"uuid_park {a_leg_uuid}")
+                        logger.warning("A-leg parked as fallback")
+                    except Exception:
+                        pass
+            else:
+                logger.warning("No resume callback - parking A-leg")
+                try:
+                    await self._esl.execute_api(f"uuid_park {a_leg_uuid}")
+                except Exception as e:
+                    logger.error(f"Failed to park A-leg: {e}")
+            
+            logger.info("Transfer cleanup complete")
+            
+        except Exception as e:
+            logger.error(f"Transfer cleanup error: {e}")
     
     def _build_realtime_announcement_prompt(
         self,

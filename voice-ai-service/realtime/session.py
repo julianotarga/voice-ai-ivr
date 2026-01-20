@@ -48,6 +48,15 @@ from .handlers.transfer_manager import (
 )
 from .handlers.transfer_destination_loader import TransferDestination
 
+# FASE 2: Transferência via Conferência (mod_conference)
+# Ref: voice-ai-ivr/docs/announced-transfer-conference.md
+from .handlers.transfer_manager_conference import (
+    ConferenceTransferManager,
+    ConferenceTransferResult,
+    ConferenceTransferConfig,
+    TransferDecision,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -390,6 +399,11 @@ class RealtimeSessionConfig:
     transfer_realtime_enabled: bool = False  # Se True, usa Realtime ao invés de TTS+DTMF
     transfer_realtime_prompt: Optional[str] = None  # Prompt para conversa com humano
     transfer_realtime_timeout: float = 15.0  # Timeout de conversa com humano
+    
+    # CONFERENCE TRANSFER: Transferência via mod_conference (RECOMENDADO)
+    # Usa conferência nativa do FreeSWITCH - mais robusto que &park()
+    # Quando True, substitui transfer_realtime_enabled
+    transfer_conference_enabled: bool = True  # Se True, usa mod_conference (RECOMENDADO)
     
     # ANNOUNCEMENT TTS PROVIDER: Provider para gerar áudio de anúncio
     # 'elevenlabs' (melhor qualidade) ou 'openai' (mais barato)
@@ -3219,10 +3233,51 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # ANNOUNCED TRANSFER: Anunciar para o HUMANO antes de conectar
                 announcement = self._build_announcement_for_human(destination_text, reason)
                 
-                if self.config.transfer_realtime_enabled:
-                    # REALTIME MODE: Conversa por voz com humano (premium)
-                    # Agente IA conversa via OpenAI Realtime com o atendente
-                    logger.info("Using REALTIME mode for announced transfer")
+                if self.config.transfer_conference_enabled:
+                    # CONFERENCE MODE: Usa mod_conference (RECOMENDADO)
+                    # Mais robusto e confiável que &park()
+                    logger.info("Using CONFERENCE mode for announced transfer (mod_conference)")
+                    
+                    # Criar ConferenceTransferManager
+                    # Obter ESL client da melhor forma disponível
+                    esl_client = None
+                    if hasattr(self, '_esl_adapter') and hasattr(self._esl_adapter, '_esl'):
+                        esl_client = self._esl_adapter._esl
+                    elif hasattr(self, '_transfer_manager') and hasattr(self._transfer_manager, '_esl'):
+                        esl_client = self._transfer_manager._esl
+                    else:
+                        from .handlers.esl_client import AsyncESLClient
+                        esl_client = AsyncESLClient()
+                    
+                    conf_manager = ConferenceTransferManager(
+                        esl_client=esl_client,
+                        a_leg_uuid=self.call_uuid,
+                        domain=destination.destination_context or "",
+                        caller_id=self.config.caller_id or "Unknown",
+                        config=ConferenceTransferConfig(
+                            originate_timeout=self.config.transfer_default_timeout,
+                            announcement_timeout=self.config.transfer_realtime_timeout,
+                            openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
+                            openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
+                        ),
+                        on_resume=self._resume_voice_ai,
+                    )
+                    
+                    # Executar transferência via conferência
+                    conf_result = await conf_manager.execute_announced_transfer(
+                        destination=destination.destination_number,
+                        context=reason,
+                        announcement=announcement,
+                        caller_name=self.config.caller_id,
+                    )
+                    
+                    # Converter ConferenceTransferResult para TransferResult
+                    result = self._convert_conference_result(conf_result, destination)
+                    
+                elif self.config.transfer_realtime_enabled:
+                    # REALTIME MODE (LEGADO): Conversa por voz com humano
+                    # Usa &park() - pode ter problemas de áudio
+                    logger.info("Using REALTIME mode for announced transfer (legacy)")
                     
                     # Construir contexto do cliente para o agente
                     caller_context = self._build_caller_context(destination_text, reason)
@@ -3486,6 +3541,62 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         # A mensagem contextual já foi enviada em _handle_transfer_result
         # Aqui só sinalizamos que podemos receber áudio novamente
+    
+    async def _resume_voice_ai(self) -> None:
+        """
+        Callback para retomar Voice AI após transferência via conferência falhar.
+        
+        Chamado pelo ConferenceTransferManager quando a transferência é
+        rejeitada, timeout, ou erro - para reativar o stream de áudio.
+        
+        Reutiliza a lógica de _on_transfer_resume que já existe.
+        """
+        logger.info("🔙 Resuming Voice AI after conference transfer")
+        
+        try:
+            # Reutilizar a lógica existente de resume
+            await self._on_transfer_resume()
+            
+        except Exception as e:
+            logger.error(f"Failed to resume Voice AI: {e}")
+            # Fallback: pelo menos desabilitar transfer_in_progress
+            self._set_transfer_in_progress(False, "conference_resume_error")
+    
+    def _convert_conference_result(
+        self,
+        conf_result: ConferenceTransferResult,
+        destination: TransferDestination
+    ) -> TransferResult:
+        """
+        Converte ConferenceTransferResult para TransferResult.
+        
+        Permite compatibilidade com o código existente de handling.
+        
+        Args:
+            conf_result: Resultado da transferência via conferência
+            destination: Destino da transferência
+        
+        Returns:
+            TransferResult compatível
+        """
+        # Mapear TransferDecision para TransferStatus
+        decision_to_status = {
+            TransferDecision.ACCEPTED: TransferStatus.SUCCESS,
+            TransferDecision.REJECTED: TransferStatus.REJECTED,
+            TransferDecision.TIMEOUT: TransferStatus.NO_ANSWER,
+            TransferDecision.HANGUP: TransferStatus.NO_ANSWER,
+            TransferDecision.ERROR: TransferStatus.FAILED,
+        }
+        
+        status = decision_to_status.get(conf_result.decision, TransferStatus.FAILED)
+        
+        return TransferResult(
+            status=status,
+            destination=destination,
+            b_leg_uuid=conf_result.b_leg_uuid,
+            duration_ms=conf_result.duration_ms,
+            message=conf_result.error,
+        )
     
     async def _on_transfer_complete(self, result: TransferResult) -> None:
         """
