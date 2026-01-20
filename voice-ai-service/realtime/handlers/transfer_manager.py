@@ -1821,8 +1821,8 @@ IMPORTANTE:
         """
         Constrói dial string para o destino.
         
-        IMPORTANTE: Usar user/ para extensões internas!
-        O FreeSWITCH resolve user/ext@domain para o IP real do softphone.
+        IMPORTANTE: Usar sofia/internal/ em vez de user/ para preservar domínio!
+        O user/ pode fazer lookup incorreto e substituir domínio por IP.
         
         Args:
             dest: Destino da transferência
@@ -1833,12 +1833,10 @@ IMPORTANTE:
         number = dest.destination_number
         context = dest.destination_context
         
-        # IMPORTANTE: No FusionPBX, user/ é o formato mais confiável para extensões internas
-        # O FreeSWITCH resolve user/ext@domain para o IP real do softphone via directory lookup
-        # Exemplo: user/1001@domain → sofia/internal/1001@177.72.9.170:57203
-        #
-        # group/ NÃO funciona como esperado no FusionPBX - ring groups são implementados
-        # de forma diferente (via dialplan, não via group/).
+        # NOTA: Usar sofia/internal/ diretamente em vez de user/
+        # user/ pode fazer lookup incorreto e substituir domínio por IP
+        # Exemplo incorreto: user/1001@domain → sofia/internal/1001@177.72.14.10
+        # Correto: sofia/internal/1001@domain preserva o domínio
         
         if dest.destination_type == "external":
             # Número externo - usar gateway padrão
@@ -1853,9 +1851,9 @@ IMPORTANTE:
             return f"fifo/{number}@{context}"
         
         else:
-            # extension, ring_group e outros: usar user/ que é universal
-            # Isso funciona para qualquer extensão registrada no FusionPBX
-            return f"user/{number}@{context}"
+            # extension, ring_group e outros: usar sofia/internal/ diretamente
+            # Isso preserva o domínio correto e evita lookup incorreto
+            return f"sofia/internal/{number}@{context}"
     
     def _hangup_cause_to_status(self, hangup_cause: Optional[str]) -> TransferStatus:
         """
