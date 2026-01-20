@@ -218,42 +218,42 @@ class RealtimeAnnouncementSession:
         para responder rapidamente quando o humano aceitar/recusar.
         """
         # FORMATO GA (gpt-4o-realtime-preview-2024-12-17):
-        # - output_modalities ao invés de modalities
-        # - audio.input/output ao invés de input_audio_format/output_audio_format
-        # - VAD em audio.input.turn_detection
+        # Estrutura simplificada que funciona com a API GA
         config = {
             "type": "session.update",
             "session": {
-                "type": "realtime",  # OBRIGATÓRIO para GA API
-                "output_modalities": ["audio"],
+                "model": "gpt-4o-realtime-preview-2024-12-17",
                 "instructions": self.system_prompt,
+                "voice": self.voice,
+                
+                # Estrutura de áudio para GA API
                 "audio": {
                     "input": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
-                        },
-                        "noise_reduction": {"type": "far_field"},
-                        # semantic_vad para conversa com humano
-                        # eagerness=high porque queremos resposta rápida
-                        "turn_detection": {
-                            "type": "semantic_vad",
-                            "eagerness": "high",
-                            "create_response": True,
-                            "interrupt_response": True,
-                        },
-                        "transcription": {
-                            "model": "gpt-4o-transcribe",
-                        },
+                        "format": "pcm16",
+                        "rate": 24000
                     },
                     "output": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000  # OBRIGATÓRIO na GA API
-                        },
-                        "voice": self.voice,
-                    },
+                        "format": "pcm16",
+                        "rate": 24000
+                    }
                 },
+                
+                # Transcrição do input
+                "input_audio_transcription": {
+                    "model": "whisper-1"
+                },
+                
+                # VAD - server_vad é mais estável para anúncios
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 500
+                },
+                
+                # Parâmetros de geração
+                "temperature": 0.8,
+                "max_response_output_tokens": 4096
             }
         }
         
