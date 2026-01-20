@@ -442,6 +442,12 @@ class ConferenceAnnouncementSession:
             ws_url = f"ws://{connect_host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
             
             logger.info(f"🔊 Audio WS ready: {ws_url}")
+            logger.info(f"🔊 WS Server listening on {bind_host}:{self._audio_ws_port}")
+            logger.info(f"🔊 FreeSWITCH (on HOST) will connect to: {ws_url}")
+            
+            # IMPORTANTE: Aguardar servidor estabilizar antes de enviar comando
+            # Sem esse delay, o comando pode chegar antes do servidor estar pronto
+            await asyncio.sleep(0.3)
             
             # Verificar conexão ESL antes de executar comando
             # IMPORTANTE: O atributo correto é _connected (com underscore)
