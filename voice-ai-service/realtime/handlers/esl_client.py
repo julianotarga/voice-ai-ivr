@@ -23,7 +23,7 @@ import uuid as uuid_module
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 import re
 
 logger = logging.getLogger(__name__)
@@ -846,6 +846,43 @@ class AsyncESLClient:
         """Remove handler de evento."""
         if handler_id in self._event_handlers:
             del self._event_handlers[handler_id]
+    
+    async def register_event_handler(
+        self,
+        event_name: str,
+        callback: Callable[[Any], Awaitable[None]],
+        uuid_filter: Optional[str] = None
+    ) -> str:
+        """
+        Registra handler assíncrono para evento ESL.
+        
+        Wrapper assíncrono para on_event() com suporte a callback async.
+        
+        Args:
+            event_name: Nome do evento (ex: "CHANNEL_HANGUP")
+            callback: Função async a chamar quando evento ocorrer
+            uuid_filter: UUID para filtrar (opcional)
+            
+        Returns:
+            handler_id para usar em unregister_event_handler
+        """
+        return self.on_event(
+            event_name=event_name,
+            uuid=uuid_filter,
+            callback=callback,
+            once=False
+        )
+    
+    async def unregister_event_handler(self, handler_id: str) -> None:
+        """
+        Remove handler de evento.
+        
+        Wrapper assíncrono para off_event().
+        
+        Args:
+            handler_id: ID retornado por register_event_handler
+        """
+        self.off_event(handler_id)
     
     async def wait_for_event(
         self,

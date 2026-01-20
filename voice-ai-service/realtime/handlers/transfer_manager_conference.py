@@ -133,6 +133,13 @@ class ConferenceTransferManager:
         self.conference_name: Optional[str] = None
         self._announcement_session = None
         self._decision: Optional[TransferDecision] = None
+        
+        # Monitoramento de hangup em tempo real
+        self._a_leg_hangup_event = asyncio.Event()
+        self._b_leg_hangup_event = asyncio.Event()
+        self._hangup_monitor_task: Optional[asyncio.Task] = None
+        self._transfer_active = False
+        self._hangup_handler_id: Optional[str] = None
     
     async def execute_announced_transfer(
         self,
@@ -171,7 +178,7 @@ class ConferenceTransferManager:
         
         try:
             # ============================================================
-            # STEP 0: Verificar e garantir conexão ESL
+            # STEP 0: Verificar e garantir conexão ESL + Iniciar monitor
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 0: Verificando conexão ESL...")
             logger.info(f"{elapsed()} STEP 0: ESL client type: {type(self.esl).__name__}")
@@ -200,25 +207,19 @@ class ConferenceTransferManager:
             else:
                 logger.info(f"{elapsed()} STEP 0: ✅ ESL already connected")
             
+            # Iniciar monitoramento de hangup em tempo real
+            logger.info(f"{elapsed()} STEP 0: Iniciando monitor de hangup...")
+            await self._start_hangup_monitor()
+            logger.info(f"{elapsed()} STEP 0: ✅ Monitor de hangup ativo")
+            
             # ============================================================
             # STEP 1: Verificar A-leg ainda existe
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 1: Verificando se A-leg existe...")
-            try:
-                a_exists = await asyncio.wait_for(
-                    self.esl.uuid_exists(self.a_leg_uuid),
-                    timeout=5.0
-                )
-                logger.info(f"{elapsed()} STEP 1: uuid_exists returned: {a_exists}")
-            except asyncio.TimeoutError:
-                logger.warning(f"{elapsed()} STEP 1: ⚠️ uuid_exists TIMEOUT, assuming A-leg exists")
-                a_exists = True
-            except Exception as e:
-                logger.warning(f"{elapsed()} STEP 1: ⚠️ uuid_exists error: {e}, assuming A-leg exists")
-                a_exists = True
             
-            if not a_exists:
-                logger.warning(f"{elapsed()} STEP 1: ❌ A-leg no longer exists")
+            # Usar método que combina event check + uuid_exists
+            if not await self._verify_a_leg_alive("STEP 1"):
+                await self._stop_hangup_monitor()
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.HANGUP,
@@ -230,6 +231,16 @@ class ConferenceTransferManager:
             # STEP 2: Verificar disponibilidade do ramal ANTES de colocar em espera
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 2: Verificando disponibilidade do ramal {destination}...")
+            
+            # Checar hangup antes de operação longa
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 2: 🚨 Cliente desligou antes de verificar ramal")
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    error="Cliente desligou antes da transferência"
+                )
             
             try:
                 is_registered, contact, check_ok = await asyncio.wait_for(
@@ -248,7 +259,7 @@ class ConferenceTransferManager:
             
             if check_ok and not is_registered:
                 logger.warning(f"{elapsed()} STEP 2: ❌ Ramal {destination} não está registrado/online")
-                # NÃO colocar cliente em espera - retornar erro imediatamente
+                await self._stop_hangup_monitor()
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,
@@ -261,6 +272,17 @@ class ConferenceTransferManager:
             # STEP 3: Colocar cliente em espera (conferência mutada)
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 3: Colocando cliente em espera...")
+            
+            # Checar hangup antes de modificar estado
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 3: 🚨 Cliente desligou antes de entrar na conferência")
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    error="Cliente desligou antes de ser colocado em espera"
+                )
+            
             self.conference_name = self._generate_conference_name()
             logger.info(f"{elapsed()} STEP 3: Conference name: {self.conference_name}")
             
@@ -274,21 +296,9 @@ class ConferenceTransferManager:
             
             # Verificar se A-leg ainda existe após mover
             logger.info(f"{elapsed()} STEP 3: Verificando se cliente ainda está na linha...")
-            try:
-                a_exists = await asyncio.wait_for(
-                    self.esl.uuid_exists(self.a_leg_uuid),
-                    timeout=5.0
-                )
-                logger.info(f"{elapsed()} STEP 3: uuid_exists returned: {a_exists}")
-            except asyncio.TimeoutError:
-                logger.warning(f"{elapsed()} STEP 3: ⚠️ TIMEOUT checking A-leg")
-                a_exists = True
-            except Exception as e:
-                logger.warning(f"{elapsed()} STEP 3: ⚠️ Error checking A-leg: {e}")
-                a_exists = True
-            
-            if not a_exists:
+            if not await self._verify_a_leg_alive("STEP 3"):
                 logger.warning(f"{elapsed()} STEP 3: ❌ Cliente desligou durante espera")
+                await self._stop_hangup_monitor()
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.HANGUP,
@@ -300,12 +310,36 @@ class ConferenceTransferManager:
             # STEP 4: Chamar o ramal (B-leg)
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 4: Chamando ramal {destination}...")
+            
+            # Checar hangup antes de originar
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 4: 🚨 Cliente desligou antes de chamar ramal")
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    conference_name=self.conference_name,
+                    error="Cliente desligou durante transferência"
+                )
+            
             originate_success = await self._originate_b_leg(destination)
             
             if not originate_success:
+                # Verificar se foi hangup do cliente
+                if self._check_a_leg_hangup():
+                    logger.warning(f"{elapsed()} STEP 4: 🚨 Cliente desligou enquanto ramal tocava")
+                    await self._stop_hangup_monitor()
+                    return ConferenceTransferResult(
+                        success=False,
+                        decision=TransferDecision.HANGUP,
+                        conference_name=self.conference_name,
+                        error="Cliente desligou durante transferência"
+                    )
+                
                 logger.warning(f"{elapsed()} STEP 4: ❌ Ramal não atendeu")
                 # Tirar cliente da espera e dar feedback
                 await self._cleanup_and_return(reason="Ramal não atendeu")
+                await self._stop_hangup_monitor()
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,
@@ -315,35 +349,94 @@ class ConferenceTransferManager:
                 )
             logger.info(f"{elapsed()} STEP 4: ✅ Ramal atendeu: {self.b_leg_uuid}")
             
-            # Aguardar B-leg estabilizar
+            # Aguardar B-leg estabilizar - verificando hangup
             logger.info(f"{elapsed()} STEP 4: Aguardando estabilização (1.5s)...")
-            await asyncio.sleep(1.5)
+            hangup_during_wait = await self._wait_for_hangup_or_timeout(1.5)
+            if hangup_during_wait == 'a_leg':
+                logger.warning(f"{elapsed()} STEP 4: 🚨 Cliente desligou durante estabilização")
+                await self._cleanup_b_leg()
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    b_leg_uuid=self.b_leg_uuid,
+                    conference_name=self.conference_name,
+                    error="Cliente desligou durante transferência"
+                )
             logger.info(f"{elapsed()} STEP 4: ✅ Ramal estável")
             
             # ============================================================
             # STEP 5: Anunciar para o atendente
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 5: Anunciando cliente para o atendente...")
+            
+            # Checar hangup antes de anunciar
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 5: 🚨 Cliente desligou antes do anúncio")
+                await self._cleanup_b_leg()
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    b_leg_uuid=self.b_leg_uuid,
+                    conference_name=self.conference_name,
+                    error="Cliente desligou durante transferência"
+                )
+            
             decision = await self._announce_to_b_leg(announcement, context)
+            
+            # Verificar se hangup ocorreu durante anúncio
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 5: 🚨 Cliente desligou durante anúncio")
+                await self._cleanup_b_leg()
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    b_leg_uuid=self.b_leg_uuid,
+                    conference_name=self.conference_name,
+                    error="Cliente desligou durante transferência"
+                )
+            
             logger.info(f"{elapsed()} STEP 5: ✅ Decisão do atendente: {decision.value}")
             
             # ============================================================
             # STEP 6: Processar decisão do atendente
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 6: Processando decisão...")
+            
+            # Última verificação de hangup antes de finalizar
+            if self._check_a_leg_hangup():
+                logger.warning(f"{elapsed()} STEP 6: 🚨 Cliente desligou antes de processar decisão")
+                await self._cleanup_b_leg()
+                await self._stop_hangup_monitor()
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    b_leg_uuid=self.b_leg_uuid,
+                    conference_name=self.conference_name,
+                    error="Cliente desligou durante transferência"
+                )
+            
             result = await self._process_decision(decision, context)
             result.duration_ms = int((time.time() - start_time) * 1000)
+            
+            # Parar monitor após sucesso
+            await self._stop_hangup_monitor()
+            
             logger.info(f"{elapsed()} STEP 6: ✅ Resultado: success={result.success}, decision={result.decision.value}")
             
             return result
             
         except asyncio.CancelledError:
             logger.info("Transfer cancelled")
+            await self._stop_hangup_monitor()
             await self._cleanup_on_error()
             raise
             
         except Exception as e:
             logger.error(f"Transfer failed: {e}", exc_info=True)
+            await self._stop_hangup_monitor()
             await self._cleanup_on_error()
             
             return ConferenceTransferResult(
@@ -367,6 +460,144 @@ class ConferenceTransferManager:
         # Adicionar 4 chars randômicos para garantir unicidade
         random_suffix = str(uuid4())[:4]
         return f"transfer_{short_id}_{timestamp}_{random_suffix}"
+    
+    # =========================================================================
+    # MONITORAMENTO DE HANGUP EM TEMPO REAL
+    # =========================================================================
+    
+    async def _start_hangup_monitor(self) -> None:
+        """
+        Inicia monitoramento de eventos CHANNEL_HANGUP para A-leg e B-leg.
+        
+        Usa ESL event subscription para receber notificações em tempo real.
+        Quando detecta hangup, seta o asyncio.Event correspondente.
+        """
+        self._transfer_active = True
+        self._a_leg_hangup_event.clear()
+        self._b_leg_hangup_event.clear()
+        
+        # Registrar handler para eventos de hangup
+        async def on_hangup(event):
+            if not self._transfer_active:
+                return
+            
+            uuid = event.uuid if hasattr(event, 'uuid') else event.headers.get('Unique-ID', '')
+            hangup_cause = event.headers.get('Hangup-Cause', 'UNKNOWN')
+            
+            if uuid == self.a_leg_uuid:
+                logger.warning(f"🚨 [HANGUP_MONITOR] A-leg hangup detected: {hangup_cause}")
+                self._a_leg_hangup_event.set()
+            elif uuid == self.b_leg_uuid:
+                logger.info(f"📞 [HANGUP_MONITOR] B-leg hangup detected: {hangup_cause}")
+                self._b_leg_hangup_event.set()
+        
+        # Registrar handler no ESL client
+        if hasattr(self.esl, 'register_event_handler'):
+            self._hangup_handler_id = await self.esl.register_event_handler(
+                event_name="CHANNEL_HANGUP",
+                callback=on_hangup,
+                uuid_filter=None  # Monitorar todos, filtrar no callback
+            )
+            logger.debug(f"[HANGUP_MONITOR] Handler registrado: {self._hangup_handler_id}")
+        else:
+            logger.debug("[HANGUP_MONITOR] ESL não suporta event handlers, usando polling")
+    
+    async def _stop_hangup_monitor(self) -> None:
+        """Para o monitoramento de hangup."""
+        self._transfer_active = False
+        
+        # Remover handler se registrado
+        if self._hangup_handler_id and hasattr(self.esl, 'unregister_event_handler'):
+            try:
+                await self.esl.unregister_event_handler(self._hangup_handler_id)
+                logger.debug(f"[HANGUP_MONITOR] Handler removido: {self._hangup_handler_id}")
+            except Exception as e:
+                logger.debug(f"[HANGUP_MONITOR] Erro removendo handler: {e}")
+            self._hangup_handler_id = None
+    
+    def _check_a_leg_hangup(self) -> bool:
+        """
+        Verifica se A-leg (cliente) desligou.
+        
+        Returns:
+            True se cliente desligou, False caso contrário
+        """
+        return self._a_leg_hangup_event.is_set()
+    
+    def _check_b_leg_hangup(self) -> bool:
+        """
+        Verifica se B-leg (atendente) desligou.
+        
+        Returns:
+            True se atendente desligou, False caso contrário
+        """
+        return self._b_leg_hangup_event.is_set()
+    
+    async def _wait_for_hangup_or_timeout(self, timeout: float) -> Optional[str]:
+        """
+        Aguarda hangup de qualquer lado ou timeout.
+        
+        Args:
+            timeout: Tempo máximo de espera em segundos
+            
+        Returns:
+            'a_leg' se A-leg desligou
+            'b_leg' se B-leg desligou
+            None se timeout
+        """
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(self._a_leg_hangup_event.wait()),
+                asyncio.create_task(self._b_leg_hangup_event.wait()),
+            ],
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # Cancelar tasks pendentes
+        for task in pending:
+            task.cancel()
+        
+        if self._a_leg_hangup_event.is_set():
+            return 'a_leg'
+        if self._b_leg_hangup_event.is_set():
+            return 'b_leg'
+        return None
+    
+    async def _verify_a_leg_alive(self, step_name: str) -> bool:
+        """
+        Verifica se A-leg ainda está ativo.
+        Combinação de event check + uuid_exists.
+        
+        Args:
+            step_name: Nome do step para logging
+            
+        Returns:
+            True se A-leg está ativo, False se desligou
+        """
+        # Verificação rápida via event
+        if self._check_a_leg_hangup():
+            logger.warning(f"🚨 [{step_name}] A-leg hangup detectado via event")
+            return False
+        
+        # Verificação via ESL (backup)
+        try:
+            exists = await asyncio.wait_for(
+                self.esl.uuid_exists(self.a_leg_uuid),
+                timeout=2.0
+            )
+            if not exists:
+                logger.warning(f"🚨 [{step_name}] A-leg não existe mais (uuid_exists=False)")
+                self._a_leg_hangup_event.set()  # Sincronizar event
+                return False
+            return True
+        except asyncio.TimeoutError:
+            # Timeout não significa que desligou, assumir ativo
+            logger.debug(f"[{step_name}] uuid_exists timeout, assumindo A-leg ativo")
+            return True
+        except Exception as e:
+            logger.debug(f"[{step_name}] uuid_exists error: {e}, assumindo A-leg ativo")
+            return True
     
     async def _stop_voiceai_stream(self) -> None:
         """Para o stream de áudio do Voice AI no A-leg."""
@@ -972,6 +1203,49 @@ REGRAS:
                 pass
         
         await self._return_a_leg_to_voiceai()
+    
+    async def _cleanup_b_leg(self) -> None:
+        """
+        Cleanup apenas do B-leg (atendente).
+        
+        Usado quando cliente desliga e precisamos limpar apenas o B-leg,
+        sem tentar retornar A-leg ao Voice AI.
+        """
+        logger.info("🧹 Cleaning up B-leg only...")
+        
+        try:
+            # 1. Parar stream de áudio do B-leg
+            if self.b_leg_uuid:
+                try:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                
+                # 2. Matar B-leg
+                try:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}"),
+                        timeout=2.0
+                    )
+                    logger.info(f"✅ B-leg {self.b_leg_uuid} killed")
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            
+            # 3. Destruir conferência (se existir)
+            if self.conference_name:
+                try:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"conference {self.conference_name} kick all"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                    
+        except Exception as e:
+            logger.warning(f"B-leg cleanup error (non-fatal): {e}")
     
     async def _cleanup_on_error(self) -> None:
         """
