@@ -3595,7 +3595,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             destination=destination,
             b_leg_uuid=conf_result.b_leg_uuid,
             duration_ms=conf_result.duration_ms,
-            message=conf_result.error,
+            error=conf_result.error,
         )
     
     async def _on_transfer_complete(self, result: TransferResult) -> None:
