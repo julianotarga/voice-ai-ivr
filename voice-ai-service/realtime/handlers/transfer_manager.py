@@ -1139,8 +1139,16 @@ class TransferManager:
                         error=f"Ramal {destination.destination_number} não está conectado",
                     )
             
-            # 3. Verificar se A-leg ainda existe
-            a_leg_exists = await self._esl.uuid_exists(self.call_uuid)
+            # 3. Verificar se A-leg ainda existe (timeout curto)
+            try:
+                a_leg_exists = await asyncio.wait_for(
+                    self._esl.uuid_exists(self.call_uuid),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("uuid_exists timeout checking A-leg, assuming exists")
+                a_leg_exists = True
+            
             if not a_leg_exists:
                 return TransferResult(
                     status=TransferStatus.CANCELLED,
@@ -1150,19 +1158,26 @@ class TransferManager:
             
             # 4. Parar stream de áudio do Voice AI (A-leg vai para conferência)
             try:
-                await self._esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop")
-            except Exception:
-                pass  # Ignorar se não estava ativo
+                await asyncio.wait_for(
+                    self._esl.execute_api(f"uuid_audio_stream {self.call_uuid} stop"),
+                    timeout=3.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass  # Ignorar se não estava ativo ou timeout
             
             # 5. Tocar MOH no A-leg (cliente) antes de mover para conferência
             # Isso garante que o cliente ouça música enquanto esperamos o atendente
             logger.info(f"Putting A-leg on hold with MOH: {self.call_uuid}")
             
-            # Usar playback com loop para MOH
+            # Usar playback com loop para MOH (timeout curto)
             moh_file = "local_stream://default"
-            await self._esl.execute_api(
-                f"uuid_broadcast {self.call_uuid} {moh_file} aleg"
-            )
+            try:
+                await asyncio.wait_for(
+                    self._esl.execute_api(f"uuid_broadcast {self.call_uuid} {moh_file} aleg"),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("MOH broadcast timeout, continuing anyway")
             
             # 6. Originar B-leg para o atendente
             dial_string = self._build_dial_string(destination)
@@ -1332,16 +1347,29 @@ class TransferManager:
             audio_file = await tts.generate_announcement(full_announcement)
             
             if audio_file:
-                # Verificar se B-leg ainda existe
-                b_exists = await self._esl.uuid_exists(b_leg_uuid)
+                # Verificar se B-leg ainda existe (timeout curto de 3s para não bloquear)
+                try:
+                    b_exists = await asyncio.wait_for(
+                        self._esl.uuid_exists(b_leg_uuid),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("uuid_exists timeout, assuming B-leg exists")
+                    b_exists = True  # Assumir que existe e tentar tocar
+                
                 if not b_exists:
                     logger.warning("B-leg gone before playing announcement")
                     return False
                 
-                # Tocar arquivo para o atendente
-                result = await self._esl.execute_api(
-                    f"uuid_broadcast {b_leg_uuid} {audio_file} aleg"
-                )
+                # Tocar arquivo para o atendente (timeout curto)
+                try:
+                    result = await asyncio.wait_for(
+                        self._esl.execute_api(f"uuid_broadcast {b_leg_uuid} {audio_file} aleg"),
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("uuid_broadcast timeout")
+                    result = ""
                 
                 if "+OK" in (result or ""):
                     logger.info(
@@ -1366,7 +1394,15 @@ class TransferManager:
         
         # 2. Fallback: mod_flite (voz robótica)
         try:
-            b_exists = await self._esl.uuid_exists(b_leg_uuid)
+            # Timeout curto para não bloquear
+            try:
+                b_exists = await asyncio.wait_for(
+                    self._esl.uuid_exists(b_leg_uuid),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                b_exists = True  # Assumir que existe
+            
             if not b_exists:
                 return False
             
@@ -1950,6 +1986,16 @@ async def create_transfer_manager(
         voice_id=voice_id,
         announcement_tts_provider=announcement_tts_provider,
     )
+    
+    # Garantir que ESL está conectado ANTES de retornar
+    # Isso é crucial para que conference mode funcione
+    if not manager._esl.is_connected:
+        logger.info("Connecting ESL client in create_transfer_manager...")
+        connected = await manager._esl.connect()
+        if connected:
+            logger.info("ESL client connected successfully")
+        else:
+            logger.warning("Failed to connect ESL client, transfers may fail")
     
     # Pré-carregar destinos
     await manager.load_destinations()
