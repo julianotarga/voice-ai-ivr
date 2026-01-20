@@ -664,7 +664,7 @@ class RealtimeAnnouncementSession:
                 return
             
             if process.returncode == 0 and Path(wav_path).exists():
-                # Tocar via uuid_broadcast no B-leg (humano)
+                # Tocar áudio no B-leg (humano) - B-leg está em &park()
                 # Usar ESL dedicado para evitar conflito com singleton
                 try:
                     dedicated_esl = AsyncESLClient()
@@ -678,22 +678,39 @@ class RealtimeAnnouncementSession:
                             )
                             
                             if b_leg_exists:
-                                # Usar uuid_broadcast com "aleg" para tocar no B-leg
-                                # "both" pode causar eco, "aleg" toca apenas para o destino
+                                # MÉTODO 1: uuid_displace (mais confiável para chamadas parkadas)
+                                # Injeta áudio na chamada sem interromper o estado atual
                                 result = await asyncio.wait_for(
                                     dedicated_esl.execute_api(
-                                        f"uuid_broadcast {self.b_leg_uuid} {wav_path} aleg"
+                                        f"uuid_displace {self.b_leg_uuid} start {wav_path} 0 mux"
                                     ),
                                     timeout=3.0
                                 )
-                                logger.info(
-                                    f"🔊 Played {buffer_size} bytes to B-leg via TTS fallback",
-                                    extra={
-                                        "b_leg_uuid": self.b_leg_uuid,
-                                        "wav_path": wav_path,
-                                        "result": result[:100] if result else None,
-                                    }
-                                )
+                                
+                                success = "+OK" in (result or "")
+                                
+                                if not success:
+                                    # MÉTODO 2: Fallback para uuid_broadcast com "both"
+                                    # Para chamada sem bridge, "both" é mais seguro que "aleg"
+                                    logger.debug(f"uuid_displace failed ({result}), trying uuid_broadcast")
+                                    result = await asyncio.wait_for(
+                                        dedicated_esl.execute_api(
+                                            f"uuid_broadcast {self.b_leg_uuid} {wav_path} both"
+                                        ),
+                                        timeout=3.0
+                                    )
+                                    success = "+OK" in (result or "")
+                                
+                                if success:
+                                    logger.info(
+                                        f"🔊 Played {buffer_size} bytes to B-leg",
+                                        extra={
+                                            "b_leg_uuid": self.b_leg_uuid,
+                                            "wav_path": wav_path,
+                                        }
+                                    )
+                                else:
+                                    logger.warning(f"🔇 Failed to play audio to B-leg: {result}")
                             else:
                                 logger.warning(f"B-leg {self.b_leg_uuid} no longer exists, skipping audio")
                     finally:
