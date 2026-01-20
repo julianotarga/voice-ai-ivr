@@ -331,9 +331,15 @@ class ConferenceAnnouncementSession:
                         "noise_reduction": {"type": "far_field"},
                         "turn_detection": {
                             "type": "server_vad",
-                            "threshold": 0.5,
-                            "prefix_padding_ms": 300,
-                            "silence_duration_ms": 500
+                            # threshold: 0.0-1.0 (maior = menos sensível)
+                            # 0.75 evita que ruídos/teclas interrompam a fala
+                            "threshold": 0.75,
+                            # prefix_padding_ms: buffer antes de detectar início de fala
+                            # 400ms ignora sons curtos como cliques
+                            "prefix_padding_ms": 400,
+                            # silence_duration_ms: quanto silêncio antes de considerar fim de turno
+                            # 700ms permite pausas naturais na fala
+                            "silence_duration_ms": 700
                         },
                         "transcription": {
                             "model": "gpt-4o-transcribe"
