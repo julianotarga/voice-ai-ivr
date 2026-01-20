@@ -444,7 +444,9 @@ class ConferenceAnnouncementSession:
             logger.info(f"🔊 Audio WS ready: {ws_url}")
             
             # Verificar conexão ESL antes de executar comando
-            if not self.esl.connected:
+            # IMPORTANTE: O atributo correto é _connected (com underscore)
+            is_connected = getattr(self.esl, '_connected', False) or getattr(self.esl, 'connected', False)
+            if not is_connected:
                 logger.warning("🔌 ESL disconnected, attempting reconnect...")
                 try:
                     await self.esl.connect()
