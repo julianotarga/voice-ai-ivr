@@ -191,8 +191,22 @@ class ConferenceTransferManager:
                         error="Falha na conexão com FreeSWITCH"
                     )
             
-            # STEP 1: Verificar A-leg ainda existe
-            a_exists = await self.esl.uuid_exists(self.a_leg_uuid)
+            # STEP 1: Verificar A-leg ainda existe (timeout curto)
+            logger.debug("Step 1: Checking if A-leg exists...")
+            try:
+                a_exists = await asyncio.wait_for(
+                    self.esl.uuid_exists(self.a_leg_uuid),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Step 1: uuid_exists timeout, assuming A-leg exists")
+                a_exists = True
+            except Exception as e:
+                logger.warning(f"Step 1: uuid_exists error: {e}, assuming A-leg exists")
+                a_exists = True
+            
+            logger.debug(f"Step 1: A-leg exists = {a_exists}")
+            
             if not a_exists:
                 logger.warning("A-leg no longer exists")
                 return ConferenceTransferResult(
@@ -299,8 +313,13 @@ class ConferenceTransferManager:
     async def _stop_voiceai_stream(self) -> None:
         """Para o stream de áudio do Voice AI no A-leg."""
         try:
-            await self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop")
+            await asyncio.wait_for(
+                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
+                timeout=3.0
+            )
             logger.debug("Voice AI stream stopped")
+        except asyncio.TimeoutError:
+            logger.debug("Voice AI stream stop timeout (continuing)")
         except Exception as e:
             logger.debug(f"Could not stop Voice AI stream: {e}")
     
@@ -330,7 +349,10 @@ class ConferenceTransferManager:
         logger.debug(f"Transfer command: {transfer_cmd}")
         
         try:
-            result = await self.esl.execute_api(transfer_cmd)
+            result = await asyncio.wait_for(
+                self.esl.execute_api(transfer_cmd),
+                timeout=5.0
+            )
             
             if "-ERR" in str(result):
                 raise Exception(f"uuid_transfer failed: {result}")
@@ -384,7 +406,14 @@ class ConferenceTransferManager:
         try:
             # Executar originate via bgapi (assíncrono)
             # bgapi retorna Job-UUID, não o resultado imediato
-            result = await self.esl.execute_api(f"bgapi originate {dial_string} {app}")
+            try:
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(f"bgapi originate {dial_string} {app}"),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Originate bgapi timeout")
+                return False
             
             logger.debug(f"Originate bgapi result: {result}")
             
@@ -395,8 +424,15 @@ class ConferenceTransferManager:
             for attempt in range(int(max_attempts)):
                 await asyncio.sleep(1.0)
                 
-                # Verificar se B-leg existe
-                b_exists = await self.esl.uuid_exists(candidate_uuid)
+                # Verificar se B-leg existe (timeout curto)
+                try:
+                    b_exists = await asyncio.wait_for(
+                        self.esl.uuid_exists(candidate_uuid),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(f"uuid_exists timeout at attempt {attempt + 1}")
+                    continue  # Tentar novamente
                 
                 if b_exists:
                     # SUCESSO: Agora podemos atribuir o UUID ao estado da classe
@@ -404,8 +440,16 @@ class ConferenceTransferManager:
                     logger.info(f"B-leg {self.b_leg_uuid} created after {attempt + 1}s")
                     return True
                 
-                # Verificar se A-leg ainda existe (cliente pode ter desligado)
-                a_exists = await self.esl.uuid_exists(self.a_leg_uuid)
+                # Verificar se A-leg ainda existe (timeout curto)
+                try:
+                    a_exists = await asyncio.wait_for(
+                        self.esl.uuid_exists(self.a_leg_uuid),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug("A-leg check timeout, continuing")
+                    a_exists = True  # Assumir que existe
+                
                 if not a_exists:
                     logger.warning("A-leg gone during originate wait")
                     # NÃO atribuir b_leg_uuid - nunca existiu
@@ -447,13 +491,29 @@ class ConferenceTransferManager:
         """
         logger.info("📋 Step 4: Announcing to B-leg via OpenAI...")
         
-        # Verificar se ambos os legs ainda existem antes do anúncio
-        a_exists = await self.esl.uuid_exists(self.a_leg_uuid)
+        # Verificar se ambos os legs ainda existem antes do anúncio (timeout curto)
+        try:
+            a_exists = await asyncio.wait_for(
+                self.esl.uuid_exists(self.a_leg_uuid),
+                timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("A-leg check timeout, assuming exists")
+            a_exists = True
+        
         if not a_exists:
             logger.warning("A-leg (client) gone before announcement")
             return TransferDecision.HANGUP
         
-        b_exists = await self.esl.uuid_exists(self.b_leg_uuid)
+        try:
+            b_exists = await asyncio.wait_for(
+                self.esl.uuid_exists(self.b_leg_uuid),
+                timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("B-leg check timeout, assuming exists")
+            b_exists = True
+        
         if not b_exists:
             logger.warning("B-leg (attendant) gone before announcement")
             return TransferDecision.HANGUP
@@ -494,7 +554,14 @@ class ConferenceTransferManager:
                 return TransferDecision.REJECTED
             else:
                 # Timeout - verificar se B-leg ainda existe antes de assumir aceitação
-                b_exists = await self.esl.uuid_exists(self.b_leg_uuid)
+                try:
+                    b_exists = await asyncio.wait_for(
+                        self.esl.uuid_exists(self.b_leg_uuid),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    b_exists = True  # Assumir que existe
+                
                 if not b_exists:
                     logger.info("Timeout + B-leg gone = HANGUP")
                     return TransferDecision.HANGUP
@@ -585,18 +652,28 @@ REGRAS:
             # Isso evita que o áudio do OpenAI continue tocando após a conexão
             if self.b_leg_uuid:
                 try:
-                    await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                        timeout=3.0
+                    )
                     logger.debug("B-leg audio stream stopped before unmute")
                     # Pequeno delay para garantir que o stream parou
                     await asyncio.sleep(0.2)
-                except Exception as e:
+                except (asyncio.TimeoutError, Exception) as e:
                     logger.debug(f"Could not stop B-leg stream: {e}")
             
-            # Desmute A-leg na conferência
+            # Desmute A-leg na conferência (timeout curto)
             unmute_cmd = f"conference {self.conference_name} unmute {self.a_leg_uuid}"
             logger.debug(f"Unmute command: {unmute_cmd}")
             
-            result = await self.esl.execute_api(unmute_cmd)
+            try:
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(unmute_cmd),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Unmute command timeout")
+                result = ""
             
             if "-ERR" in str(result):
                 logger.warning(f"Unmute may have failed: {result}")
@@ -604,13 +681,22 @@ REGRAS:
                 logger.info(f"A-leg unmuted: {result}")
             logger.info("🎉 Transfer completed - both parties can talk")
             
-            # Definir hangup_after_bridge em ambos
-            await self.esl.execute_api(
-                f"uuid_setvar {self.a_leg_uuid} hangup_after_bridge true"
-            )
-            await self.esl.execute_api(
-                f"uuid_setvar {self.b_leg_uuid} hangup_after_bridge true"
-            )
+            # Definir hangup_after_bridge em ambos (fire and forget com timeout)
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_bridge true"),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                pass
+            
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_setvar {self.b_leg_uuid} hangup_after_bridge true"),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                pass
             
             return ConferenceTransferResult(
                 success=True,
@@ -658,22 +744,35 @@ REGRAS:
         ticket_id = None
         
         try:
-            # 1. Parar stream de áudio do B-leg
+            # 1. Parar stream de áudio do B-leg (timeout curto)
             if self.b_leg_uuid:
                 try:
-                    await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
-                except Exception:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
                     pass
             
-            # 2. Kick B-leg
+            # 2. Kick B-leg (timeout curto)
             if self.b_leg_uuid:
                 try:
-                    b_exists = await self.esl.uuid_exists(self.b_leg_uuid)
-                    if b_exists:
-                        await self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}")
+                    b_exists = await asyncio.wait_for(
+                        self.esl.uuid_exists(self.b_leg_uuid),
+                        timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    b_exists = False
+                
+                if b_exists:
+                    try:
+                        await asyncio.wait_for(
+                            self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}"),
+                            timeout=2.0
+                        )
                         logger.debug("B-leg killed")
-                except Exception as e:
-                    logger.debug(f"Could not kill B-leg: {e}")
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.debug(f"Could not kill B-leg: {e}")
             
             # 3. Criar ticket (opcional)
             if self.omniplay_api:
@@ -729,18 +828,26 @@ REGRAS:
         logger.info("🔙 Returning A-leg to Voice AI...")
         
         try:
-            # Verificar se A-leg existe
-            a_exists = await self.esl.uuid_exists(self.a_leg_uuid)
+            # Verificar se A-leg existe (timeout curto)
+            try:
+                a_exists = await asyncio.wait_for(
+                    self.esl.uuid_exists(self.a_leg_uuid),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                a_exists = True  # Tentar mesmo assim
+            
             if not a_exists:
                 logger.info("A-leg no longer exists")
                 return
             
-            # Kick A-leg da conferência
+            # Kick A-leg da conferência (timeout curto)
             try:
-                await self.esl.execute_api(
-                    f"conference {self.conference_name} kick {self.a_leg_uuid}"
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"conference {self.conference_name} kick {self.a_leg_uuid}"),
+                    timeout=2.0
                 )
-            except Exception as e:
+            except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Could not kick A-leg from conference: {e}")
             
             await asyncio.sleep(0.3)
@@ -754,17 +861,23 @@ REGRAS:
                         await result
                 except Exception as e:
                     logger.error(f"Failed to resume Voice AI: {e}")
-                    # Fallback: park
+                    # Fallback: park (timeout curto)
                     try:
-                        await self.esl.execute_api(f"uuid_park {self.a_leg_uuid}")
-                    except Exception:
+                        await asyncio.wait_for(
+                            self.esl.execute_api(f"uuid_park {self.a_leg_uuid}"),
+                            timeout=2.0
+                        )
+                    except (asyncio.TimeoutError, Exception):
                         pass
             else:
-                # Sem callback - park
+                # Sem callback - park (timeout curto)
                 logger.warning("No resume callback - parking A-leg")
                 try:
-                    await self.esl.execute_api(f"uuid_park {self.a_leg_uuid}")
-                except Exception:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_park {self.a_leg_uuid}"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
                     pass
             
             logger.info("A-leg returned to Voice AI")
@@ -776,8 +889,11 @@ REGRAS:
         """Cleanup parcial e retorna A-leg."""
         if self.b_leg_uuid:
             try:
-                await self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}")
-            except Exception:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}"),
+                    timeout=2.0
+                )
+            except (asyncio.TimeoutError, Exception):
                 pass
         
         await self._return_a_leg_to_voiceai()
@@ -797,40 +913,60 @@ REGRAS:
         logger.info("🧹 Cleaning up after error...")
         
         try:
-            # 1. Parar streams de áudio (evita áudio residual)
+            # 1. Parar streams de áudio (evita áudio residual) - timeout curto
             if self.b_leg_uuid:
                 try:
-                    await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
-                except Exception:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
                     pass
             
             if self.a_leg_uuid:
                 try:
-                    await self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop")
-                except Exception:
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
+                        timeout=2.0
+                    )
+                except (asyncio.TimeoutError, Exception):
                     pass
             
-            # 2. Hangup B-leg primeiro (se existir)
+            # 2. Hangup B-leg primeiro (se existir) - timeout curto
             if self.b_leg_uuid:
                 try:
-                    b_exists = await self.esl.uuid_exists(self.b_leg_uuid)
-                    if b_exists:
-                        await self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}")
+                    b_exists = await asyncio.wait_for(
+                        self.esl.uuid_exists(self.b_leg_uuid),
+                        timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    b_exists = False
+                
+                if b_exists:
+                    try:
+                        await asyncio.wait_for(
+                            self.esl.execute_api(f"uuid_kill {self.b_leg_uuid}"),
+                            timeout=2.0
+                        )
                         logger.debug("B-leg killed in cleanup")
-                except Exception:
-                    pass
+                    except (asyncio.TimeoutError, Exception):
+                        pass
             
-            # 3. Destruir conferência (se foi criada)
+            # 3. Destruir conferência (se foi criada) - timeout curto
             if self.conference_name:
                 try:
                     # Verificar se conferência existe antes de kick
-                    result = await self.esl.execute_api(f"conference {self.conference_name} list")
+                    result = await asyncio.wait_for(
+                        self.esl.execute_api(f"conference {self.conference_name} list"),
+                        timeout=2.0
+                    )
                     if result and "-ERR" not in str(result):
-                        await self.esl.execute_api(
-                            f"conference {self.conference_name} kick all"
+                        await asyncio.wait_for(
+                            self.esl.execute_api(f"conference {self.conference_name} kick all"),
+                            timeout=2.0
                         )
                         logger.debug("Conference destroyed in cleanup")
-                except Exception:
+                except (asyncio.TimeoutError, Exception):
                     pass
             
             # 4. Retornar A ao Voice AI
