@@ -13,6 +13,12 @@ from .audio_codec import (
     ULAW_CODEC,
     ALAW_CODEC,
 )
+from .pacing import (
+    ConversationPacing,
+    PacingConfig,
+    get_pacing,
+    reset_global_pacing,
+)
 
 __all__ = [
     "Resampler",
@@ -30,4 +36,9 @@ __all__ = [
     "alaw_to_pcm",
     "ULAW_CODEC",
     "ALAW_CODEC",
+    # Pacing (breathing room)
+    "ConversationPacing",
+    "PacingConfig",
+    "get_pacing",
+    "reset_global_pacing",
 ]

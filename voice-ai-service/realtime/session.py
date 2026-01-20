@@ -10,6 +10,7 @@ Referências:
 import asyncio
 import logging
 import os
+import random
 import time
 import aiohttp
 from enum import Enum
@@ -30,6 +31,7 @@ from .utils.resampler import ResamplerPair
 from .utils.metrics import get_metrics
 from .utils.echo_canceller import EchoCancellerWrapper
 from .utils.audio_codec import G711Codec, ulaw_to_pcm, pcm_to_ulaw
+from .utils.pacing import ConversationPacing, PacingConfig
 from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 
 # FASE 1: Handoff Inteligente
@@ -39,6 +41,10 @@ from .handlers.transfer_manager import (
     TransferStatus,
     TransferResult,
     create_transfer_manager,
+    # Mensagens contextuais para transferências (tornam respostas mais naturais)
+    get_offline_message,
+    get_no_answer_message,
+    get_busy_message,
 )
 from .handlers.transfer_destination_loader import TransferDestination
 
@@ -141,6 +147,51 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
         },
         "required": ["caller_name", "phone", "message"]
     }
+}
+
+# ========================================
+# FILLERS PARA FUNCTION CALLS
+# Mensagens faladas enquanto processa operações demoradas
+# Ref: docs/PROJECT_EVOLUTION.md - Melhorias Conversacionais
+# ========================================
+
+FUNCTION_FILLERS = {
+    # Transferências
+    "request_handoff": [
+        "Vou verificar a disponibilidade do atendente...",
+        "Deixa eu ver quem pode te atender...",
+        "Um momento, vou te conectar...",
+    ],
+    # Verificação de disponibilidade
+    "check_availability": [
+        "Consultando a disponibilidade...",
+        "Verificando os horários disponíveis...",
+    ],
+    # Criar ticket/protocolo
+    "create_ticket": [
+        "Vou criar um protocolo pra você...",
+        "Registrando sua solicitação...",
+    ],
+    # Anotar recado
+    "take_message": [
+        "Anotando o recado...",
+        "Registrando sua mensagem...",
+    ],
+    # Consultas genéricas
+    "search": [
+        "Deixa eu buscar isso...",
+        "Consultando aqui...",
+    ],
+    # Encerrar chamada - SEM FILLER (ação imediata)
+    "end_call": [],
+    # Leave message - SEM FILLER (já está em contexto de recado)
+    "leave_message": [],
+    # Fallback para function calls desconhecidas
+    "_default": [
+        "Um momento só...",
+        "Certo, deixa eu verificar...",
+        "Só um segundo...",
+    ]
 }
 
 # ========================================
@@ -494,6 +545,18 @@ class RealtimeSession:
                 echo_delay_ms=config.aec_echo_delay_ms,  # Delay típico do echo (100-300ms)
                 enabled=True
             )
+        
+        # ========================================
+        # Conversation Pacing (Breathing Room)
+        # Adiciona delays naturais para respostas mais humanizadas
+        # Ref: docs/PROJECT_EVOLUTION.md - Melhorias Conversacionais (P2)
+        # ========================================
+        self._pacing = ConversationPacing(PacingConfig(
+            min_delay=0.2,  # 200ms mínimo
+            max_delay=0.4,  # 400ms máximo
+            enabled=True,   # Habilitado por padrão
+        ))
+        self._pacing_applied_this_turn = False  # Evita aplicar delay múltiplas vezes
     
     @property
     def call_uuid(self) -> str:
@@ -1325,6 +1388,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.SPEAKING, "audio_delta")
             
+            # ========================================
+            # Breathing Room: Aplicar delay natural no PRIMEIRO chunk
+            # Evita respostas instantâneas que parecem artificiais
+            # ========================================
+            if not self._pacing_applied_this_turn:
+                delay = await self._pacing.apply_natural_delay(context="audio_response")
+                self._pacing_applied_this_turn = True
+                if delay > 0:
+                    logger.debug(f"[PACING] Applied {delay*1000:.0f}ms breathing room", extra={
+                        "call_uuid": self.call_uuid,
+                    })
+            
             # Se estamos encerrando e este é o primeiro áudio da resposta de despedida,
             # resetar o contador para medir apenas o áudio de despedida
             if self._ending_call and not self._farewell_response_started:
@@ -1383,6 +1458,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     await self._on_transcript("user", event.transcript)
                 # Resetar fallback de silêncio ao receber transcrição do usuário
                 self._silence_fallback_count = 0
+                
+                # Detectar complexidade da pergunta para pacing (breathing room)
+                # Perguntas complexas recebem delay extra antes da resposta
+                self._pacing.detect_complexity_from_text(event.transcript)
 
                 # Se está no fluxo de callback e cliente quer deixar recado,
                 # marcar estado RECORDING (captura de recado)
@@ -1459,6 +1538,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
             self._speech_start_time = time.time()
+            # Marcar início da fala para pacing (usado para detectar falas longas)
+            self._pacing.mark_user_speech_started()
             
             # Verificar se estamos em período de proteção contra interrupções
             # Isso evita que ruído do unhold interrompa a mensagem pós-transfer
@@ -1486,6 +1567,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         elif event.type == ProviderEventType.SPEECH_STOPPED:
             self._user_speaking = False
+            # Marcar timestamp para pacing (breathing room)
+            self._pacing.mark_user_speech_ended()
+            self._pacing_applied_this_turn = False  # Reset para próximo turno
         
         elif event.type == ProviderEventType.RESPONSE_DONE:
             # IMPORTANTE: Marcar que o assistente terminou de falar
@@ -1540,6 +1624,23 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             "call_uuid": self.call_uuid,
             "function": function_name,
         })
+        
+        # =========================================================
+        # FILLER: Falar algo enquanto processa operações demoradas
+        # Torna a conversa mais natural (evita silêncio)
+        # 
+        # IMPORTANTE: Enviamos como instrução de sistema para que o
+        # OpenAI fale EXATAMENTE o filler, sem elaborar ou adicionar texto.
+        # =========================================================
+        filler = self._get_filler_for_function(function_name)
+        if filler:
+            logger.debug(f"Sending filler for {function_name}: {filler[:30]}...")
+            # Formatar como instrução clara para o OpenAI falar apenas o filler
+            filler_instruction = f"[SISTEMA] Diga apenas: '{filler}' - nada mais, exatamente esse texto."
+            await self._send_text_to_provider(filler_instruction, request_response=True)
+            # Delay para garantir que o filler comece a ser falado
+            # antes de executar a operação (evita áudio cortado)
+            await asyncio.sleep(0.5)
         
         if function_name == "leave_message":
             # Estado RECORDING enquanto registra recado
@@ -1989,6 +2090,31 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 await self._provider.send_text(text, request_response=request_response)
             except RuntimeError as e:
                 logger.warning(f"Provider not connected, skipping send_text: {e}")
+    
+    def _get_filler_for_function(self, function_name: str) -> Optional[str]:
+        """
+        Retorna um filler aleatório para a function call.
+        
+        Fillers são mensagens curtas faladas enquanto o sistema processa
+        operações demoradas, tornando a conversa mais natural.
+        
+        Args:
+            function_name: Nome da function call
+            
+        Returns:
+            Filler string ou None se não deve usar filler
+        """
+        # Buscar fillers específicos ou usar default
+        fillers = FUNCTION_FILLERS.get(function_name)
+        
+        if fillers is None:
+            # Function desconhecida, usar default
+            fillers = FUNCTION_FILLERS.get("_default", [])
+        
+        # Retornar filler aleatório ou None se lista vazia
+        if fillers:
+            return random.choice(fillers)
+        return None
     
     async def _check_handoff_keyword(self, user_text: str) -> bool:
         """Verifica se o texto contém keyword de handoff."""
@@ -2520,6 +2646,17 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             await self._provider.disconnect()
         
         self._metrics.session_ended(self.call_uuid, reason)
+        
+        # Log estatísticas de pacing (breathing room)
+        pacing_stats = self._pacing.get_stats()
+        if pacing_stats["total_delays"] > 0:
+            logger.info(
+                f"[PACING] Session stats: {pacing_stats['total_delays']} delays, "
+                f"total {pacing_stats['total_delay_time']:.2f}s, "
+                f"avg {pacing_stats['avg_delay']*1000:.0f}ms",
+                extra={"call_uuid": self.call_uuid, "pacing_stats": pacing_stats}
+            )
+        
         await self._save_conversation(reason)
         
         if self._on_session_end:
@@ -3264,15 +3401,27 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             # 5. Enviar mensagem ao OpenAI para ele FALAR
             # O OpenAI vai gerar uma resposta de voz natural
-            message = result.message
+            # Usar mensagens contextuais baseadas no status (tornam respostas mais naturais)
             destination_name = result.destination.name if result.destination else "o ramal"
             
-            # Construir mensagem concisa para o OpenAI falar
+            # Selecionar mensagem contextual baseada no status
+            # Ref: transfer_manager.py - TRANSFER_ANNOUNCEMENTS, OFFLINE_MESSAGES, etc.
+            if result.status == TransferStatus.OFFLINE:
+                contextual_message = get_offline_message(destination_name)
+            elif result.status == TransferStatus.BUSY:
+                contextual_message = get_busy_message(destination_name)
+            elif result.status == TransferStatus.NO_ANSWER:
+                contextual_message = get_no_answer_message(destination_name)
+            else:
+                # Fallback para outros status (REJECTED, FAILED, etc.)
+                contextual_message = get_no_answer_message(destination_name)
+            
+            # Construir instrução concisa para o OpenAI
             # IMPORTANTE: Instruções curtas são seguidas melhor pelo LLM
             openai_instruction = (
-                f"[SISTEMA] {destination_name} não atendeu. "
-                "Diga: 'Não consegui contato. Quer deixar recado?' "
-                "SIM: anote e use take_message. NÃO: agradeça. Depois: end_call."
+                f"[SISTEMA] Fale ao cliente: '{contextual_message}' "
+                "Se cliente quiser deixar recado: use take_message. "
+                "Se não quiser: agradeça e use end_call."
             )
             
             logger.info(

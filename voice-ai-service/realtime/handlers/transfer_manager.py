@@ -34,6 +34,7 @@ Multi-tenant: domain_uuid obrigatório em todas as operações.
 import os
 import logging
 import asyncio
+import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -47,6 +48,90 @@ from .transfer_destination_loader import (
 )
 
 logger = logging.getLogger(__name__)
+
+# =========================================================================
+# MENSAGENS DE TRANSIÇÃO NATURAIS
+# Tornam as transferências mais humanas e informativas
+# Ref: docs/PROJECT_EVOLUTION.md - Melhorias Conversacionais
+# =========================================================================
+
+# Mensagens quando vai transferir com sucesso
+# NOTA: {destination} pode ser nome de pessoa ("João") ou departamento ("Vendas")
+TRANSFER_ANNOUNCEMENTS = [
+    "Perfeito! Vou te conectar com {destination}. Só um momento...",
+    "Certo! Te transfiro agora para {destination}...",
+    "Combinado! Te passo para {destination}. Um instante...",
+    "Ok! Vou te conectar com {destination}...",
+]
+
+# Mensagens quando destino está offline/indisponível
+# Funciona para pessoas ("João não está disponível") e departamentos ("Vendas não está disponível")
+OFFLINE_MESSAGES = [
+    "Infelizmente {destination} não está disponível no momento. "
+    "Vou criar um protocolo pra você e nossa equipe entrará em contato assim que possível.",
+    "{destination} não está online agora. "
+    "Vou registrar sua solicitação como prioridade e você receberá retorno em breve.",
+]
+
+# Mensagens quando destino não atende
+NO_ANSWER_MESSAGES = [
+    "{destination} não conseguiu atender agora. "
+    "Quer que eu crie um protocolo para te retornarem?",
+    "Liguei para {destination} mas não houve resposta. "
+    "Posso anotar um recado ou criar um protocolo?",
+]
+
+# Mensagens quando destino está ocupado
+BUSY_MESSAGES = [
+    "{destination} está em outra ligação no momento. "
+    "Quer aguardar ou prefere que eu anote um recado?",
+    "{destination} está ocupado agora. "
+    "Posso tentar novamente ou criar um protocolo?",
+]
+
+
+def get_transfer_announcement(destination: str) -> str:
+    """
+    Retorna anúncio aleatório para transferência.
+    
+    Args:
+        destination: Nome do destino (pessoa ou departamento)
+    """
+    msg = random.choice(TRANSFER_ANNOUNCEMENTS)
+    return msg.format(destination=destination)
+
+
+def get_offline_message(destination: str) -> str:
+    """
+    Retorna mensagem aleatória para destino offline.
+    
+    Args:
+        destination: Nome do destino (pessoa ou departamento)
+    """
+    msg = random.choice(OFFLINE_MESSAGES)
+    return msg.format(destination=destination)
+
+
+def get_no_answer_message(destination: str) -> str:
+    """
+    Retorna mensagem aleatória para destino que não atendeu.
+    
+    Args:
+        destination: Nome do destino (pessoa ou departamento)
+    """
+    msg = random.choice(NO_ANSWER_MESSAGES)
+    return msg.format(destination=destination)
+
+
+def get_busy_message(destination: str) -> str:
+    """
+    Retorna mensagem aleatória para destino ocupado.
+    
+    Args:
+        destination: Nome do destino (pessoa ou departamento)
+    """
+    msg = random.choice(BUSY_MESSAGES)
+    return msg.format(destination=destination)
 
 # Configurações padrão (usadas se não houver config do banco)
 DEFAULT_TRANSFER_TIMEOUT = int(os.getenv("TRANSFER_DEFAULT_TIMEOUT", "30"))

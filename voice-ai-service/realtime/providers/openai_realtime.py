@@ -145,6 +145,7 @@ from .base import (
     ProviderEventType,
     RealtimeConfig,
 )
+from ..config.prompts import get_enhanced_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +412,10 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         tools = self.config.tools or DEFAULT_TOOLS
         tools_names = [t.get("name") for t in tools]
         
+        # Enriquecer prompt com regras conversacionais
+        # Adiciona: confirmações variadas, adaptação emocional, coerência contextual
+        enhanced_prompt = get_enhanced_prompt(self.config.system_prompt or "")
+        
         if is_ga:
             # === FORMATO GA: Enviar configuração em DUAS ETAPAS ===
             # Context7 mostra que áudio e tools são enviados separadamente em alguns exemplos
@@ -439,7 +444,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "session": {
                     "type": "realtime",
                     "output_modalities": ["audio"],
-                    "instructions": self.config.system_prompt or "",
+                    "instructions": enhanced_prompt,
                     "audio": {
                         "input": {
                             "format": input_format,
@@ -523,7 +528,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "type": "session.update",
                 "session": {
                     "modalities": ["text", "audio"],
-                    "instructions": self.config.system_prompt or "",
+                    "instructions": enhanced_prompt,
                     "voice": voice,
                     "input_audio_format": input_audio_fmt,
                     "output_audio_format": "pcm16",  # Output sempre PCM16
@@ -693,7 +698,10 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     
     async def send_text(self, text: str, request_response: bool = True) -> None:
         """
-        Envia mensagem de texto e solicita resposta.
+        Envia mensagem de texto como input do usuário e solicita resposta.
+        
+        IMPORTANTE: Isso é interpretado como se o USUÁRIO tivesse falado.
+        Para enviar mensagens como ASSISTENTE (fillers, etc.), use send_assistant_message().
         
         Ref: conversation.item.create + response.create events (SDK oficial)
         
@@ -728,6 +736,36 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 logger.debug("Response already active; skipping response.create", extra={
                     "domain_uuid": self.config.domain_uuid,
                 })
+    
+    async def send_assistant_message(self, text: str) -> None:
+        """
+        Envia mensagem como se o ASSISTENTE tivesse falado.
+        
+        Útil para fillers e mensagens de transição que devem aparecer
+        na conversa como falas do assistente, sem solicitar nova resposta.
+        
+        NOTA: Isso adiciona à história da conversa mas NÃO gera áudio TTS.
+        O OpenAI Realtime não suporta TTS de mensagens do assistente retroativamente.
+        Para gerar áudio, use response.create com instruções.
+        
+        Args:
+            text: Texto que o assistente "falou"
+        """
+        if not self._ws:
+            raise RuntimeError("Not connected")
+        
+        await self._ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}]
+            }
+        }))
+        
+        logger.debug(f"Assistant message added: {text[:50]}...", extra={
+            "domain_uuid": self.config.domain_uuid,
+        })
     
     async def interrupt(self) -> None:
         """
