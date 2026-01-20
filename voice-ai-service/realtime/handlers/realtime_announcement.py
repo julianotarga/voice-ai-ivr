@@ -503,6 +503,10 @@ class RealtimeAnnouncementSession:
             status = response.get("status", "completed")
             logger.debug(f"Response complete (status={status}), transcript: {self._transcript[-100:]}")
             
+            # IMPORTANTE: Flush FORÇADO do buffer de áudio restante
+            # Sem isso, o final da fala fica preso no buffer e não é tocado
+            await self._flush_audio_buffer(force=True)
+            
             # Verificar se assistente decidiu
             self._check_decision()
         
@@ -594,34 +598,49 @@ class RealtimeAnnouncementSession:
         
         self._audio_buffer.extend(audio_bytes)
         
-        # Tocar quando tiver áudio suficiente (~500ms = 24000 samples @ 24kHz)
-        MIN_BUFFER_SIZE = 24000  # 0.5s de áudio @ 24kHz PCM16
+        # Tocar quando tiver áudio suficiente (~250ms = 12000 bytes @ 24kHz PCM16)
+        # Reduzido de 500ms para 250ms para menor latência
+        MIN_BUFFER_SIZE = 12000  # 0.25s de áudio @ 24kHz PCM16 (2 bytes/sample)
         
         if len(self._audio_buffer) >= MIN_BUFFER_SIZE:
             await self._flush_audio_buffer()
     
-    async def _flush_audio_buffer(self) -> None:
+    async def _flush_audio_buffer(self, force: bool = False) -> None:
         """
         Toca áudio acumulado no buffer.
         
         Usa asyncio subprocess para não bloquear o event loop.
+        
+        Args:
+            force: Se True, toca mesmo se buffer for pequeno (para flush final)
         """
         if not hasattr(self, '_audio_buffer') or len(self._audio_buffer) == 0:
+            return
+        
+        buffer_size = len(self._audio_buffer)
+        
+        # Se buffer muito pequeno e não forçado, não tocar (ruído)
+        if not force and buffer_size < 4800:  # < 100ms
             return
         
         import tempfile
         from pathlib import Path
         
+        logger.debug(f"🔊 Flushing {buffer_size} bytes of audio to B-leg")
+        
         try:
             # Salvar PCM raw em arquivo temporário
-            fd, pcm_path = tempfile.mkstemp(suffix=".raw")
+            fd, pcm_path = tempfile.mkstemp(suffix=".raw", prefix="bleg_audio_")
             with os.fdopen(fd, "wb") as f:
                 f.write(self._audio_buffer)
             
-            # Converter PCM 24kHz para WAV 16kHz (FreeSWITCH padrão)
+            # Limpar buffer imediatamente para evitar replay
+            self._audio_buffer = bytearray()
+            
+            # Converter PCM 24kHz para WAV 8kHz (FreeSWITCH telefonia)
             wav_path = pcm_path.replace(".raw", ".wav")
             
-            # ffmpeg: PCM 24kHz mono -> WAV 16kHz mono
+            # ffmpeg: PCM 24kHz mono -> WAV 8kHz mono (telefonia)
             # IMPORTANTE: Usar asyncio subprocess para não bloquear
             process = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y",
@@ -629,7 +648,7 @@ class RealtimeAnnouncementSession:
                 "-ar", "24000",          # Input: 24kHz (OpenAI output)
                 "-ac", "1",              # Input: mono
                 "-i", pcm_path,
-                "-ar", "16000",          # Output: 16kHz (FreeSWITCH)
+                "-ar", "8000",           # Output: 8kHz (telefonia)
                 "-ac", "1",              # Output: mono
                 wav_path,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -641,7 +660,7 @@ class RealtimeAnnouncementSession:
             except asyncio.TimeoutError:
                 process.kill()
                 logger.warning("ffmpeg timeout, killing process")
-                self._audio_buffer = bytearray()
+                Path(pcm_path).unlink(missing_ok=True)
                 return
             
             if process.returncode == 0 and Path(wav_path).exists():
@@ -650,15 +669,33 @@ class RealtimeAnnouncementSession:
                 try:
                     dedicated_esl = AsyncESLClient()
                     try:
-                        connected = await asyncio.wait_for(dedicated_esl.connect(), timeout=1.0)
+                        connected = await asyncio.wait_for(dedicated_esl.connect(), timeout=2.0)
                         if connected:
-                            await asyncio.wait_for(
-                                dedicated_esl.execute_api(
-                                    f"uuid_broadcast {self.b_leg_uuid} {wav_path} both"
-                                ),
-                                timeout=2.0
+                            # Verificar se B-leg ainda existe
+                            b_leg_exists = await asyncio.wait_for(
+                                dedicated_esl.uuid_exists(self.b_leg_uuid),
+                                timeout=1.0
                             )
-                            logger.debug(f"Played {len(self._audio_buffer)} bytes to B-leg via TTS fallback")
+                            
+                            if b_leg_exists:
+                                # Usar uuid_broadcast com "aleg" para tocar no B-leg
+                                # "both" pode causar eco, "aleg" toca apenas para o destino
+                                result = await asyncio.wait_for(
+                                    dedicated_esl.execute_api(
+                                        f"uuid_broadcast {self.b_leg_uuid} {wav_path} aleg"
+                                    ),
+                                    timeout=3.0
+                                )
+                                logger.info(
+                                    f"🔊 Played {buffer_size} bytes to B-leg via TTS fallback",
+                                    extra={
+                                        "b_leg_uuid": self.b_leg_uuid,
+                                        "wav_path": wav_path,
+                                        "result": result[:100] if result else None,
+                                    }
+                                )
+                            else:
+                                logger.warning(f"B-leg {self.b_leg_uuid} no longer exists, skipping audio")
                     finally:
                         await dedicated_esl.disconnect()
                 except Exception as e:
@@ -667,19 +704,32 @@ class RealtimeAnnouncementSession:
                 error_msg = stderr.decode()[:200] if stderr else "unknown"
                 logger.warning(f"ffmpeg conversion failed: {error_msg}")
             
-            # Limpar buffer
-            self._audio_buffer = bytearray()
-            
-            # Cleanup temp files
+            # Cleanup temp files (com delay para FreeSWITCH acessar)
             Path(pcm_path).unlink(missing_ok=True)
-            # Não deletar wav_path imediatamente, FreeSWITCH precisa acessar
+            # Agendar cleanup do WAV após 5s
+            asyncio.create_task(self._delayed_cleanup(wav_path, delay=5.0))
             
         except Exception as e:
             logger.error(f"Error flushing audio buffer: {e}")
             self._audio_buffer = bytearray()
     
+    async def _delayed_cleanup(self, file_path: str, delay: float = 5.0) -> None:
+        """Remove arquivo após delay."""
+        from pathlib import Path
+        try:
+            await asyncio.sleep(delay)
+            Path(file_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    
     async def _cleanup(self) -> None:
         """Limpa recursos."""
+        # Flush final do buffer de áudio (se houver)
+        try:
+            await self._flush_audio_buffer(force=True)
+        except Exception as e:
+            logger.debug(f"Final audio flush failed: {e}")
+        
         if self._ws:
             try:
                 await self._ws.close()
