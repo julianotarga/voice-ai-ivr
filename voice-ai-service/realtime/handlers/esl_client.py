@@ -569,38 +569,37 @@ class AsyncESLClient:
     # API de comandos
     # =========================================================================
     
-    async def execute_api(self, command: str) -> str:
+    async def execute_api(self, command: str, timeout: float = 10.0) -> str:
         """
-        Executa comando API do FreeSWITCH.
+        Executa comando API síncrono e retorna resposta.
+        
+        IMPORTANTE: NÃO pausa event reader - usa discard_events para ignorar eventos.
+        O event reader continua rodando em paralelo.
         
         Args:
             command: Comando a executar (ex: "show calls", "uuid_getvar uuid var")
+            timeout: Timeout em segundos (padrão: 10s)
         
         Returns:
             Resposta do comando
         
-        THREAD SAFETY:
-        - Usa _command_lock para serializar comandos
-        - Pausa _event_reader_loop via _reader_paused Event
-        - Usa _read_lock implicitamente via _read_response()
-        - Resolve erro "readuntil() called while another coroutine is already waiting"
+        Raises:
+            ESLError: Se timeout ou falha
         """
         async with self._command_lock:
             if not self._connected:
                 if not await self.connect():
                     raise ESLConnectionError("Failed to connect to ESL")
             
-            # Pausar event reader loop durante o comando
-            # clear() faz wait() bloquear no event reader
-            self._reader_paused.clear()
-            self._command_in_progress = True
             try:
-                # Delay para garantir que o event reader pausou
-                # Aumentado para 50ms para dar tempo do reader sair do readline()
-                await asyncio.sleep(0.05)
-                
+                # Enviar comando
                 await self._send(f"api {command}\n\n")
-                response = await self._read_response(discard_events=True)
+                
+                # Ler resposta (descartando eventos no caminho)
+                response = await asyncio.wait_for(
+                    self._read_response(discard_events=True),
+                    timeout=timeout
+                )
                 
                 # Extrair body da resposta
                 if "Content-Length:" in response:
@@ -609,10 +608,10 @@ class AsyncESLClient:
                         return parts[1]
                 
                 return response
-            finally:
-                self._command_in_progress = False
-                # Permitir event reader continuar
-                self._reader_paused.set()
+                
+            except asyncio.TimeoutError:
+                logger.error(f"execute_api timeout ({timeout}s) for command: {command[:50]}...")
+                raise ESLError(f"API command timeout: {command[:50]}")
     
     async def execute_bgapi(self, command: str) -> str:
         """
