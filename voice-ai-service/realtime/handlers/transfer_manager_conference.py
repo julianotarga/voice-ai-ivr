@@ -702,8 +702,30 @@ class ConferenceTransferManager:
         # PRIORIDADE: Usar contact direto se disponível (evita loop de lookup)
         if direct_contact:
             # Extrair user@host:port do contact SIP
-            # Format: "sip:1001@177.72.14.10:46522" -> "1001@177.72.14.10:46522"
-            contact_clean = direct_contact.replace('sip:', '').strip()
+            # Formatos possíveis:
+            #   "sip:1001@177.72.14.10:46522"
+            #   "<sip:1001@177.72.14.10:46522>"
+            #   "<sip:1001@177.72.14.10:46522;transport=UDP>"
+            #   "sip:1001@177.72.14.10:46522;rinstance=abc"
+            contact_clean = direct_contact
+            
+            # Remover < > se existir
+            if '<' in contact_clean:
+                import re
+                match = re.search(r'<([^>]+)>', contact_clean)
+                if match:
+                    contact_clean = match.group(1)
+            
+            # Remover prefixo sip: ou sips:
+            contact_clean = contact_clean.replace('sips:', '').replace('sip:', '')
+            
+            # Remover parâmetros após ; (ex: ;transport=UDP;rinstance=abc)
+            if ';' in contact_clean:
+                contact_clean = contact_clean.split(';')[0]
+            
+            contact_clean = contact_clean.strip()
+            
+            logger.debug(f"_originate_b_leg: Contact cleaned: '{direct_contact}' -> '{contact_clean}'")
             
             dial_string = (
                 f"{{origination_uuid={candidate_uuid},"
