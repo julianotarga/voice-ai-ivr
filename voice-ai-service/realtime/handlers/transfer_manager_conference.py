@@ -879,10 +879,10 @@ class ConferenceTransferManager:
         # Prompt para o agente
         system_prompt = self._build_announcement_prompt(context)
         
-        # Mensagem inicial - apenas o anúncio, a IA vai perguntar naturalmente
+        # Mensagem inicial - usar o anúncio já formatado (já contém "Olá, tenho...")
+        # O announcement vem de _build_announcement_for_human e já está completo
         initial_message = (
-            f"Olá, tenho um cliente na linha. {announcement}. "
-            f"Você pode atender agora?"
+            f"{announcement}. Você pode atender agora?"
         )
         
         try:

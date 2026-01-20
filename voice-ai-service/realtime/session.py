@@ -1776,6 +1776,21 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             destination = args.get("destination", "qualquer atendente")
             reason = args.get("reason", "solicitação do cliente")
             
+            # CRÍTICO: Evitar múltiplas transferências simultâneas
+            # Isso evita bug onde IA chama request_handoff duas vezes
+            if self._transfer_in_progress:
+                logger.warning(
+                    "🔄 [HANDOFF] IGNORANDO - Transferência já em progresso",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "destination_raw": destination,
+                    }
+                )
+                return {
+                    "status": "already_in_progress",
+                    "message": "Transferência já está em andamento. Aguarde."
+                }
+            
             logger.info(
                 "🔄 [HANDOFF] request_handoff INICIADO",
                 extra={
@@ -1789,6 +1804,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             # Cancelar fallback automático quando o tool for chamado
             self._cancel_handoff_fallback()
+            
+            # IMPORTANTE: Marcar transferência em progresso IMEDIATAMENTE
+            # Isso evita que uma segunda chamada de request_handoff crie outra task
+            self._set_transfer_in_progress(True, "handoff_starting")
             
             if self._transfer_manager and self.config.intelligent_handoff_enabled:
                 # ========================================

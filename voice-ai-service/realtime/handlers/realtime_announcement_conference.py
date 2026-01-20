@@ -474,9 +474,11 @@ class ConferenceAnnouncementSession:
             audio_b64 = event.get("delta", "")
             if audio_b64:
                 audio_bytes = base64.b64decode(audio_b64)
+                logger.debug(f"🔊 OpenAI audio received: {len(audio_bytes)} bytes, fs_ws={self._fs_ws is not None}")
                 if self._fs_ws:
                     await self._enqueue_audio_to_freeswitch(audio_bytes)
                 else:
+                    logger.warning("⚠️ No FS WebSocket - using TTS fallback")
                     await self._play_audio_fallback(audio_bytes)
         
         # FUNCTION CALL - Decisão do atendente
@@ -869,12 +871,17 @@ class ConferenceAnnouncementSession:
             return
         
         chunk_size = 640  # 20ms @ 16kHz
+        chunks_enqueued = 0
         for i in range(0, len(audio_16k), chunk_size):
             chunk = audio_16k[i:i + chunk_size]
             try:
                 await self._fs_audio_queue.put(chunk)
+                chunks_enqueued += 1
             except Exception:
                 break
+        
+        if chunks_enqueued > 0:
+            logger.debug(f"🔊 Audio enqueued: {chunks_enqueued} chunks ({len(audio_16k)} bytes) to FS")
     
     async def _fs_sender_loop(self) -> None:
         """Envia áudio para o FreeSWITCH."""
