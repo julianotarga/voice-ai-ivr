@@ -227,81 +227,113 @@ class ConferenceTransferManager:
             logger.info(f"{elapsed()} STEP 1: ✅ A-leg exists")
             
             # ============================================================
-            # STEP 2: Criar conferência e mover A-leg
+            # STEP 2: Verificar disponibilidade do ramal ANTES de colocar em espera
             # ============================================================
-            logger.info(f"{elapsed()} 📍 STEP 2: Criando conferência...")
+            logger.info(f"{elapsed()} 📍 STEP 2: Verificando disponibilidade do ramal {destination}...")
+            
+            try:
+                is_registered, contact, check_ok = await asyncio.wait_for(
+                    self.esl.check_extension_registered(destination, self.domain),
+                    timeout=5.0
+                )
+                logger.info(f"{elapsed()} STEP 2: Ramal registrado: {is_registered}, contact: {contact}")
+            except asyncio.TimeoutError:
+                logger.warning(f"{elapsed()} STEP 2: ⚠️ Timeout verificando ramal, assumindo disponível")
+                is_registered = True
+                check_ok = False
+            except Exception as e:
+                logger.warning(f"{elapsed()} STEP 2: ⚠️ Erro verificando ramal: {e}, assumindo disponível")
+                is_registered = True
+                check_ok = False
+            
+            if check_ok and not is_registered:
+                logger.warning(f"{elapsed()} STEP 2: ❌ Ramal {destination} não está registrado/online")
+                # NÃO colocar cliente em espera - retornar erro imediatamente
+                return ConferenceTransferResult(
+                    success=False,
+                    decision=TransferDecision.REJECTED,
+                    error=f"Ramal {destination} não está disponível no momento",
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+            logger.info(f"{elapsed()} STEP 2: ✅ Ramal disponível")
+            
+            # ============================================================
+            # STEP 3: Colocar cliente em espera (conferência mutada)
+            # ============================================================
+            logger.info(f"{elapsed()} 📍 STEP 3: Colocando cliente em espera...")
             self.conference_name = self._generate_conference_name()
-            logger.info(f"{elapsed()} STEP 2: Conference name: {self.conference_name}")
+            logger.info(f"{elapsed()} STEP 3: Conference name: {self.conference_name}")
             
-            logger.info(f"{elapsed()} STEP 2: Parando Voice AI stream...")
+            logger.info(f"{elapsed()} STEP 3: Parando Voice AI stream...")
             await self._stop_voiceai_stream()
-            logger.info(f"{elapsed()} STEP 2: ✅ Voice AI stream parado")
+            logger.info(f"{elapsed()} STEP 3: ✅ Voice AI stream parado")
             
-            logger.info(f"{elapsed()} STEP 2: Movendo A-leg para conferência...")
+            logger.info(f"{elapsed()} STEP 3: Movendo A-leg para conferência (mutado = em espera)...")
             await self._move_a_leg_to_conference()
-            logger.info(f"{elapsed()} STEP 2: ✅ A-leg in conference (muted)")
+            logger.info(f"{elapsed()} STEP 3: ✅ Cliente em espera (conferência mutada)")
             
             # Verificar se A-leg ainda existe após mover
-            logger.info(f"{elapsed()} STEP 2: Verificando A-leg após mover...")
+            logger.info(f"{elapsed()} STEP 3: Verificando se cliente ainda está na linha...")
             try:
                 a_exists = await asyncio.wait_for(
                     self.esl.uuid_exists(self.a_leg_uuid),
                     timeout=5.0
                 )
-                logger.info(f"{elapsed()} STEP 2: uuid_exists returned: {a_exists}")
+                logger.info(f"{elapsed()} STEP 3: uuid_exists returned: {a_exists}")
             except asyncio.TimeoutError:
-                logger.warning(f"{elapsed()} STEP 2: ⚠️ TIMEOUT checking A-leg (ESL not responding)")
+                logger.warning(f"{elapsed()} STEP 3: ⚠️ TIMEOUT checking A-leg")
                 a_exists = True
             except Exception as e:
-                logger.warning(f"{elapsed()} STEP 2: ⚠️ Error checking A-leg: {e}")
+                logger.warning(f"{elapsed()} STEP 3: ⚠️ Error checking A-leg: {e}")
                 a_exists = True
             
             if not a_exists:
-                logger.warning(f"{elapsed()} STEP 2: ❌ A-leg gone after moving to conference")
+                logger.warning(f"{elapsed()} STEP 3: ❌ Cliente desligou durante espera")
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.HANGUP,
                     error="Cliente desligou durante transferência"
                 )
-            logger.info(f"{elapsed()} STEP 2: ✅ A-leg still exists in conference")
+            logger.info(f"{elapsed()} STEP 3: ✅ Cliente ainda na linha")
             
             # ============================================================
-            # STEP 3: Originar B-leg
+            # STEP 4: Chamar o ramal (B-leg)
             # ============================================================
-            logger.info(f"{elapsed()} 📍 STEP 3: Originando B-leg para {destination}...")
+            logger.info(f"{elapsed()} 📍 STEP 4: Chamando ramal {destination}...")
             originate_success = await self._originate_b_leg(destination)
             
             if not originate_success:
-                logger.warning(f"{elapsed()} STEP 3: ❌ B-leg originate failed")
+                logger.warning(f"{elapsed()} STEP 4: ❌ Ramal não atendeu")
+                # Tirar cliente da espera e dar feedback
                 await self._cleanup_and_return(reason="Ramal não atendeu")
                 return ConferenceTransferResult(
                     success=False,
-                    decision=TransferDecision.HANGUP,
+                    decision=TransferDecision.REJECTED,
                     conference_name=self.conference_name,
-                    error="Atendente não atendeu",
+                    error="Ramal não atendeu. Você pode deixar um recado.",
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
-            logger.info(f"{elapsed()} STEP 3: ✅ B-leg originated: {self.b_leg_uuid}")
+            logger.info(f"{elapsed()} STEP 4: ✅ Ramal atendeu: {self.b_leg_uuid}")
             
             # Aguardar B-leg estabilizar
-            logger.info(f"{elapsed()} STEP 3: Aguardando B-leg estabilizar (1.5s)...")
+            logger.info(f"{elapsed()} STEP 4: Aguardando estabilização (1.5s)...")
             await asyncio.sleep(1.5)
-            logger.info(f"{elapsed()} STEP 3: ✅ B-leg estável")
+            logger.info(f"{elapsed()} STEP 4: ✅ Ramal estável")
             
             # ============================================================
-            # STEP 4: Anunciar para B-leg
+            # STEP 5: Anunciar para o atendente
             # ============================================================
-            logger.info(f"{elapsed()} 📍 STEP 4: Anunciando para B-leg via OpenAI...")
+            logger.info(f"{elapsed()} 📍 STEP 5: Anunciando cliente para o atendente...")
             decision = await self._announce_to_b_leg(announcement, context)
-            logger.info(f"{elapsed()} STEP 4: ✅ B-leg decision: {decision.value}")
+            logger.info(f"{elapsed()} STEP 5: ✅ Decisão do atendente: {decision.value}")
             
             # ============================================================
-            # STEP 5: Processar decisão
+            # STEP 6: Processar decisão do atendente
             # ============================================================
-            logger.info(f"{elapsed()} 📍 STEP 5: Processando decisão...")
+            logger.info(f"{elapsed()} 📍 STEP 6: Processando decisão...")
             result = await self._process_decision(decision, context)
             result.duration_ms = int((time.time() - start_time) * 1000)
-            logger.info(f"{elapsed()} STEP 5: ✅ Resultado: success={result.success}, decision={result.decision.value}")
+            logger.info(f"{elapsed()} STEP 6: ✅ Resultado: success={result.success}, decision={result.decision.value}")
             
             return result
             
@@ -759,13 +791,17 @@ REGRAS:
         original_decision: Optional[TransferDecision] = None,
     ) -> ConferenceTransferResult:
         """
-        B-leg recusou/timeout/hangup - cleanup e criar ticket.
+        B-leg recusou/timeout/hangup - cleanup e retornar cliente ao Voice AI.
         
-        Passos:
+        Fluxo:
         1. Parar stream de áudio do B-leg
-        2. Kick B-leg da conferência
+        2. Desligar B-leg
         3. Criar ticket no OmniPlay (opcional)
-        4. Retornar A-leg ao Voice AI
+        4. Retornar A-leg ao Voice AI com opção de deixar recado
+        
+        O Voice AI (callback on_resume) deve informar ao cliente:
+        - "O atendente não pode atender no momento"
+        - "Você gostaria de deixar um recado?"
         
         Args:
             context: Contexto da transferência
@@ -773,9 +809,9 @@ REGRAS:
             original_decision: Decisão original (para preservar no resultado)
             
         Returns:
-            ConferenceTransferResult com ticket
+            ConferenceTransferResult com mensagem para feedback
         """
-        logger.info(f"❌ Transfer REJECTED/TIMEOUT/HANGUP: {reason}")
+        logger.info(f"❌ Atendente não aceitou: {reason}")
         
         # Determinar decisão para o resultado
         result_decision = original_decision or TransferDecision.REJECTED
