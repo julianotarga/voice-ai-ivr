@@ -326,10 +326,10 @@ class RealtimeSessionConfig:
     # VAD (Voice Activity Detection) - Configuração
     # Tipo: "server_vad" (baseado em silêncio) ou "semantic_vad" (baseado em semântica)
     vad_type: str = "semantic_vad"  # RECOMENDADO: semantic_vad é mais inteligente
-    vad_threshold: float = 0.5  # 0.0-1.0 (sensibilidade)
-    vad_eagerness: str = "high"  # high responde rápido, medium balanceado, low paciente
-    silence_duration_ms: int = 500  # Tempo de silêncio para encerrar turno (só server_vad)
-    prefix_padding_ms: int = 300  # Áudio antes da fala detectada
+    vad_threshold: float = 0.6  # 0.0-1.0 (maior = menos sensível, ajustado para viva-voz)
+    vad_eagerness: str = "medium"  # medium é mais tolerante a eco que high
+    silence_duration_ms: int = 600  # Tempo de silêncio para encerrar turno (aumentado para eco)
+    prefix_padding_ms: int = 400  # Áudio antes da fala (aumentado para ignorar eco curto)
     
     # Guardrails - Segurança e moderação
     guardrails_enabled: bool = True  # Ativa instruções de segurança
@@ -416,8 +416,8 @@ class RealtimeSessionConfig:
     # Echo Cancellation (Speex AEC) - para viva-voz
     # Remove eco do agente capturado pelo microfone do caller
     aec_enabled: bool = True  # Habilitar AEC por padrão
-    aec_filter_length_ms: int = 128  # Quanto eco pode remover (100-200ms típico)
-    aec_echo_delay_ms: int = 200  # Delay do echo (tempo entre speaker e mic capturar eco)
+    aec_filter_length_ms: int = 256  # Quanto eco pode remover (256ms para viva-voz)
+    aec_echo_delay_ms: int = 300  # Delay do echo (300ms mais robusto para viva-voz)
     input_min_rms: int = 300
     input_max_gain: float = 3.0
 
