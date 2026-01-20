@@ -242,12 +242,21 @@ class ConferenceTransferManager:
                     error="Cliente desligou antes da transferência"
                 )
             
+            # Armazena contact para usar no originate (evita loop de lookup)
+            direct_contact: Optional[str] = None
+            
             try:
                 is_registered, contact, check_ok = await asyncio.wait_for(
                     self.esl.check_extension_registered(destination, self.domain),
                     timeout=5.0
                 )
                 logger.info(f"{elapsed()} STEP 2: Ramal registrado: {is_registered}, contact: {contact}")
+                
+                # Guardar contact para usar no originate
+                if is_registered and contact:
+                    direct_contact = contact
+                    logger.info(f"{elapsed()} STEP 2: 📍 Direct contact disponível: {direct_contact}")
+                    
             except asyncio.TimeoutError:
                 logger.warning(f"{elapsed()} STEP 2: ⚠️ Timeout verificando ramal, assumindo disponível")
                 is_registered = True
@@ -322,7 +331,7 @@ class ConferenceTransferManager:
                     error="Cliente desligou durante transferência"
                 )
             
-            originate_success = await self._originate_b_leg(destination)
+            originate_success = await self._originate_b_leg(destination, direct_contact)
             
             if not originate_success:
                 # Verificar se foi hangup do cliente
@@ -664,7 +673,7 @@ class ConferenceTransferManager:
             logger.error(f"_move_a_leg_to_conference: ❌ Failed: {e}")
             raise
     
-    async def _originate_b_leg(self, destination: str) -> bool:
+    async def _originate_b_leg(self, destination: str, direct_contact: Optional[str] = None) -> bool:
         """
         Origina B-leg (atendente) direto para conferência.
         
@@ -672,11 +681,15 @@ class ConferenceTransferManager:
         
         Args:
             destination: Extensão destino (ex: "1001")
+            direct_contact: Contact SIP direto do ramal (ex: "sip:1001@177.72.14.10:46522")
+                           Se fornecido, usa direto evitando lookup que pode causar loop.
             
         Returns:
             bool: True se originate teve sucesso
         """
         logger.info(f"_originate_b_leg: START - destination={destination}@{self.domain}")
+        if direct_contact:
+            logger.info(f"_originate_b_leg: Direct contact available: {direct_contact}")
         
         # Gerar UUID para B-leg (local até confirmar que existe)
         candidate_uuid = str(uuid4())
@@ -686,18 +699,33 @@ class ConferenceTransferManager:
         timeout = self.config.originate_timeout
         
         # Construir dial string
-        # NOTA: Usar sofia/internal/ em vez de user/ para garantir que o domínio
-        # seja preservado corretamente. user/ pode fazer lookup incorreto.
-        # Format: {vars}sofia/internal/destination@domain
-        dial_string = (
-            f"{{origination_uuid={candidate_uuid},"
-            f"origination_caller_id_number={self.caller_id},"
-            f"origination_caller_id_name=Secretaria_Virtual,"
-            f"originate_timeout={timeout},"
-            f"ignore_early_media=true,"
-            f"sip_invite_domain={self.domain}}}"
-            f"sofia/internal/{destination}@{self.domain}"
-        )
+        # PRIORIDADE: Usar contact direto se disponível (evita loop de lookup)
+        if direct_contact:
+            # Extrair user@host:port do contact SIP
+            # Format: "sip:1001@177.72.14.10:46522" -> "1001@177.72.14.10:46522"
+            contact_clean = direct_contact.replace('sip:', '').strip()
+            
+            dial_string = (
+                f"{{origination_uuid={candidate_uuid},"
+                f"origination_caller_id_number={self.caller_id},"
+                f"origination_caller_id_name=Secretaria_Virtual,"
+                f"originate_timeout={timeout},"
+                f"ignore_early_media=true}}"
+                f"sofia/internal/{contact_clean}"
+            )
+            logger.info(f"_originate_b_leg: ✅ Using DIRECT contact (no lookup)")
+        else:
+            # Fallback: user lookup (pode causar loop em alguns casos)
+            dial_string = (
+                f"{{origination_uuid={candidate_uuid},"
+                f"origination_caller_id_number={self.caller_id},"
+                f"origination_caller_id_name=Secretaria_Virtual,"
+                f"originate_timeout={timeout},"
+                f"ignore_early_media=true,"
+                f"sip_invite_domain={self.domain}}}"
+                f"sofia/internal/{destination}@{self.domain}"
+            )
+            logger.warning(f"_originate_b_leg: ⚠️ Using user lookup (no direct contact, may cause loop)")
         
         # App: conferência como moderador
         # moderator flag libera os membros que estão em wait-mod
