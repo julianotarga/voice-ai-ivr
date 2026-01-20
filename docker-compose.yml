@@ -252,10 +252,12 @@ services:
     restart: unless-stopped
     
     ports:
-      # WebSocket (mod_audio_stream)
+      # WebSocket (mod_audio_stream) - A-leg
       - "${VOICE_AI_REALTIME_PORT:-8085}:8085"
       # ESL Outbound (greenswitch) 
       - "${VOICE_AI_ESL_PORT:-8022}:8022"
+      # B-leg stream (announced transfer)
+      - "${REALTIME_BLEG_STREAM_PORT:-8086}:8086"
       # RTP UDP (direct audio) - apenas se AUDIO_MODE=rtp ou dual
       - "${RTP_PORT_MIN:-10000}-${RTP_PORT_MAX:-10100}:10000-10100/udp"
     
@@ -282,6 +284,11 @@ services:
       - RTP_JITTER_MIN_MS=60
       - RTP_JITTER_MAX_MS=200
       - RTP_JITTER_TARGET_MS=100
+      
+      # B-leg Stream Config (Announced Transfer)
+      # Porta fixa para WebSocket do B-leg - deve estar mapeada em ports
+      - REALTIME_BLEG_STREAM_PORT=${REALTIME_BLEG_STREAM_PORT:-8086}
+      - REALTIME_BLEG_STREAM_HOST=${REALTIME_BLEG_STREAM_HOST:-127.0.0.1}
       
       # FreeSWITCH Audio Playback (WebSocket mode only)
       - FS_PLAYBACK_MODE=streamAudio
