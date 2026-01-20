@@ -455,18 +455,57 @@ class ConferenceAnnouncementSession:
                     logger.error(f"🔌 ESL reconnect failed: {e}")
             
             # Iniciar mod_audio_stream no B-leg
+            # IMPORTANTE: Tentar até 3 vezes com reconexão ESL entre tentativas
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
+            logger.info(f"🔊 Executing: {cmd}")
             
-            try:
-                response = await asyncio.wait_for(
-                    self.esl.execute_api(cmd),
-                    timeout=3.0
-                )
-                logger.info(f"🔊 Audio stream started: {response[:100] if response else 'OK'}")
-            except asyncio.TimeoutError:
-                logger.error(f"❌ ESL command timeout: {cmd}")
-            except Exception as e:
-                logger.error(f"❌ ESL command failed: {e}")
+            stream_started = False
+            for attempt in range(3):
+                try:
+                    # Verificar/reconectar ESL antes de cada tentativa
+                    is_connected = getattr(self.esl, '_connected', False)
+                    if not is_connected:
+                        logger.warning(f"🔌 [Attempt {attempt+1}] ESL disconnected, reconnecting...")
+                        try:
+                            await asyncio.wait_for(self.esl.connect(), timeout=3.0)
+                            logger.info(f"🔌 [Attempt {attempt+1}] ESL reconnected")
+                        except Exception as e:
+                            logger.error(f"🔌 [Attempt {attempt+1}] ESL reconnect failed: {e}")
+                            await asyncio.sleep(0.5)
+                            continue
+                    
+                    response = await asyncio.wait_for(
+                        self.esl.execute_api(cmd),
+                        timeout=5.0
+                    )
+                    
+                    # Verificar se resposta indica sucesso
+                    response_str = str(response).strip() if response else ""
+                    if "+OK" in response_str or response_str == "":
+                        logger.info(f"🔊 Audio stream started: {response_str[:100] if response_str else 'OK'}")
+                        stream_started = True
+                        break
+                    elif "-ERR" in response_str:
+                        logger.error(f"❌ [Attempt {attempt+1}] FreeSWITCH error: {response_str}")
+                        await asyncio.sleep(0.5)
+                    else:
+                        # Resposta desconhecida - assumir sucesso
+                        logger.info(f"🔊 Audio stream response: {response_str[:100]}")
+                        stream_started = True
+                        break
+                        
+                except asyncio.TimeoutError:
+                    logger.error(f"❌ [Attempt {attempt+1}] ESL command timeout")
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"❌ [Attempt {attempt+1}] ESL command failed: {e}")
+                    # Marcar como desconectado para forçar reconexão na próxima tentativa
+                    if hasattr(self.esl, '_connected'):
+                        self.esl._connected = False
+                    await asyncio.sleep(0.5)
+            
+            if not stream_started:
+                logger.error(f"❌ Failed to start audio stream after 3 attempts")
             
             # Aguardar conexão do FreeSWITCH
             try:
