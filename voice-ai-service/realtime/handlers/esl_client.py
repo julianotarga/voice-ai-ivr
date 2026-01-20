@@ -447,6 +447,20 @@ class AsyncESLClient:
                     if not quiet_timeout:
                         logger.debug(f"Read timeout ({timeout}s)")
                     raise ESLError(f"Read timeout ({timeout}s)")
+                    
+                except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError) as e:
+                    # Conexão TCP fechada pelo FreeSWITCH
+                    logger.warning(f"ESL connection closed: {e}")
+                    self._connected = False
+                    raise ESLError(f"Connection closed: {e}")
+                    
+                except OSError as e:
+                    # Outros erros de socket (ex: "Bad file descriptor")
+                    if "Bad file descriptor" in str(e) or e.errno in (9, 32, 104):
+                        logger.warning(f"ESL socket error: {e}")
+                        self._connected = False
+                        raise ESLError(f"Socket error: {e}")
+                    raise
             
             raise ESLError("Max retries reached reading command response")
     
