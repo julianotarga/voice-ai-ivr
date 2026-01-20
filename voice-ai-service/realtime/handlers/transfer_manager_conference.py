@@ -800,18 +800,19 @@ class ConferenceTransferManager:
         # porque mod_conference gerencia o áudio internamente.
         #
         # Fluxo CORRETO:
-        # 1. Originar B-leg para &answer,park() (canal answered e em espera)
+        # 1. Originar B-leg para &answer &park() (canal answered e em espera)
         # 2. Iniciar uuid_audio_stream no B-leg (funciona porque está answered)
         # 3. Fazer anúncio via OpenAI
         # 4. Se ACEITO: Mover B-leg para conferência via uuid_transfer
         # 5. Se RECUSADO: Desligar B-leg
         #
-        # CRÍTICO: Usar &answer,park() e NÃO apenas &park()!
-        # - &park() deixa canal em "Pre-Answer" state
+        # CRÍTICO: Usar "&answer &park()" com ESPAÇO entre as apps!
+        # - "&answer,park()" é INVÁLIDO (FreeSWITCH não reconhece)
+        # - "&park()" deixa canal em "Pre-Answer" state
         # - uuid_audio_stream requer canal em "ACTIVE/ANSWERED" state
         #
-        # Ref: Problema identificado - "Pre-Answer" state bloqueava streaming
-        app = "&answer,park()"
+        # Ref: "Invalid Application answer,park" error in FreeSWITCH logs
+        app = "&answer &park()"
         
         logger.info(f"_originate_b_leg: Dial string: {dial_string}")
         logger.info(f"_originate_b_leg: App: {app}")
