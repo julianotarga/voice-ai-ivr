@@ -220,6 +220,7 @@ class RealtimeAnnouncementSession:
         config = {
             "type": "session.update",
             "session": {
+                "type": "realtime",  # OBRIGATÓRIO para GA API
                 "modalities": ["audio", "text"],
                 "voice": self.voice,
                 "input_audio_format": "pcm16",
