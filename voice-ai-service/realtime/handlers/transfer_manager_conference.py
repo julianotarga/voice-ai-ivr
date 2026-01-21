@@ -1473,7 +1473,12 @@ Atendente: "Não posso agora" / "Estou ocupado"
         
         Remove da conferência e retoma stream de áudio.
         
-        IMPORTANTE: Usamos RESUME porque o stream foi PAUSADO (não parado)
+        IMPORTANTE: 
+        1. Primeiro parar o MOH via uuid_break (SÍNCRONO via ESL Inbound)
+        2. Aguardar o MOH parar completamente
+        3. Só então retomar o uuid_audio_stream
+        
+        Usamos RESUME porque o stream foi PAUSADO (não parado)
         em _stop_voiceai_stream(). Isso mantém a conexão WebSocket ativa
         e preserva o contexto da conversa.
         """
@@ -1493,35 +1498,58 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 logger.info("A-leg no longer exists")
                 return
             
-            # Kick A-leg da conferência (timeout curto)
+            # =================================================================
+            # STEP 1: Kick A-leg da conferência
+            # =================================================================
             try:
                 await asyncio.wait_for(
                     self.esl.execute_api(f"conference {self.conference_name} kick {self.a_leg_uuid}"),
                     timeout=2.0
                 )
+                logger.info("✅ A-leg removido da conferência")
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Could not kick A-leg from conference: {e}")
             
-            await asyncio.sleep(0.3)
-
-            # Garantir que o A-leg saiu do HOLD (segurança extra)
+            # =================================================================
+            # STEP 2: Parar MOH via uuid_break (SÍNCRONO via ESL Inbound)
+            # 
+            # CRÍTICO: Usar ESL Inbound diretamente para garantir execução
+            # síncrona. O ESL Outbound enfileira comandos, causando race
+            # condition onde o audio_stream resume antes do MOH parar.
+            # =================================================================
             try:
-                from ..esl import get_esl_adapter
-                adapter = get_esl_adapter(self.a_leg_uuid)
-                await asyncio.wait_for(
-                    adapter.uuid_hold(self.a_leg_uuid, on=False),
+                logger.info("🔇 Parando MOH via uuid_break (ESL Inbound)...")
+                
+                # Usar ESL Inbound diretamente para execução síncrona
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_break {self.a_leg_uuid} all"),
                     timeout=2.0
                 )
-                logger.info("✅ A-leg removido do HOLD")
+                
+                if result and "+OK" in str(result):
+                    logger.info("✅ MOH parado com sucesso")
+                else:
+                    logger.warning(f"⚠️ uuid_break resultado: {result}")
+                    
             except (asyncio.TimeoutError, Exception) as e:
-                logger.debug(f"Não foi possível remover HOLD do A-leg: {e}")
+                logger.warning(f"Não foi possível parar MOH: {e}")
             
             # =================================================================
-            # CRÍTICO: Retomar uuid_audio_stream
+            # STEP 3: Aguardar MOH parar completamente
+            # 
+            # Tempo suficiente para:
+            # - FreeSWITCH processar o uuid_break
+            # - Buffer de áudio do MOH esvaziar
+            # - Canal estabilizar
+            # =================================================================
+            logger.info("⏳ Aguardando 500ms para MOH parar completamente...")
+            await asyncio.sleep(0.5)
+            
+            # =================================================================
+            # STEP 4: Retomar uuid_audio_stream
             # 
             # O stream foi PAUSADO (não parado) em _stop_voiceai_stream().
-            # Agora precisamos RETOMÁ-LO para que o áudio bidirecional
-            # entre FreeSWITCH e Python volte a funcionar.
+            # Agora que o MOH parou, podemos retomar com segurança.
             #
             # RESUME mantém a sessão RealtimeSession intacta com:
             # - Histórico da conversa
