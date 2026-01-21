@@ -706,11 +706,22 @@ class ConferenceAnnouncementSession:
                     logger.debug(f"Error receiving courtesy event: {e}")
                     break
             
-            # Aguardar flush do áudio pendente
-            if self._pending_audio_bytes > 0:
-                pending_ms = self._pending_audio_bytes / 16.0
-                logger.debug(f"Waiting for {pending_ms:.0f}ms of courtesy audio to play...")
-                await asyncio.sleep(min(pending_ms / 1000.0 + 0.5, 2.0))
+            # Aguardar flush do áudio pendente + margem para reprodução
+            # IMPORTANTE: Mesmo se pending_audio_bytes for 0, há latência de rede
+            # e buffer do FreeSWITCH que precisamos respeitar
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
+            total_pending = self._pending_audio_bytes + warmup_buffered
+            
+            if total_pending > 0:
+                pending_ms = total_pending / 16.0
+                # Adicionar 500ms de margem para latência de rede e buffer do FreeSWITCH
+                wait_time = (pending_ms / 1000.0) + 0.5
+                logger.debug(f"Waiting for {pending_ms:.0f}ms + 500ms margin of courtesy audio to play...")
+                await asyncio.sleep(min(wait_time, 3.0))
+            else:
+                # Mesmo sem áudio pendente, aguardar margem mínima para flush
+                logger.debug("Waiting 500ms minimum margin for audio flush...")
+                await asyncio.sleep(0.5)
             
         except Exception as e:
             logger.warning(f"Could not send courtesy response: {e}")
@@ -878,22 +889,35 @@ class ConferenceAnnouncementSession:
                 )
                 
                 # Aguardar com timeout baseado na duração do áudio + margem
-                # Timeout = duração estimada + 2 segundos de margem
-                timeout_seconds = (pending_duration_ms / 1000.0) + 2.0
+                # Timeout = duração estimada + 3 segundos de margem (aumentado de 2s)
+                timeout_seconds = (pending_duration_ms / 1000.0) + 3.0
                 
                 try:
                     await asyncio.wait_for(
                         self._audio_playback_done.wait(),
                         timeout=timeout_seconds
                     )
-                    logger.info("✅ Audio playback completed, signaling decision")
+                    logger.info("✅ Audio playback completed")
                 except asyncio.TimeoutError:
                     logger.warning(
                         f"⚠️ Audio playback timeout after {timeout_seconds:.1f}s, "
                         f"signaling decision anyway"
                     )
+                
+                # MARGEM ADICIONAL PÓS-ENVIO
+                # Mesmo após _audio_playback_done, o áudio ainda está em trânsito:
+                # - Buffer do FreeSWITCH → telefone
+                # - Latência de rede
+                # Aguardar 500ms extras para garantir que o final da frase seja ouvido
+                logger.info("⏳ Waiting 500ms post-playback margin...")
+                await asyncio.sleep(0.5)
+            else:
+                # Mesmo sem áudio pendente, aguardar margem mínima
+                # para qualquer áudio residual em buffers
+                await asyncio.sleep(0.3)
             
-            # Sinalizar que decisão foi tomada (após áudio terminar)
+            logger.info("✅ Signaling decision after audio completed")
+            # Sinalizar que decisão foi tomada (após áudio terminar + margem)
             self._decision_event.set()
     
     async def _send_function_output(self, call_id: str, output: dict) -> None:
@@ -1438,11 +1462,19 @@ class ConferenceAnnouncementSession:
                     
                     # TAIL BUFFER DINÂMICO: Aguardar tempo proporcional ao áudio restante
                     # L16 @ 8kHz = 16 bytes/ms
-                    # Margem de 100ms para latência de rede e buffer do FreeSWITCH
-                    tail_duration_ms = (flush_bytes / 16.0) + 100
+                    # 
+                    # MARGEM CRÍTICA: O áudio foi enviado para o FreeSWITCH via WebSocket,
+                    # mas ainda precisa:
+                    # 1. Ser processado pelo FreeSWITCH (~50ms)
+                    # 2. Passar pelo buffer de jitter (~100ms)
+                    # 3. Ser transmitido pela rede até o telefone (~100-200ms)
+                    #
+                    # Margem total: 500ms para garantir que o áudio seja reproduzido
+                    # antes de qualquer ação que possa interromper a chamada.
+                    tail_duration_ms = (flush_bytes / 16.0) + 500
                     logger.info(
                         f"🔊 FS sender: flushed {flush_bytes} bytes, "
-                        f"waiting {tail_duration_ms:.0f}ms (dynamic tail buffer)"
+                        f"waiting {tail_duration_ms:.0f}ms (dynamic tail buffer with 500ms margin)"
                     )
                     await asyncio.sleep(tail_duration_ms / 1000.0)
                 
