@@ -18,6 +18,16 @@ from typing import Optional
 
 import numpy as np
 
+# IMPORTANTE: Importar scipy.signal no topo para evitar delay de 7.5s
+# na primeira chamada do resample. O import lazy dentro do método process()
+# causava latência enorme no início da sessão.
+try:
+    from scipy import signal as scipy_signal
+    SCIPY_AVAILABLE = True
+except ImportError:
+    scipy_signal = None
+    SCIPY_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,12 +58,12 @@ class Resampler:
         if len(samples) == 0:
             return b""
         
-        try:
-            from scipy import signal
+        # Usar scipy pré-carregado no topo do módulo para evitar delay
+        if SCIPY_AVAILABLE and scipy_signal is not None:
             float_samples = samples.astype(np.float32)
-            resampled = signal.resample_poly(float_samples, self.up, self.down)
+            resampled = scipy_signal.resample_poly(float_samples, self.up, self.down)
             return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
-        except ImportError:
+        else:
             return self._simple_resample(samples).tobytes()
     
     def _simple_resample(self, samples: np.ndarray) -> np.ndarray:
