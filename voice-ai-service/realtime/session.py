@@ -3391,13 +3391,89 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 )
             
             # =========================================================
-            # FASE 2: Esperar áudio terminar de reproduzir
+            # FASE 2: Esperar OpenAI TERMINAR de gerar o áudio
             # =========================================================
-            total_wait = await self._wait_for_audio_playback(
-                min_wait=2.0,
-                max_wait=max(delay_seconds, 6.0),
-                context="handoff"
-            )
+            # O _assistant_speaking fica True enquanto o OpenAI está gerando.
+            # Precisamos esperar até que:
+            # 1. Bytes cheguem (se ainda não chegaram)
+            # 2. OpenAI termine de gerar (_assistant_speaking = False)
+            # =========================================================
+            generation_start = time.time()
+            max_generation_wait = 8.0  # Máximo de 8s para gerar a resposta
+            
+            # Primeiro, esperar os bytes chegarem (se ainda não)
+            bytes_wait = 0.0
+            while self._pending_audio_bytes == 0 and bytes_wait < 3.0:
+                if self._ended or self._ending_call:
+                    logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante espera por bytes")
+                    self._handoff_pending = False
+                    return
+                await asyncio.sleep(0.05)
+                bytes_wait += 0.05
+            
+            if self._pending_audio_bytes > 0:
+                logger.debug(
+                    f"⏳ [DELAYED_HANDOFF] Bytes chegaram após {bytes_wait:.2f}s "
+                    f"({self._pending_audio_bytes} bytes)",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            
+            # Agora esperar OpenAI terminar de GERAR
+            generation_wait = time.time() - generation_start
+            while self._assistant_speaking and generation_wait < max_generation_wait:
+                if self._ended or self._ending_call:
+                    logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante geração")
+                    self._handoff_pending = False
+                    return
+                await asyncio.sleep(0.1)
+                generation_wait = time.time() - generation_start
+            
+            if generation_wait > 0.1:
+                logger.info(
+                    f"⏳ [DELAYED_HANDOFF] OpenAI terminou de gerar após {generation_wait:.1f}s "
+                    f"({self._pending_audio_bytes} bytes pendentes)",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            
+            # =========================================================
+            # FASE 3: Calcular tempo de reprodução restante
+            # =========================================================
+            # Agora sim temos os bytes totais - calcular quanto falta reproduzir
+            bytes_per_second = self.config.freeswitch_sample_rate * 2  # PCM 16-bit mono
+            
+            if bytes_per_second > 0 and self._pending_audio_bytes > 0:
+                # Duração total do áudio
+                audio_duration = self._pending_audio_bytes / bytes_per_second
+                
+                # Tempo já reproduzido
+                if self._response_audio_start_time > 0:
+                    audio_elapsed = time.time() - self._response_audio_start_time
+                else:
+                    audio_elapsed = 0.0
+                
+                # Tempo restante + margem
+                remaining_time = audio_duration - audio_elapsed
+                MARGIN = 0.5  # 500ms de margem fixa
+                wait_playback = max(remaining_time + MARGIN, 0.5)
+                wait_playback = min(wait_playback, 10.0)  # Cap em 10s
+                
+                logger.info(
+                    f"⏳ [DELAYED_HANDOFF] Aguardando reprodução: "
+                    f"audio={audio_duration:.1f}s, elapsed={audio_elapsed:.1f}s, "
+                    f"remaining={remaining_time:.1f}s, wait={wait_playback:.1f}s",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                
+                await asyncio.sleep(wait_playback)
+            else:
+                # Fallback: se não há bytes, esperar um mínimo
+                logger.warning(
+                    "⏳ [DELAYED_HANDOFF] Sem bytes pendentes após geração, usando fallback 1.5s",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                await asyncio.sleep(1.5)
+            
+            total_wait = time.time() - generation_start + wait_for_new_response
             
             # Verificar se a chamada ainda está ativa
             if self._ending_call or not self._provider:
