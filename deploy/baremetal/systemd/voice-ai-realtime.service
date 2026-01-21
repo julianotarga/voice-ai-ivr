@@ -1,0 +1,86 @@
+# =============================================================================
+# Voice AI Realtime Service - Systemd Unit
+# =============================================================================
+# Python WebSocket bridge para OpenAI Realtime + FreeSWITCH
+# Portas: 8085 (WebSocket A-leg), 8086 (B-leg), 8022 (ESL outbound)
+#
+# CRÍTICO: Este serviço DEVE rodar no MESMO SERVIDOR que o FreeSWITCH
+#          para latência mínima de comunicação ESL e streaming de áudio.
+#
+# Instalação:
+#   sudo cp voice-ai-realtime.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable voice-ai-realtime
+#   sudo systemctl start voice-ai-realtime
+# =============================================================================
+
+[Unit]
+Description=Voice AI Realtime Bridge (WebSocket/ESL)
+Documentation=https://github.com/julianotarga/v2_waba
+After=network-online.target freeswitch.service
+Wants=network-online.target
+# Recomendado: iniciar após FreeSWITCH
+After=freeswitch.service
+
+[Service]
+Type=simple
+User=voiceai
+Group=voiceai
+WorkingDirectory=/opt/voice-ai
+
+# Environment
+EnvironmentFile=/opt/voice-ai/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/voice-ai
+Environment=AUDIO_MODE=websocket
+
+# WebSocket ports
+Environment=REALTIME_HOST=0.0.0.0
+Environment=REALTIME_PORT=8085
+Environment=REALTIME_BLEG_STREAM_PORT=8086
+Environment=REALTIME_BLEG_STREAM_HOST=127.0.0.1
+Environment=ESL_SERVER_PORT=8022
+
+# FreeSWITCH ESL - LOCALHOST
+Environment=ESL_HOST=127.0.0.1
+Environment=ESL_PORT=8021
+
+# Aguarda FreeSWITCH ESL disponível antes de iniciar
+ExecStartPre=/bin/bash -c 'for i in {1..30}; do nc -z 127.0.0.1 8021 && exit 0; echo "Aguardando FreeSWITCH ESL..."; sleep 2; done; exit 1'
+
+# Comando de execução
+ExecStart=/opt/voice-ai/venv/bin/python -m realtime
+
+# Restart policy (mais agressivo para serviço crítico)
+Restart=always
+RestartSec=3
+StartLimitInterval=60
+StartLimitBurst=5
+
+# Logs
+StandardOutput=append:/var/log/voice-ai/realtime.log
+StandardError=append:/var/log/voice-ai/realtime-error.log
+
+# Limites (streaming de áudio precisa de muitos file descriptors)
+LimitNOFILE=65535
+MemoryMax=2G
+
+# Segurança
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/voice-ai/logs /var/log/voice-ai /tmp/voice-ai-announcements
+ReadOnlyPaths=/var/lib/freeswitch/sounds
+PrivateTmp=true
+
+# Timeout para conexões WebSocket longas
+TimeoutStartSec=30
+TimeoutStopSec=60
+
+# Graceful shutdown para conexões ativas
+KillSignal=SIGTERM
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

@@ -665,6 +665,15 @@ class RealtimeSession:
         if destination_text != self._handoff_fallback_destination:
             return
 
+        # Exigir nome do cliente antes de transferir
+        caller_name = self._extract_caller_name()
+        if self._is_invalid_caller_name(caller_name):
+            await self._send_text_to_provider(
+                "Antes de transferir, preciso do seu nome. Com quem estou falando?"
+            )
+            self._handoff_fallback_destination = None
+            return
+
         self._set_transfer_in_progress(True, "handoff_tool_fallback")
         await self._notify_transfer_start()
         self._handoff_fallback_destination = None
@@ -1888,6 +1897,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             destination = args.get("destination", "qualquer atendente")
             reason = args.get("reason", "solicitação do cliente")
             caller_name = args.get("caller_name", "")
+
+            # VALIDACAO: impedir transfer sem nome valido do cliente
+            if self._is_invalid_caller_name(caller_name):
+                logger.warning(
+                    f"🔄 [HANDOFF] caller_name inválido para transferência: '{caller_name}'"
+                )
+                await self._send_text_to_provider(
+                    "Antes de transferir, preciso do seu nome. Com quem estou falando?"
+                )
+                return {
+                    "status": "need_caller_name",
+                    "message": "Pergunte o nome do cliente antes de transferir."
+                }
             
             # Armazenar caller_name para uso no anúncio
             # Isso melhora a qualidade do anúncio: "Olá, tenho João na linha"
@@ -3955,7 +3977,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         # PRIORIDADE 1: Nome informado via request_handoff
         if hasattr(self, '_caller_name_from_handoff') and self._caller_name_from_handoff:
-            return self._caller_name_from_handoff
+            if not self._is_invalid_caller_name(self._caller_name_from_handoff):
+                return self._caller_name_from_handoff
         
         # PRIORIDADE 2: Extrair do transcript
         for entry in self._transcript:
@@ -3976,9 +3999,41 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         name = match.group(1).capitalize()
                         # Filtrar palavras comuns que não são nomes
                         if name.lower() not in ["a", "o", "um", "uma", "eu", "que", "para"]:
-                            return name
+                            if not self._is_invalid_caller_name(name):
+                                return name
         
         return None
+
+    def _is_invalid_caller_name(self, name: Optional[str]) -> bool:
+        """
+        Valida nome do cliente para evitar alucinações e termos genéricos.
+        """
+        if not name:
+            return True
+        cleaned = name.strip().lower()
+        if not cleaned or len(cleaned) < 2:
+            return True
+        if cleaned.isdigit():
+            return True
+        generic = {
+            "cliente",
+            "pessoa",
+            "alguem",
+            "alguém",
+            "desconhecido",
+            "sem nome",
+            "nao informado",
+            "não informado",
+            "nao sei",
+            "não sei",
+            "fulano",
+            "ciclano",
+            "beltrano",
+            "mil",
+        }
+        if cleaned in generic:
+            return True
+        return False
 
     def _normalize_handoff_destination_text(self, destination_text: str) -> str:
         """
@@ -4087,12 +4142,28 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         Returns:
             Motivo resumido ou None
         """
-        # Se o handoff_reason tem conteúdo útil, usar
+        # Se o handoff_reason tem conteúdo útil, usar (com limpeza)
         if handoff_reason and handoff_reason not in ("llm_intent", "user_request", "solicitação do cliente"):
+            import re
+            cleaned = handoff_reason.strip()
+            # Remover frases genéricas para soar mais natural no anúncio
+            cleaned = re.sub(
+                r"cliente\s+solicitou\s+transfer[eê]ncia\s+para\s+(o\s+)?(setor|departamento)\s+de\s+",
+                "",
+                cleaned,
+                flags=re.IGNORECASE
+            )
+            cleaned = re.sub(
+                r"cliente\s+solicitou\s+transfer[eê]ncia\s+para\s+",
+                "",
+                cleaned,
+                flags=re.IGNORECASE
+            )
+            cleaned = cleaned.strip()
             # Limitar tamanho
-            if len(handoff_reason) > 50:
-                return handoff_reason[:50]
-            return handoff_reason
+            if len(cleaned) > 50:
+                return cleaned[:50]
+            return cleaned or handoff_reason[:50]
         
         # Tentar extrair das últimas mensagens do usuário
         user_messages = [e.text for e in self._transcript if e.role == "user"][-3:]

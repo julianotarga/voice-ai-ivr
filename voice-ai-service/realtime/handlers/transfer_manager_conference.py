@@ -1448,6 +1448,18 @@ ESTILO:
                 logger.debug(f"Could not kick A-leg from conference: {e}")
             
             await asyncio.sleep(0.3)
+
+            # Garantir que o A-leg saiu do HOLD (segurança extra)
+            try:
+                from ..esl import get_esl_adapter
+                adapter = get_esl_adapter(self.a_leg_uuid)
+                await asyncio.wait_for(
+                    adapter.uuid_hold(self.a_leg_uuid, on=False),
+                    timeout=2.0
+                )
+                logger.info("✅ A-leg removido do HOLD")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"Não foi possível remover HOLD do A-leg: {e}")
             
             # Retomar Voice AI via callback
             if self.on_resume:

@@ -1,0 +1,61 @@
+# =============================================================================
+# Voice AI Service - Systemd Unit
+# =============================================================================
+# Python FastAPI para processamento de voz (STT/TTS/LLM)
+# Porta: 8100
+#
+# Instalação:
+#   sudo cp voice-ai-service.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable voice-ai-service
+#   sudo systemctl start voice-ai-service
+# =============================================================================
+
+[Unit]
+Description=Voice AI Service (HTTP API)
+Documentation=https://github.com/julianotarga/v2_waba
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voiceai
+Group=voiceai
+WorkingDirectory=/opt/voice-ai
+
+# Environment
+EnvironmentFile=/opt/voice-ai/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOST=0.0.0.0
+Environment=PORT=8100
+
+# Comando de execução
+ExecStart=/opt/voice-ai/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8100
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Logs
+StandardOutput=append:/var/log/voice-ai/service.log
+StandardError=append:/var/log/voice-ai/service-error.log
+
+# Limites
+LimitNOFILE=65535
+MemoryMax=4G
+
+# Segurança
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/voice-ai/data /opt/voice-ai/logs /var/log/voice-ai
+PrivateTmp=true
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
