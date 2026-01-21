@@ -1998,6 +1998,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # MODO DUAL: Novas funções
         # ========================================
         elif name == "hold_call":
+            # Verificar se há transferência ou handoff em andamento
+            # Se sim, não faz sentido chamar hold_call (já está em processo de transferência)
+            if self._transfer_in_progress or self._handoff_pending:
+                logger.warning(
+                    "🔄 [HOLD_CALL] IGNORANDO - Transferência/handoff em andamento",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                return {
+                    "status": "already_in_progress",
+                    "message": "Transferência já em andamento. Aguarde."
+                }
+            
             # IMPORTANTE: Aguardar o áudio pendente terminar de ser reproduzido
             # antes de colocar em espera, evitando cortar a fala da IA
             await self._wait_for_audio_playback(

@@ -42,15 +42,30 @@ def _warmup_scipy():
     
     Chamando uma vez com dados dummy durante o import, evitamos esse delay
     na primeira chamada real durante uma ligação.
+    
+    IMPORTANTE: Usar dados aleatórios (não zeros) para forçar todos os 
+    caminhos de código - algoritmos podem otimizar arrays de zeros.
     """
     if not SCIPY_AVAILABLE or scipy_signal is None:
         return
     
+    import time
+    start_time = time.time()
+    
     try:
         # Simular um resample típico: 2400 samples @ 24kHz -> 800 samples @ 8kHz
-        dummy_input = np.zeros(2400, dtype=np.float32)
+        # IMPORTANTE: Usar ruído aleatório ao invés de zeros para forçar JIT completo
+        # Arrays de zeros podem ser otimizados e não ativar todos os caminhos de código
+        np.random.seed(42)  # Seed fixo para reprodutibilidade
+        dummy_input = np.random.randn(2400).astype(np.float32) * 1000  # Simular áudio real
         _ = scipy_signal.resample_poly(dummy_input, 1, 3)
-        logger.info("✅ scipy.signal warmup complete - resample_poly ready")
+        
+        elapsed = time.time() - start_time
+        if elapsed > 0.5:
+            # Só logar se demorou mais de 500ms (indica JIT real)
+            logger.info(f"✅ scipy.signal warmup complete ({elapsed:.1f}s) - resample_poly ready")
+        else:
+            logger.debug(f"✅ scipy.signal warmup complete ({elapsed:.3f}s)")
     except Exception as e:
         logger.warning(f"⚠️ scipy.signal warmup failed: {e}")
 
