@@ -1489,11 +1489,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._set_call_state(CallState.LISTENING, "audio_done")
             
             # Flush buffer restante ao final do áudio
-            remaining_bytes = 0
             if self._resampler:
                 remaining = self._resampler.flush_output()
                 if remaining:
-                    remaining_bytes = len(remaining)
                     await self._handle_audio_output_direct(remaining)
             
             # Notificar server.py para flush do streamaudio buffer
