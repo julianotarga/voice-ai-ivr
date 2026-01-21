@@ -1562,10 +1562,30 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 logger.warning(f"Não foi possível parar MOH: {e}")
             
             # =================================================================
-            # STEP 3: Aguardar MOH parar completamente
+            # STEP 3: Remover estado de HOLD via uuid_hold off
+            # 
+            # CRÍTICO: O uuid_break para o MOH atual, mas o estado de HOLD
+            # permanece ativo. Se não fizermos uuid_hold off, o FreeSWITCH
+            # vai reiniciar o MOH quando a IA parar de falar!
+            # =================================================================
+            try:
+                logger.info("⏸️ Removendo estado de HOLD (uuid_hold off)...")
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_hold off {self.a_leg_uuid}"),
+                    timeout=2.0
+                )
+                if result and "+OK" in str(result):
+                    logger.info("✅ Estado de HOLD removido com sucesso")
+                else:
+                    logger.warning(f"⚠️ uuid_hold off resultado: {result}")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"Não foi possível remover estado de HOLD: {e}")
+            
+            # =================================================================
+            # STEP 4: Aguardar MOH parar completamente
             # 
             # Tempo suficiente para:
-            # - FreeSWITCH processar o uuid_break
+            # - FreeSWITCH processar o uuid_break e uuid_hold off
             # - Buffer de áudio do MOH esvaziar
             # - Canal estabilizar
             # =================================================================
@@ -1573,7 +1593,7 @@ Atendente: "Não posso agora" / "Estou ocupado"
             await asyncio.sleep(0.5)
             
             # =================================================================
-            # STEP 4: Retomar uuid_audio_stream
+            # STEP 5: Retomar uuid_audio_stream
             # 
             # O stream foi PAUSADO (não parado) em _stop_voiceai_stream().
             # Agora que o MOH parou, podemos retomar com segurança.

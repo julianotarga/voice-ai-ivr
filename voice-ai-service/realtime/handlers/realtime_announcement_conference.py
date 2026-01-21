@@ -662,7 +662,26 @@ class ConferenceAnnouncementSession:
             
             logger.info("💬 Sending courtesy response to attendant...")
             
-            # Enviar instrução
+            # PASSO 1: Cancelar qualquer resposta em andamento para evitar
+            # receber o response.done da resposta anterior
+            try:
+                await self._ws.send(json.dumps({"type": "response.cancel"}))
+                # Aguardar um pouco para o cancel ser processado
+                await asyncio.sleep(0.1)
+                # Consumir eventos pendentes (incluindo response.done anterior)
+                drain_count = 0
+                while drain_count < 10:
+                    try:
+                        msg = await asyncio.wait_for(self._ws.recv(), timeout=0.05)
+                        drain_count += 1
+                    except asyncio.TimeoutError:
+                        break
+                if drain_count > 0:
+                    logger.debug(f"Drained {drain_count} pending events before courtesy")
+            except Exception as e:
+                logger.debug(f"Could not cancel previous response: {e}")
+            
+            # PASSO 2: Enviar instrução de cortesia
             await self._ws.send(json.dumps({
                 "type": "conversation.item.create",
                 "item": {
@@ -672,14 +691,16 @@ class ConferenceAnnouncementSession:
                 }
             }))
             
-            # Solicitar resposta
+            # PASSO 3: Solicitar resposta
             await self._ws.send(json.dumps({"type": "response.create"}))
             
-            # Aguardar a IA gerar e reproduzir o áudio de cortesia
-            # Timeout curto pois é uma frase simples
-            max_wait = 3.0  # segundos
+            # PASSO 4: Aguardar a IA gerar e reproduzir o áudio de cortesia
+            # Timeout mais longo para garantir que a IA tenha tempo
+            max_wait = 5.0  # segundos
             wait_interval = 0.1
             waited = 0.0
+            audio_received = False
+            response_started = False
             
             while waited < max_wait:
                 try:
@@ -687,16 +708,25 @@ class ConferenceAnnouncementSession:
                     event = json.loads(msg)
                     etype = event.get("type", "")
                     
+                    # Marcar quando resposta começa
+                    if etype == "response.created":
+                        response_started = True
+                        logger.debug("Courtesy response started")
+                    
                     # Processar áudio de resposta
                     if etype in ("response.audio.delta", "response.output_audio.delta"):
                         audio_b64 = event.get("delta", "")
                         if audio_b64:
                             audio_bytes = base64.b64decode(audio_b64)
                             await self._handle_audio_output(audio_bytes)
+                            audio_received = True
                     
-                    # Se resposta terminou, sair do loop
+                    # Se resposta terminou E recebemos áudio, sair do loop
                     if etype == "response.done":
-                        logger.info("✅ Courtesy response completed")
+                        if audio_received:
+                            logger.info("✅ Courtesy response completed (with audio)")
+                        else:
+                            logger.warning("⚠️ Courtesy response completed but NO AUDIO received")
                         break
                     
                 except asyncio.TimeoutError:
@@ -706,7 +736,10 @@ class ConferenceAnnouncementSession:
                     logger.debug(f"Error receiving courtesy event: {e}")
                     break
             
-            # Aguardar flush do áudio pendente + margem para reprodução
+            if waited >= max_wait:
+                logger.warning(f"⚠️ Courtesy response timeout after {max_wait}s")
+            
+            # PASSO 5: Aguardar flush do áudio pendente + margem para reprodução
             # IMPORTANTE: Mesmo se pending_audio_bytes for 0, há latência de rede
             # e buffer do FreeSWITCH que precisamos respeitar
             warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
@@ -719,9 +752,13 @@ class ConferenceAnnouncementSession:
                 logger.debug(f"Waiting for {pending_ms:.0f}ms + 500ms margin of courtesy audio to play...")
                 await asyncio.sleep(min(wait_time, 3.0))
             else:
-                # Mesmo sem áudio pendente, aguardar margem mínima para flush
-                logger.debug("Waiting 500ms minimum margin for audio flush...")
-                await asyncio.sleep(0.5)
+                # Se não recebemos áudio, aguardar um tempo mínimo de qualquer forma
+                if not audio_received:
+                    logger.debug("No audio pending, waiting 1.0s minimum for courtesy playback...")
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.debug("Waiting 500ms minimum margin for audio flush...")
+                    await asyncio.sleep(0.5)
             
         except Exception as e:
             logger.warning(f"Could not send courtesy response: {e}")
