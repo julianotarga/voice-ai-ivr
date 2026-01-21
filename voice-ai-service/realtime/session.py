@@ -1998,6 +1998,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # MODO DUAL: Novas funções
         # ========================================
         elif name == "hold_call":
+            # IMPORTANTE: Aguardar o áudio pendente terminar de ser reproduzido
+            # antes de colocar em espera, evitando cortar a fala da IA
+            await self._wait_for_audio_playback(
+                min_wait=0.5,
+                max_wait=3.0,
+                context="hold_call"
+            )
+            
             success = await self.hold_call()
             if success:
                 return {"status": "on_hold", "message": "Cliente em espera"}
