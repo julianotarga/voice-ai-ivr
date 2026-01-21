@@ -1168,6 +1168,7 @@ class ConferenceAnnouncementSession:
                 
                 # 4. Enviar tudo de uma vez
                 if flush_buffer and self._fs_ws:
+                    flush_bytes = len(flush_buffer)
                     audio_msg = json.dumps({
                         "type": "streamAudio",
                         "data": {
@@ -1176,13 +1177,24 @@ class ConferenceAnnouncementSession:
                         }
                     })
                     await self._fs_ws.send(audio_msg)
-                    total_bytes_sent += len(flush_buffer)
-                    logger.debug(f"🔊 FS sender: flushed {len(flush_buffer)} bytes on exit")
+                    total_bytes_sent += flush_bytes
+                    
+                    # TAIL BUFFER: Aguardar tempo proporcional ao áudio restante
+                    # L16 @ 8kHz = 16000 bytes/segundo (8000 samples * 2 bytes)
+                    # Adicionar 100ms extra de margem para o anúncio
+                    tail_duration_ms = (flush_bytes / 16.0) + 100
+                    logger.debug(f"🔊 FS sender: flushed {flush_bytes} bytes, waiting {tail_duration_ms:.0f}ms tail buffer")
+                    await asyncio.sleep(tail_duration_ms / 1000.0)
                     
             except Exception as flush_err:
                 logger.debug(f"🔊 FS sender: flush error: {flush_err}")
             
+            # Calcular e logar duração total do áudio
+            # L16 @ 8kHz = 16 bytes/ms
             if total_bytes_sent > 0:
-                logger.info(f"🔊 FS sender: TOTAL sent {total_bytes_sent} bytes in {chunks_sent} batches")
+                total_duration_ms = total_bytes_sent / 16.0
+                logger.info(
+                    f"🔊 FS sender: TOTAL {total_bytes_sent} bytes ({total_duration_ms:.0f}ms) in {chunks_sent} batches"
+                )
             else:
                 logger.warning("🔊 FS sender: NO audio was sent to FreeSWITCH!")

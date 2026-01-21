@@ -1487,12 +1487,17 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._assistant_speaking = False
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "audio_done")
+            
             # Flush buffer restante ao final do áudio
+            remaining_bytes = 0
             if self._resampler:
                 remaining = self._resampler.flush_output()
                 if remaining:
+                    remaining_bytes = len(remaining)
                     await self._handle_audio_output_direct(remaining)
+            
             # Notificar server.py para flush do streamaudio buffer
+            # O callback flush_audio() envia FLUSH que inclui tail buffer
             if self._on_audio_done:
                 try:
                     result = self._on_audio_done()
@@ -1500,6 +1505,16 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         await result
                 except Exception as e:
                     logger.warning(f"Error in on_audio_done callback: {e}")
+            
+            # Log da resposta completa com duração estimada
+            total_response_bytes = self._pending_audio_bytes
+            if total_response_bytes > 0:
+                # L16 @ 8kHz = 16 bytes/ms
+                duration_ms = total_response_bytes / 16.0
+                logger.debug(
+                    f"Response audio complete: {total_response_bytes} bytes ({duration_ms:.0f}ms)",
+                    extra={"call_uuid": self.call_uuid}
+                )
         
         elif event.type == ProviderEventType.TRANSCRIPT_DELTA:
             if event.transcript:

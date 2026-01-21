@@ -1010,12 +1010,24 @@ class RealtimeServer:
                         continue
                     
                     # Tratar sentinela FLUSH (fim de resposta)
-                    # Envia os bytes restantes no batch_buffer para evitar cortes
+                    # Envia os bytes restantes e aguarda tempo proporcional (tail buffer)
                     if isinstance(item[0], str) and item[0] == "FLUSH":
                         if batch_buffer:
+                            remaining_bytes = len(batch_buffer)
                             await _send_streamaudio_chunk(bytes(batch_buffer))
-                            logger.debug(f"FLUSH: sent remaining {len(batch_buffer)} bytes", 
-                                        extra={"call_uuid": call_uuid})
+                            
+                            # TAIL BUFFER: Calcular duração do áudio restante e aguardar
+                            # L16 @ 8kHz = 16000 bytes/segundo (8000 samples * 2 bytes)
+                            # Adicionar 50ms extra de margem de segurança
+                            remaining_duration_ms = (remaining_bytes / 16.0) + 50
+                            
+                            logger.debug(
+                                f"FLUSH: sent {remaining_bytes} bytes, waiting {remaining_duration_ms:.0f}ms tail buffer",
+                                extra={"call_uuid": call_uuid}
+                            )
+                            
+                            # Aguardar o tempo do áudio restante para garantir playback completo
+                            await asyncio.sleep(remaining_duration_ms / 1000.0)
                             batch_buffer.clear()
                         continue
                     
