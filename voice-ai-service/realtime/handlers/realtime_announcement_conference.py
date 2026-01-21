@@ -152,10 +152,9 @@ class ConferenceAnnouncementSession:
         # O áudio da IA é dinâmico (nomes diferentes, frases diferentes).
         # Precisamos calcular e respeitar a duração REAL do áudio.
         # =========================================================================
-        self._pending_audio_bytes: int = 0  # Bytes de áudio ainda não enviados
+        self._pending_audio_bytes: int = 0  # Bytes de áudio na fila aguardando envio
         self._audio_playback_done = asyncio.Event()  # Sinaliza quando todo áudio foi enviado
         self._audio_playback_done.set()  # Inicialmente sem áudio pendente
-        self._current_response_audio_bytes: int = 0  # Bytes da resposta atual
     
     async def run(self, timeout: float = 15.0) -> ConferenceAnnouncementResult:
         """
@@ -604,17 +603,12 @@ class ConferenceAnnouncementSession:
             if audio_b64:
                 audio_bytes = base64.b64decode(audio_b64)
                 
-                # TRACKING DINÂMICO: Rastrear bytes recebidos
-                # OpenAI envia @ 24kHz, depois resampleamos para 8kHz
-                # Proporção: 24000/8000 = 3, então 8kHz = bytes_24k / 3
-                bytes_at_8k = len(audio_bytes) // 3
-                self._pending_audio_bytes += bytes_at_8k
-                self._current_response_audio_bytes += bytes_at_8k
-                self._audio_playback_done.clear()  # Há áudio pendente
-                
-                logger.debug(f"🔊 OpenAI audio: {len(audio_bytes)}b (8kHz: ~{bytes_at_8k}b, pending: {self._pending_audio_bytes}b)")
+                # Marcar que há áudio sendo gerado
+                self._audio_playback_done.clear()
                 
                 if self._fs_ws:
+                    # O tracking de bytes é feito em _enqueue_audio_to_freeswitch
+                    # baseado nos bytes EFETIVAMENTE enfileirados
                     await self._enqueue_audio_to_freeswitch(audio_bytes)
                 else:
                     logger.warning("⚠️ No FS WebSocket - using TTS fallback")
@@ -653,18 +647,22 @@ class ConferenceAnnouncementSession:
             delta = event.get("delta", "")
             self._transcript += delta
         
-        # Áudio da resposta TERMINADO de ser gerado
-        # IMPORTANTE: Isso significa que o OpenAI terminou de gerar, mas ainda precisamos
+        # Áudio da resposta TERMINADO de ser gerado pelo OpenAI
+        # IMPORTANTE: Isso significa que o OpenAI terminou de GERAR, mas ainda precisamos
         # enviar todo o áudio para o FreeSWITCH antes de processar decisões
         elif etype in ("response.audio.done", "response.output_audio.done"):
-            # Calcular duração do áudio gerado nesta resposta
-            audio_duration_ms = self._current_response_audio_bytes / 16.0  # L16 @ 8kHz = 16 bytes/ms
+            # Incluir bytes do warmup buffer que ainda não foram enfileirados
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes
+            total_pending = self._pending_audio_bytes + warmup_buffered
+            
+            # Calcular duração estimada
+            audio_duration_ms = total_pending / 16.0  # L16 @ 8kHz = 16 bytes/ms
+            
             logger.info(
-                f"🔊 Response audio DONE: {self._current_response_audio_bytes} bytes "
-                f"(~{audio_duration_ms:.0f}ms), pending: {self._pending_audio_bytes}b"
+                f"🔊 Response audio DONE (OpenAI finished generating): "
+                f"pending={self._pending_audio_bytes}b, warmup={warmup_buffered}b, "
+                f"total={total_pending}b (~{audio_duration_ms:.0f}ms to play)"
             )
-            # Resetar contador da resposta atual
-            self._current_response_audio_bytes = 0
         
         # Resposta completa (texto + áudio + function calls)
         elif etype == "response.done":
@@ -736,12 +734,20 @@ class ConferenceAnnouncementSession:
             # o accept_transfer. Precisamos esperar ela terminar de falar antes de
             # sinalizar a decisão, caso contrário o áudio será cortado.
             # =========================================================================
-            if self._pending_audio_bytes > 0:
+            
+            # Calcular TOTAL de bytes pendentes:
+            # 1. Bytes na fila aguardando envio (_pending_audio_bytes)
+            # 2. Bytes no warmup buffer que ainda não foram enfileirados
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes
+            total_pending = self._pending_audio_bytes + warmup_buffered
+            
+            if total_pending > 0:
                 # Calcular duração estimada do áudio pendente
-                pending_duration_ms = self._pending_audio_bytes / 16.0  # L16 @ 8kHz
+                pending_duration_ms = total_pending / 16.0  # L16 @ 8kHz = 16 bytes/ms
                 logger.info(
                     f"⏳ Waiting for audio playback to complete: "
-                    f"{self._pending_audio_bytes} bytes (~{pending_duration_ms:.0f}ms)"
+                    f"queue={self._pending_audio_bytes}b + warmup={warmup_buffered}b = "
+                    f"{total_pending}b (~{pending_duration_ms:.0f}ms)"
                 )
                 
                 # Aguardar com timeout baseado na duração do áudio + margem
@@ -1083,6 +1089,11 @@ class ConferenceAnnouncementSession:
         
         IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz!
         Fluxo: OpenAI 24kHz -> 8kHz (direto, sem cadeia)
+        
+        TRACKING DINÂMICO: Contamos bytes EFETIVAMENTE enfileirados,
+        não os bytes recebidos do OpenAI. Isso é preciso porque:
+        1. O resampler pode alterar a quantidade de bytes
+        2. O AudioBuffer acumula bytes durante warmup
         """
         if not audio_bytes:
             return
@@ -1095,23 +1106,39 @@ class ConferenceAnnouncementSession:
             audio_8k = audio_bytes
         
         # Buffer de warmup para playback suave
-        audio_8k = self._fs_audio_buffer.add(audio_8k)
-        if not audio_8k:
+        # NOTA: Durante warmup, add() retorna bytes vazios e acumula internamente
+        audio_to_enqueue = self._fs_audio_buffer.add(audio_8k)
+        
+        if not audio_to_enqueue:
+            # Ainda em warmup - bytes estão sendo acumulados no buffer interno
+            # _pending_audio_bytes conta apenas bytes NA FILA (queue)
+            # O warmup buffer é consultado separadamente via buffered_bytes
+            logger.debug(f"🔊 Warmup buffering: {self._fs_audio_buffer.buffered_bytes} bytes")
             return
         
         # L16 @ 8kHz, 20ms = 160 samples * 2 bytes = 320 bytes per chunk
         chunk_size = 320
-        chunks_enqueued = 0
-        for i in range(0, len(audio_8k), chunk_size):
-            chunk = audio_8k[i:i + chunk_size]
+        bytes_enqueued = 0
+        for i in range(0, len(audio_to_enqueue), chunk_size):
+            chunk = audio_to_enqueue[i:i + chunk_size]
             try:
                 await self._fs_audio_queue.put(chunk)
-                chunks_enqueued += 1
+                bytes_enqueued += len(chunk)
             except Exception:
                 break
         
-        if chunks_enqueued > 0:
-            logger.debug(f"🔊 Audio enqueued: {chunks_enqueued} chunks ({len(audio_8k)} bytes) to FS @ 8kHz")
+        # TRACKING DINÂMICO: _pending_audio_bytes conta APENAS bytes na fila (queue)
+        # O warmup buffer é contabilizado separadamente em buffered_bytes
+        # Isso evita contagem dupla quando o warmup termina
+        self._pending_audio_bytes += bytes_enqueued
+        
+        if bytes_enqueued > 0:
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes
+            total_pending = self._pending_audio_bytes + warmup_buffered
+            logger.debug(
+                f"🔊 Audio enqueued: {bytes_enqueued}b to FS @ 8kHz "
+                f"(queue: {self._pending_audio_bytes}b, warmup: {warmup_buffered}b, total: {total_pending}b)"
+            )
     
     async def _fs_sender_loop(self) -> None:
         """Envia áudio para o FreeSWITCH com rate limiting.
@@ -1188,7 +1215,10 @@ class ConferenceAnnouncementSession:
                         
                         # TRACKING DINÂMICO: Atualizar bytes pendentes
                         self._pending_audio_bytes = max(0, self._pending_audio_bytes - batch_size)
-                        if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty():
+                        
+                        # Verificar se todo áudio foi enviado (fila + warmup buffer)
+                        warmup_remaining = self._fs_audio_buffer.buffered_bytes
+                        if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty() and warmup_remaining == 0:
                             self._audio_playback_done.set()
                     
                     # Log a cada 10 batches (~1 segundo de áudio)
@@ -1215,8 +1245,9 @@ class ConferenceAnnouncementSession:
                         # TRACKING DINÂMICO: Atualizar bytes pendentes
                         self._pending_audio_bytes = max(0, self._pending_audio_bytes - partial_size)
                     
-                    # Se não há mais áudio pendente, sinalizar
-                    if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty():
+                    # Se não há mais áudio pendente (fila + warmup), sinalizar
+                    warmup_remaining = self._fs_audio_buffer.buffered_bytes
+                    if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty() and warmup_remaining == 0:
                         self._audio_playback_done.set()
                     continue
                     
