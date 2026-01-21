@@ -670,17 +670,11 @@ class ConferenceTransferManager:
         
         profile = self.config.conference_profile
         
-        # IMPORTANTE: Setar hangup_after_conference ANTES de mover para conferência
-        # Isso garante que quando a conferência terminar (endconf do B-leg), A-leg desliga
-        # Ref: Context7 - hangup_after_conference channel variable
-        try:
-            await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_conference true"),
-                timeout=2.0
-            )
-            logger.debug("_move_a_leg_to_conference: hangup_after_conference=true set on A-leg")
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.debug(f"_move_a_leg_to_conference: Could not set hangup_after_conference: {e}")
+        # IMPORTANTE: NÃO setar hangup_after_conference aqui!
+        # Isso será setado APENAS quando a transferência for ACEITA (em _handle_accepted).
+        # Se setar antes, e o atendente desligar/recusar, o cliente também desliga
+        # automaticamente, perdendo a chance de deixar recado.
+        # Ref: Bug fix - cliente desligava junto com atendente que recusava
         
         # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
         # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
@@ -1127,13 +1121,18 @@ ESTILO:
             # FLUXO CORRETO após aceitação:
             # 
             # Estado atual:
-            # - A-leg está na conferência (mutado)
+            # - A-leg está na conferência (mutado, SEM hangup_after_conference)
             # - B-leg está em &park() (fora da conferência)
             # 
             # Passos:
             # 1. Parar uuid_audio_stream do B-leg
-            # 2. Mover B-leg para conferência com flags {moderator|endconf}
-            # 3. Desmutar A-leg na conferência
+            # 2. Setar hangup_after_conference=true no A-leg (APENAS agora que aceitou!)
+            # 3. Mover B-leg para conferência com flags {moderator|endconf}
+            # 4. Desmutar A-leg na conferência
+            # 
+            # IMPORTANTE: hangup_after_conference é setado AQUI, não em _move_a_leg_to_conference,
+            # para que se o atendente desligar/recusar ANTES de aceitar, o cliente
+            # continue na linha e possa deixar recado.
             # 
             # Ref: Context7 /signalwire/freeswitch-docs - conference, endconf
             # =========================================================================
@@ -1152,7 +1151,20 @@ ESTILO:
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.debug(f"Could not stop B-leg stream: {e}")
             
-            # 2. Mover B-leg para conferência com flags corretas
+            # 2. AGORA setar hangup_after_conference no A-leg
+            # Só setamos aqui porque a transferência foi ACEITA.
+            # Se o atendente desligasse ANTES de aceitar, o cliente ficaria na linha
+            # para receber feedback e poder deixar recado.
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_conference true"),
+                    timeout=2.0
+                )
+                logger.debug("_handle_accepted: hangup_after_conference=true set on A-leg")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"_handle_accepted: Could not set hangup_after_conference: {e}")
+            
+            # 3. Mover B-leg para conferência com flags corretas
             # moderator: pode controlar a conferência
             # endconf: quando B-leg sair, TODOS os membros são desconectados
             transfer_b_cmd = (
@@ -1178,7 +1190,7 @@ ESTILO:
             except asyncio.TimeoutError:
                 logger.warning("B-leg transfer timeout, continuing anyway")
             
-            # 3. Desmutar A-leg na conferência
+            # 4. Desmutar A-leg na conferência
             # NOTA: O comando unmute requer member_id (número), não UUID
             # Ref: Context7 - conference <confname> unmute <member_id>|all|last|non_moderator
             

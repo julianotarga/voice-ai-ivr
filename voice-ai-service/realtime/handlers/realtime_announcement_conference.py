@@ -1111,6 +1111,46 @@ class ConferenceAnnouncementSession:
         except Exception as e:
             logger.debug(f"🔊 FS sender loop ended: {e} (sent {chunks_sent} chunks, {total_bytes_sent} bytes)")
         finally:
+            # FLUSH: Enviar áudio restante no buffer para evitar cortes no final das frases
+            try:
+                # 1. Drenar a fila restante
+                while not self._fs_audio_queue.empty():
+                    try:
+                        chunk = self._fs_audio_queue.get_nowait()
+                        if self._fs_ws:
+                            audio_msg = json.dumps({
+                                "type": "streamAudio",
+                                "data": {
+                                    "audioData": base64.b64encode(chunk).decode("utf-8"),
+                                    "audioDataType": "raw"
+                                }
+                            })
+                            await self._fs_ws.send(audio_msg)
+                            total_bytes_sent += len(chunk)
+                            chunks_sent += 1
+                    except Exception:
+                        break
+                
+                # 2. Flush do AudioBuffer (áudio pendente de warmup)
+                remaining = self._fs_audio_buffer.flush()
+                if remaining and self._fs_ws:
+                    # Dividir em chunks de 320 bytes
+                    for i in range(0, len(remaining), 320):
+                        chunk = remaining[i:i + 320]
+                        audio_msg = json.dumps({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioData": base64.b64encode(chunk).decode("utf-8"),
+                                "audioDataType": "raw"
+                            }
+                        })
+                        await self._fs_ws.send(audio_msg)
+                        total_bytes_sent += len(chunk)
+                        chunks_sent += 1
+                    logger.debug(f"🔊 FS sender: flushed {len(remaining)} bytes from buffer")
+            except Exception as flush_err:
+                logger.debug(f"🔊 FS sender: flush error: {flush_err}")
+            
             if chunks_sent > 0:
                 logger.info(f"🔊 FS sender: TOTAL sent {chunks_sent} chunks ({total_bytes_sent} bytes)")
             else:

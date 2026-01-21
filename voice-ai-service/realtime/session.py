@@ -73,7 +73,13 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para atendente, departamento ou pessoa. "
-        "Ao chamar, diga apenas: 'Um momento, vou transferir.' - seja BREVE. "
+        "IMPORTANTE: ANTES de chamar esta função, você DEVE perguntar e saber: "
+        "1) Com quem estou falando? (nome do cliente) "
+        "2) Qual o motivo? (assunto brevemente) "
+        "Se ainda NÃO souber o nome do cliente, pergunte ANTES de transferir. "
+        "Exemplo: 'Com quem estou falando?' ou 'Qual seu nome, por favor?' "
+        "Só chame esta função APÓS ter o nome e motivo. "
+        "Ao chamar, diga: 'Um momento [NOME], vou transferir você.' "
         "Se cliente disser nome próprio + departamento, use o DEPARTAMENTO como destino."
     ),
     "parameters": {
@@ -89,9 +95,13 @@ HANDOFF_FUNCTION_DEFINITION = {
             "reason": {
                 "type": "string",
                 "description": "Motivo pelo qual o cliente quer falar com alguém"
+            },
+            "caller_name": {
+                "type": "string",
+                "description": "Nome do cliente que está ligando (perguntar se não souber)"
             }
         },
-        "required": ["destination"]
+        "required": ["destination", "reason", "caller_name"]
     }
 }
 
@@ -1823,6 +1833,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # FASE 1: Usar TransferManager se disponível
             destination = args.get("destination", "qualquer atendente")
             reason = args.get("reason", "solicitação do cliente")
+            caller_name = args.get("caller_name", "")
+            
+            # Armazenar caller_name para uso no anúncio
+            # Isso melhora a qualidade do anúncio: "Olá, tenho João na linha"
+            if caller_name:
+                self._caller_name_from_handoff = caller_name
+                logger.info(f"🔄 [HANDOFF] Nome do cliente informado: {caller_name}")
             
             # CRÍTICO: Evitar múltiplas transferências simultâneas usando lock
             # Isso evita bug onde IA chama request_handoff duas vezes
@@ -1895,11 +1912,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 
                 # Retornar mensagem que instrui o OpenAI a falar o aviso
                 # O OpenAI vai gerar uma resposta natural baseada neste resultado
+                # Inclui nome do cliente para personalizar a mensagem
+                if caller_name:
+                    spoken_message = f"Um momento {caller_name}, vou transferir para {spoken_destination}."
+                else:
+                    spoken_message = f"Um momento, vou transferir para {spoken_destination}."
+                
                 logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
                 return {
                     "status": "verifying",
-                    "message": f"Diga brevemente: 'Um momento, vou transferir para {spoken_destination}.'",
+                    "message": f"Diga brevemente: '{spoken_message}'",
                     "destination": destination,
+                    "caller_name": caller_name,
                     "action": "FALE_AGORA_E_AGUARDE"
                 }
             else:
@@ -3808,9 +3832,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
     
     def _extract_caller_name(self) -> Optional[str]:
         """
-        Extrai nome do cliente do transcript.
+        Extrai nome do cliente.
         
-        Procura padrões comuns como:
+        PRIORIDADE:
+        1. Nome informado via request_handoff (mais confiável - o LLM perguntou diretamente)
+        2. Padrões extraídos do transcript
+        
+        Padrões de transcript:
         - "meu nome é João"
         - "aqui é o João"
         - "sou o João"
@@ -3820,6 +3848,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """
         import re
         
+        # PRIORIDADE 1: Nome informado via request_handoff
+        if hasattr(self, '_caller_name_from_handoff') and self._caller_name_from_handoff:
+            return self._caller_name_from_handoff
+        
+        # PRIORIDADE 2: Extrair do transcript
         for entry in self._transcript:
             if entry.role == "user":
                 text_lower = entry.text.lower()
