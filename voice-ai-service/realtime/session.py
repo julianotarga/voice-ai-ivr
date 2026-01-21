@@ -418,10 +418,13 @@ class RealtimeSessionConfig:
     
     # Echo Cancellation (Speex AEC) - para viva-voz
     # Remove eco do agente capturado pelo microfone do caller
-    # Ref: SpeexDSP best practices - filter_length deve cobrir reverberação, echo_delay < 100ms
+    # Ref: Context7 SpeexDSP + pyaec (thewh1teagle/aec)
+    # - filter_length = sample_rate * 0.4 (400ms) para melhor captura de eco
+    # - echo_delay = 50-100ms para VoIP típico
+    # - frame_size = 20ms (160 samples @ 8kHz, 320 @ 16kHz)
     aec_enabled: bool = True  # Habilitar AEC por padrão
-    aec_filter_length_ms: int = 200  # Quanto eco pode remover (100-200ms típico para telefonia)
-    aec_echo_delay_ms: int = 100  # Delay do echo VoIP típico (50-100ms, não 300ms!)
+    aec_filter_length_ms: int = 400  # pyaec recomenda 400ms (sample_rate * 0.4) para melhor AEC
+    aec_echo_delay_ms: int = 100  # Delay do echo VoIP típico (50-100ms)
     input_min_rms: int = 300
     input_max_gain: float = 3.0
 

@@ -4,7 +4,7 @@ Echo Canceller usando Speex DSP.
 Remove o eco do áudio de entrada (microfone) usando o áudio de saída (speaker) como referência.
 
 Uso:
-    ec = EchoCancellerWrapper(sample_rate=16000, frame_size_ms=20, filter_length_ms=128)
+    ec = EchoCancellerWrapper(sample_rate=16000, frame_size_ms=20, filter_length_ms=400)
     
     # Quando receber áudio do speaker (resposta do agente)
     ec.add_speaker_frame(speaker_audio)
@@ -12,12 +12,18 @@ Uso:
     # Quando receber áudio do mic (caller)
     clean_audio = ec.process(mic_audio)  # Retorna áudio sem eco
 
-IMPORTANTE:
-- O frame_size deve ser consistente (20ms = 320 samples @ 16kHz)
-- O filter_length define a "memória" do AEC (quanto eco pode remover)
-- filter_length típico: 100-200ms para telefonia
+PARÂMETROS RECOMENDADOS (Context7 - SpeexDSP + pyaec):
+- frame_size: 20ms (320 samples @ 16kHz, 160 samples @ 8kHz)
+- filter_length: 400ms (sample_rate * 0.4) para melhor captura de eco
+- echo_delay: 50-100ms para VoIP típico
+
+O filter_length define a "memória" do AEC - quanto eco pode remover.
+Valores muito baixos (<200ms) podem não capturar eco em ambientes reverberantes.
+Valores muito altos (>500ms) aumentam uso de CPU e podem causar artefatos.
 
 Ref: https://github.com/xiongyihui/speexdsp-python
+Ref: https://github.com/thewh1teagle/aec (pyaec)
+Ref: Context7 - /xiph/speexdsp, /thewh1teagle/aec
 """
 
 import logging
