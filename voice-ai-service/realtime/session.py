@@ -73,13 +73,10 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para atendente, departamento ou pessoa. "
-        "IMPORTANTE: ANTES de chamar esta função, você DEVE perguntar e saber: "
-        "1) Com quem estou falando? (nome do cliente) "
-        "2) Qual o motivo? (assunto brevemente) "
-        "Se ainda NÃO souber o nome do cliente, pergunte ANTES de transferir. "
-        "Exemplo: 'Com quem estou falando?' ou 'Qual seu nome, por favor?' "
-        "Só chame esta função APÓS ter o nome e motivo. "
-        "Ao chamar, diga: 'Um momento [NOME], vou transferir você.' "
+        "Use quando o cliente solicitar falar com alguém específico ou um departamento. "
+        "O nome do cliente é OPCIONAL - se souber, informe; se não souber, transfira assim mesmo. "
+        "NÃO exija o nome se o cliente não informou espontaneamente. "
+        "Ao chamar, diga: 'Um momento, vou transferir você.' "
         "Se cliente disser nome próprio + departamento, use o DEPARTAMENTO como destino."
     ),
     "parameters": {
@@ -98,10 +95,10 @@ HANDOFF_FUNCTION_DEFINITION = {
             },
             "caller_name": {
                 "type": "string",
-                "description": "Nome do cliente que está ligando (perguntar se não souber)"
+                "description": "Nome do cliente (OPCIONAL - só informe se o cliente disse espontaneamente)"
             }
         },
-        "required": ["destination", "reason", "caller_name"]
+        "required": ["destination", "reason"]
     }
 }
 
@@ -669,14 +666,13 @@ class RealtimeSession:
         if destination_text != self._handoff_fallback_destination:
             return
 
-        # Exigir nome do cliente antes de transferir
+        # Nome do cliente é opcional - extrair se disponível
         caller_name = self._extract_caller_name()
-        if self._is_invalid_caller_name(caller_name):
-            await self._send_text_to_provider(
-                "Antes de transferir, preciso do seu nome. Com quem estou falando?"
-            )
-            self._handoff_fallback_destination = None
-            return
+        if caller_name and not self._is_invalid_caller_name(caller_name):
+            self._caller_name_from_handoff = caller_name
+            logger.info(f"🔄 [HANDOFF_FALLBACK] Nome do cliente: {caller_name}")
+        else:
+            logger.info("🔄 [HANDOFF_FALLBACK] Nome do cliente não disponível - prosseguindo sem nome")
 
         self._set_transfer_in_progress(True, "handoff_tool_fallback")
         await self._notify_transfer_start()
@@ -1751,22 +1747,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # 
         # IMPORTANTE: Enviamos como instrução de sistema para que o
         # OpenAI fale EXATAMENTE o filler, sem elaborar ou adicionar texto.
-        #
-        # CUIDADO: Para request_handoff, NÃO enviar filler se caller_name
-        # for inválido, pois a função vai rejeitar e pedir o nome.
         # =========================================================
-        should_send_filler = True
-        
-        # Para request_handoff, validar caller_name ANTES de enviar filler
-        if function_name == "request_handoff":
-            caller_name = function_args.get("caller_name", "")
-            if self._is_invalid_caller_name(caller_name):
-                should_send_filler = False
-                logger.debug(
-                    f"⚠️ [FILLER] Suprimindo filler para request_handoff - caller_name inválido: '{caller_name}'"
-                )
-        
-        filler = self._get_filler_for_function(function_name) if should_send_filler else None
+        filler = self._get_filler_for_function(function_name)
         if filler:
             logger.debug(f"Sending filler for {function_name}: {filler[:30]}...")
             # Formatar como instrução clara para o OpenAI falar apenas o filler
@@ -1897,24 +1879,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             reason = args.get("reason", "solicitação do cliente")
             caller_name = args.get("caller_name", "")
 
-            # VALIDACAO: impedir transfer sem nome valido do cliente
-            if self._is_invalid_caller_name(caller_name):
-                logger.warning(
-                    f"🔄 [HANDOFF] caller_name inválido para transferência: '{caller_name}'"
-                )
-                await self._send_text_to_provider(
-                    "Antes de transferir, preciso do seu nome. Com quem estou falando?"
-                )
-                return {
-                    "status": "need_caller_name",
-                    "message": "Pergunte o nome do cliente antes de transferir."
-                }
-            
-            # Armazenar caller_name para uso no anúncio
-            # Isso melhora a qualidade do anúncio: "Olá, tenho João na linha"
-            if caller_name:
+            # caller_name é OPCIONAL - se não informado, transfere assim mesmo
+            # O nome melhora a qualidade do anúncio mas não é obrigatório
+            if caller_name and not self._is_invalid_caller_name(caller_name):
                 self._caller_name_from_handoff = caller_name
                 logger.info(f"🔄 [HANDOFF] Nome do cliente informado: {caller_name}")
+            else:
+                # Nome não informado ou inválido - prosseguir sem nome
+                logger.info("🔄 [HANDOFF] Nome do cliente não informado - prosseguindo sem nome")
             
             # CRÍTICO: Evitar múltiplas transferências simultâneas
             # Isso evita bug onde IA chama request_handoff duas vezes
