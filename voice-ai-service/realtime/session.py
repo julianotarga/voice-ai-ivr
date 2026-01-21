@@ -552,6 +552,10 @@ class RealtimeSession:
         self._transfer_manager: Optional[TransferManager] = None
         self._current_transfer: Optional[TransferResult] = None
         self._transfer_in_progress = False
+        # Flag para evitar múltiplas chamadas de request_handoff enquanto aguarda delay
+        # DIFERENTE de _transfer_in_progress: este NÃO muta o áudio
+        # Permite que a IA termine de falar "Vou transferir..." antes de iniciar
+        self._handoff_pending = False
         # Lock para evitar múltiplas transferências simultâneas
         # Ref: Bug identificado no log - request_handoff chamado 2x
         self._transfer_lock = asyncio.Lock()
@@ -1912,14 +1916,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 self._caller_name_from_handoff = caller_name
                 logger.info(f"🔄 [HANDOFF] Nome do cliente informado: {caller_name}")
             
-            # CRÍTICO: Evitar múltiplas transferências simultâneas usando lock
+            # CRÍTICO: Evitar múltiplas transferências simultâneas
             # Isso evita bug onde IA chama request_handoff duas vezes
             # Ref: Context7 analysis - request_handoff called 2x at 20:22:12 and 20:22:14
             
-            # Primeiro check rápido sem lock (otimização)
+            # Check 1: Transferência já em execução (áudio mutado)
             if self._transfer_in_progress:
                 logger.warning(
-                    "🔄 [HANDOFF] IGNORANDO - Transferência já em progresso (flag)",
+                    "🔄 [HANDOFF] IGNORANDO - Transferência já em progresso",
                     extra={
                         "call_uuid": self.call_uuid,
                         "destination_raw": destination,
@@ -1930,7 +1934,21 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     "message": "Transferência já está em andamento. Aguarde."
                 }
             
-            # Segundo check com lock (evita race condition)
+            # Check 2: Handoff pendente (IA ainda está falando o aviso)
+            if self._handoff_pending:
+                logger.warning(
+                    "🔄 [HANDOFF] IGNORANDO - Handoff pendente (aguardando IA terminar de falar)",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "destination_raw": destination,
+                    }
+                )
+                return {
+                    "status": "already_in_progress",
+                    "message": "Já estou processando sua solicitação. Aguarde."
+                }
+            
+            # Check 3: Lock ativo (evita race condition)
             if self._transfer_lock.locked():
                 logger.warning(
                     "🔄 [HANDOFF] IGNORANDO - Lock de transferência ativo",
@@ -1958,9 +1976,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # Cancelar fallback automático quando o tool for chamado
             self._cancel_handoff_fallback()
             
-            # IMPORTANTE: Marcar transferência em progresso IMEDIATAMENTE
-            # Isso evita que uma segunda chamada de request_handoff crie outra task
-            self._set_transfer_in_progress(True, "handoff_starting")
+            # IMPORTANTE: Marcar handoff como PENDENTE, mas NÃO mutar áudio ainda
+            # Isso evita chamadas duplicadas de request_handoff enquanto permite
+            # que a IA termine de falar "Vou transferir você..."
+            # O _transfer_in_progress só será setado DEPOIS do áudio terminar
+            self._handoff_pending = True
             
             if self._transfer_manager and self.config.intelligent_handoff_enabled:
                 # ========================================
@@ -3329,6 +3349,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # Verificar se a chamada ainda está ativa
             if self._ending_call or not self._provider:
                 logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada, abortando")
+                self._handoff_pending = False
                 return
             
             logger.info(f"⏳ [DELAYED_HANDOFF] Delay concluído ({total_wait:.1f}s), iniciando handoff...")
@@ -3339,9 +3360,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # Double-check: alguém já executou?
                 if self._current_transfer is not None:
                     logger.warning("⏳ [DELAYED_HANDOFF] Outra transferência já foi executada, abortando")
+                    self._handoff_pending = False
                     return
                 
-                # Mutar o áudio e iniciar o handoff
+                # AGORA sim, mutar o áudio e iniciar o handoff
+                # Isso garante que a IA já terminou de falar o aviso
+                self._handoff_pending = False  # Não é mais pendente, está em execução
                 self._set_transfer_in_progress(True, "delayed_handoff_start")
                 
                 # Interromper qualquer resposta do OpenAI
@@ -3359,8 +3383,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
         except asyncio.CancelledError:
             logger.info("⏳ [DELAYED_HANDOFF] Task cancelada")
+            self._handoff_pending = False
         except Exception as e:
             logger.error(f"⏳ [DELAYED_HANDOFF] Erro: {e}", exc_info=True)
+            self._handoff_pending = False
             self._set_transfer_in_progress(False, "delayed_handoff_error")
     
     async def _execute_intelligent_handoff(
