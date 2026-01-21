@@ -146,6 +146,16 @@ class ConferenceAnnouncementSession:
         
         # Buffer de áudio para fallback TTS
         self._audio_buffer = bytearray()
+        
+        # =========================================================================
+        # TRACKING DINÂMICO DE ÁUDIO
+        # O áudio da IA é dinâmico (nomes diferentes, frases diferentes).
+        # Precisamos calcular e respeitar a duração REAL do áudio.
+        # =========================================================================
+        self._pending_audio_bytes: int = 0  # Bytes de áudio ainda não enviados
+        self._audio_playback_done = asyncio.Event()  # Sinaliza quando todo áudio foi enviado
+        self._audio_playback_done.set()  # Inicialmente sem áudio pendente
+        self._current_response_audio_bytes: int = 0  # Bytes da resposta atual
     
     async def run(self, timeout: float = 15.0) -> ConferenceAnnouncementResult:
         """
@@ -593,7 +603,17 @@ class ConferenceAnnouncementSession:
             audio_b64 = event.get("delta", "")
             if audio_b64:
                 audio_bytes = base64.b64decode(audio_b64)
-                logger.debug(f"🔊 OpenAI audio received: {len(audio_bytes)} bytes, fs_ws={self._fs_ws is not None}")
+                
+                # TRACKING DINÂMICO: Rastrear bytes recebidos
+                # OpenAI envia @ 24kHz, depois resampleamos para 8kHz
+                # Proporção: 24000/8000 = 3, então 8kHz = bytes_24k / 3
+                bytes_at_8k = len(audio_bytes) // 3
+                self._pending_audio_bytes += bytes_at_8k
+                self._current_response_audio_bytes += bytes_at_8k
+                self._audio_playback_done.clear()  # Há áudio pendente
+                
+                logger.debug(f"🔊 OpenAI audio: {len(audio_bytes)}b (8kHz: ~{bytes_at_8k}b, pending: {self._pending_audio_bytes}b)")
+                
                 if self._fs_ws:
                     await self._enqueue_audio_to_freeswitch(audio_bytes)
                 else:
@@ -633,7 +653,20 @@ class ConferenceAnnouncementSession:
             delta = event.get("delta", "")
             self._transcript += delta
         
-        # Resposta completa
+        # Áudio da resposta TERMINADO de ser gerado
+        # IMPORTANTE: Isso significa que o OpenAI terminou de gerar, mas ainda precisamos
+        # enviar todo o áudio para o FreeSWITCH antes de processar decisões
+        elif etype in ("response.audio.done", "response.output_audio.done"):
+            # Calcular duração do áudio gerado nesta resposta
+            audio_duration_ms = self._current_response_audio_bytes / 16.0  # L16 @ 8kHz = 16 bytes/ms
+            logger.info(
+                f"🔊 Response audio DONE: {self._current_response_audio_bytes} bytes "
+                f"(~{audio_duration_ms:.0f}ms), pending: {self._pending_audio_bytes}b"
+            )
+            # Resetar contador da resposta atual
+            self._current_response_audio_bytes = 0
+        
+        # Resposta completa (texto + áudio + function calls)
         elif etype == "response.done":
             await self._flush_audio_buffer(force=True)
             self._check_assistant_decision()
@@ -653,6 +686,9 @@ class ConferenceAnnouncementSession:
         reject_transfer() = recusa
         
         THREAD-SAFE: Usa lock para evitar race condition com pattern matching.
+        
+        IMPORTANTE: Aguarda o áudio terminar de ser reproduzido ANTES de sinalizar
+        a decisão. Isso evita cortes, robotização e picotes no final da fala da IA.
         """
         async with self._decision_lock:
             # Se já temos uma decisão, ignorar novas function calls
@@ -694,7 +730,37 @@ class ConferenceAnnouncementSession:
             if call_id:
                 await self._send_function_output(call_id, {"status": "ok"})
             
-            # Sinalizar que decisão foi tomada
+            # =========================================================================
+            # AGUARDAR ÁUDIO TERMINAR (DINÂMICO)
+            # A IA pode estar falando algo como "Ok, vou conectar vocês" junto com
+            # o accept_transfer. Precisamos esperar ela terminar de falar antes de
+            # sinalizar a decisão, caso contrário o áudio será cortado.
+            # =========================================================================
+            if self._pending_audio_bytes > 0:
+                # Calcular duração estimada do áudio pendente
+                pending_duration_ms = self._pending_audio_bytes / 16.0  # L16 @ 8kHz
+                logger.info(
+                    f"⏳ Waiting for audio playback to complete: "
+                    f"{self._pending_audio_bytes} bytes (~{pending_duration_ms:.0f}ms)"
+                )
+                
+                # Aguardar com timeout baseado na duração do áudio + margem
+                # Timeout = duração estimada + 2 segundos de margem
+                timeout_seconds = (pending_duration_ms / 1000.0) + 2.0
+                
+                try:
+                    await asyncio.wait_for(
+                        self._audio_playback_done.wait(),
+                        timeout=timeout_seconds
+                    )
+                    logger.info("✅ Audio playback completed, signaling decision")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"⚠️ Audio playback timeout after {timeout_seconds:.1f}s, "
+                        f"signaling decision anyway"
+                    )
+            
+            # Sinalizar que decisão foi tomada (após áudio terminar)
             self._decision_event.set()
     
     async def _send_function_output(self, call_id: str, output: dict) -> None:
@@ -1105,6 +1171,7 @@ class ConferenceAnnouncementSession:
                                 await asyncio.sleep(wait_ms / 1000.0)
                         
                         # CORREÇÃO: mod_audio_stream espera JSON, não binary frames!
+                        batch_size = len(batch_buffer)
                         audio_msg = json.dumps({
                             "type": "streamAudio",
                             "data": {
@@ -1114,10 +1181,15 @@ class ConferenceAnnouncementSession:
                         })
                         await self._fs_ws.send(audio_msg)
                         
-                        total_bytes_sent += len(batch_buffer)
+                        total_bytes_sent += batch_size
                         chunks_sent += 1
                         last_send_time = time.time()
                         batch_buffer.clear()
+                        
+                        # TRACKING DINÂMICO: Atualizar bytes pendentes
+                        self._pending_audio_bytes = max(0, self._pending_audio_bytes - batch_size)
+                        if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty():
+                            self._audio_playback_done.set()
                     
                     # Log a cada 10 batches (~1 segundo de áudio)
                     if chunks_sent > 0 and chunks_sent % 10 == 0:
@@ -1126,6 +1198,7 @@ class ConferenceAnnouncementSession:
                 except asyncio.TimeoutError:
                     # Timeout - enviar batch parcial se houver dados
                     if batch_buffer and self._fs_ws:
+                        partial_size = len(batch_buffer)
                         audio_msg = json.dumps({
                             "type": "streamAudio",
                             "data": {
@@ -1134,10 +1207,17 @@ class ConferenceAnnouncementSession:
                             }
                         })
                         await self._fs_ws.send(audio_msg)
-                        total_bytes_sent += len(batch_buffer)
+                        total_bytes_sent += partial_size
                         chunks_sent += 1
                         last_send_time = time.time()
                         batch_buffer.clear()
+                        
+                        # TRACKING DINÂMICO: Atualizar bytes pendentes
+                        self._pending_audio_bytes = max(0, self._pending_audio_bytes - partial_size)
+                    
+                    # Se não há mais áudio pendente, sinalizar
+                    if self._pending_audio_bytes == 0 and self._fs_audio_queue.empty():
+                        self._audio_playback_done.set()
                     continue
                     
         except asyncio.CancelledError:
@@ -1179,12 +1259,21 @@ class ConferenceAnnouncementSession:
                     await self._fs_ws.send(audio_msg)
                     total_bytes_sent += flush_bytes
                     
-                    # TAIL BUFFER: Aguardar tempo proporcional ao áudio restante
-                    # L16 @ 8kHz = 16000 bytes/segundo (8000 samples * 2 bytes)
-                    # Adicionar 100ms extra de margem para o anúncio
+                    # TRACKING DINÂMICO: Todo áudio foi enviado
+                    self._pending_audio_bytes = 0
+                    
+                    # TAIL BUFFER DINÂMICO: Aguardar tempo proporcional ao áudio restante
+                    # L16 @ 8kHz = 16 bytes/ms
+                    # Margem de 100ms para latência de rede e buffer do FreeSWITCH
                     tail_duration_ms = (flush_bytes / 16.0) + 100
-                    logger.debug(f"🔊 FS sender: flushed {flush_bytes} bytes, waiting {tail_duration_ms:.0f}ms tail buffer")
+                    logger.info(
+                        f"🔊 FS sender: flushed {flush_bytes} bytes, "
+                        f"waiting {tail_duration_ms:.0f}ms (dynamic tail buffer)"
+                    )
                     await asyncio.sleep(tail_duration_ms / 1000.0)
+                
+                # Sinalizar que todo áudio foi reproduzido
+                self._audio_playback_done.set()
                     
             except Exception as flush_err:
                 logger.debug(f"🔊 FS sender: flush error: {flush_err}")
