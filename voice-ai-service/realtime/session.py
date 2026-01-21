@@ -1320,6 +1320,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # NOTA: AEC trabalha em L16 PCM, então adicionamos antes da conversão G.711
             if self._echo_canceller:
                 self._echo_canceller.add_speaker_frame(audio_bytes)
+            else:
+                # Log se AEC não está habilitado - pode explicar falta de cancelamento
+                if self._output_frame_count <= 3:
+                    logger.warning(f"🔊 [AEC] Echo canceller not enabled! audio={len(audio_bytes)}B")
             
             # ========================================
             # OUTPUT - sempre L16 PCM para mod_audio_stream

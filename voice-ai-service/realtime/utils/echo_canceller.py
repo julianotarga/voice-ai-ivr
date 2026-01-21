@@ -127,6 +127,11 @@ class EchoCancellerWrapper:
         if not self.enabled or not audio_bytes:
             return
         
+        # Contador de chamadas ao add_speaker_frame (para logs)
+        if not hasattr(self, '_speaker_calls'):
+            self._speaker_calls = 0
+        self._speaker_calls += 1
+        
         # Dividir em frames do tamanho esperado
         frame_bytes = self.frame_size * 2  # 2 bytes por sample (PCM16)
         offset = 0
@@ -149,17 +154,20 @@ class EchoCancellerWrapper:
         
         # Mover frames do delay_buffer para speaker_buffer após o delay
         # Isso sincroniza o speaker com o momento que o echo aparece no mic
+        frames_moved = 0
         while len(self.delay_buffer) > self.echo_delay_frames:
             delayed_frame = self.delay_buffer.popleft()
             self.speaker_buffer.append(delayed_frame)
+            frames_moved += 1
         
-        # Log periódico
-        if frames_added > 0 and (self.frames_processed % 250 == 0 or self.frames_processed < 3):
+        # Log nas primeiras chamadas e periodicamente
+        if self._speaker_calls <= 5 or self._speaker_calls % 50 == 0:
             logger.info(
-                f"🔊 [AEC] speaker: +{frames_added} frames, "
+                f"🔊 [AEC] speaker call #{self._speaker_calls}: "
+                f"+{frames_added} frames, moved={frames_moved}, "
                 f"delay_buf={len(self.delay_buffer)}, "
                 f"speaker_buf={len(self.speaker_buffer)}, "
-                f"echo_delay={self.echo_delay_ms}ms"
+                f"input={len(audio_bytes)}B"
             )
     
     def process(self, mic_audio: bytes) -> bytes:
