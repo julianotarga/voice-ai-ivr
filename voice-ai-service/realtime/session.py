@@ -477,6 +477,8 @@ class RealtimeSession:
         self._call_state = CallState.LISTENING
         self._last_barge_in_ts = 0.0
         self._interrupt_protected_until = 0.0  # Timestamp até quando interrupções são ignoradas
+        self._audio_muted_until = 0.0  # Timestamp até quando áudio de input é silenciado (proteção pós-resposta)
+        self._first_response_done = False  # True após a primeira resposta (saudação) terminar
         self._last_audio_delta_ts = 0.0
         self._local_barge_hits = 0
         self._barge_noise_floor = 0.0
@@ -1042,6 +1044,23 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if not self.is_active or not self._provider:
             return
         
+        # PROTEÇÃO PÓS-SAUDAÇÃO:
+        # Não enviar áudio para o OpenAI durante o período de proteção.
+        # Isso evita que ruído/eco dispare o VAD e o modelo peça desculpas.
+        now = time.time()
+        if now < self._audio_muted_until:
+            # Log apenas a cada 50 frames (~1 segundo) para não poluir
+            if not hasattr(self, '_muted_frame_count'):
+                self._muted_frame_count = 0
+            self._muted_frame_count += 1
+            if self._muted_frame_count % 50 == 1:
+                remaining_ms = int((self._audio_muted_until - now) * 1000)
+                logger.debug(
+                    f"🔇 [PROTEÇÃO] Áudio silenciado por mais {remaining_ms}ms",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            return  # Não processar nem enviar áudio
+        
         # Log inicial do áudio recebido (a cada 100 frames para não poluir)
         if not hasattr(self, '_input_frame_count'):
             self._input_frame_count = 0
@@ -1601,6 +1620,21 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             logger.info("Response done", extra={
                 "call_uuid": self.call_uuid,
             })
+            
+            # PROTEÇÃO PÓS-SAUDAÇÃO:
+            # Após a PRIMEIRA resposta (saudação), silenciar o envio de áudio
+            # para o OpenAI por 1.5 segundos para evitar que o VAD detecte
+            # ruído/eco como fala e o modelo peça desculpas.
+            if not self._first_response_done:
+                self._first_response_done = True
+                # 1.5 segundos de proteção após a saudação
+                protection_duration = 1.5
+                self._audio_muted_until = time.time() + protection_duration
+                logger.info(
+                    f"🛡️ Proteção pós-saudação ativada ({protection_duration}s) - "
+                    "áudio de input silenciado para evitar falsos positivos de VAD",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             if self._speech_start_time:
                 self._metrics.record_latency(self.call_uuid, time.time() - self._speech_start_time)
