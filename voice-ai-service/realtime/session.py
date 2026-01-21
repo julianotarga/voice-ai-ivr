@@ -494,7 +494,7 @@ class RealtimeSession:
         self._call_state = CallState.LISTENING
         self._last_barge_in_ts = 0.0
         self._interrupt_protected_until = 0.0  # Timestamp até quando interrupções são ignoradas
-        self._audio_muted_until = 0.0  # Timestamp até quando áudio de input é silenciado (proteção pós-resposta)
+        # NOTA: Proteção pós-resposta removida - confiamos no AEC + VAD da OpenAI
         self._first_response_done = False  # True após a primeira resposta (saudação) terminar
         self._last_audio_delta_ts = 0.0
         self._local_barge_hits = 0
@@ -1070,22 +1070,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if not self.is_active or not self._provider:
             return
         
-        # PROTEÇÃO PÓS-SAUDAÇÃO:
-        # Não enviar áudio para o OpenAI durante o período de proteção.
-        # Isso evita que ruído/eco dispare o VAD e o modelo peça desculpas.
-        now = time.time()
-        if now < self._audio_muted_until:
-            # Log apenas a cada 50 frames (~1 segundo) para não poluir
-            if not hasattr(self, '_muted_frame_count'):
-                self._muted_frame_count = 0
-            self._muted_frame_count += 1
-            if self._muted_frame_count % 50 == 1:
-                remaining_ms = int((self._audio_muted_until - now) * 1000)
-                logger.debug(
-                    f"🔇 [PROTEÇÃO] Áudio silenciado por mais {remaining_ms}ms",
-                    extra={"call_uuid": self.call_uuid}
-                )
-            return  # Não processar nem enviar áudio
+        # SISTEMA DINÂMICO - Sem silenciamento por tempo fixo
+        # O AEC (Echo Canceller) remove eco da resposta da IA
+        # O VAD da OpenAI detecta fala real vs ruído/eco residual
+        # Isso permite conversação natural sem delays artificiais
         
         # Log inicial do áudio recebido (a cada 100 frames para não poluir)
         if not hasattr(self, '_input_frame_count'):
@@ -1667,44 +1655,32 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 "call_uuid": self.call_uuid,
             })
             
-            # PROTEÇÃO PÓS-RESPOSTA:
-            # Silenciar envio de áudio para o OpenAI durante o playback
-            # para evitar que o VAD detecte eco como fala do usuário.
+            # ÁUDIO DINÂMICO - Sem proteção por tempo fixo
             # 
-            # A proteção é calculada baseada na duração REAL do áudio:
-            # - L16 @ 8kHz = 16 bytes/ms
-            # - Adicionar margem para latência de rede e buffer
+            # Confiamos no:
+            # 1. AEC (Echo Canceller) para remover eco da resposta da IA
+            # 2. VAD da OpenAI para detectar fala real vs ruído/eco residual
+            # 3. noise_reduction: far_field da OpenAI para filtrar ruído ambiente
+            #
+            # Tempo fixo de proteção prejudica conversação natural porque:
+            # - Falas da IA são dinâmicas (1s a 10s+)
+            # - Cliente pode responder rapidamente
+            # - Silenciar por tempo fixo ignora respostas legítimas
+            #
+            # Apenas registrar duração para métricas
             audio_duration_ms = self._pending_audio_bytes / 16.0
             
-            # Proteção REDUZIDA para permitir conversação mais natural:
-            # - Usar apenas 30% da duração do áudio (AEC cuida do eco)
-            # - Margem de 200ms para buffer inicial
-            # - Máximo de 1.5s para não bloquear demais
-            # 
-            # ANTES: 4100ms de áudio = 4.6s de proteção (muito longo!)
-            # AGORA: 4100ms de áudio = 1.43s de proteção (mais natural)
-            protection_duration = (audio_duration_ms * 0.3 / 1000.0) + 0.2
-            
-            # Limitar a proteção máxima a 1.5 segundos
-            protection_duration = min(protection_duration, 1.5)
-            
-            # Aplicar proteção apenas se a duração for significativa (>500ms)
-            if audio_duration_ms > 500:
-                self._audio_muted_until = time.time() + protection_duration
-                
-                if not self._first_response_done:
-                    self._first_response_done = True
-                    logger.info(
-                        f"🛡️ Proteção pós-saudação ativada ({protection_duration:.1f}s) - "
-                        f"áudio de {audio_duration_ms:.0f}ms será reproduzido",
-                        extra={"call_uuid": self.call_uuid}
-                    )
-                else:
-                    logger.debug(
-                        f"🛡️ Proteção pós-resposta ({protection_duration:.1f}s) - "
-                        f"áudio de {audio_duration_ms:.0f}ms",
-                        extra={"call_uuid": self.call_uuid}
-                    )
+            if not self._first_response_done:
+                self._first_response_done = True
+                logger.info(
+                    f"🔊 Saudação reproduzida: {audio_duration_ms:.0f}ms",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            else:
+                logger.debug(
+                    f"🔊 Resposta reproduzida: {audio_duration_ms:.0f}ms",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             if self._speech_start_time:
                 self._metrics.record_latency(self.call_uuid, time.time() - self._speech_start_time)
