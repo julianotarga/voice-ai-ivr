@@ -2747,11 +2747,17 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 
                 await asyncio.sleep(wait_playback)
             else:
-                # Áudio já terminou, apenas margem de latência
-                await asyncio.sleep(0.3)
+                # Áudio já terminou, mas respeitar min_wait
+                # (pode haver latência de rede que ainda não entregou)
+                actual_wait = max(min_wait - generation_wait, 0.3)
+                logger.debug(f"🔊 [{context}] Áudio terminou, aguardando min_wait: {actual_wait:.1f}s")
+                await asyncio.sleep(actual_wait)
         else:
-            # Sem áudio pendente, pequena margem
-            await asyncio.sleep(0.3)
+            # Sem áudio pendente - pode ser que ainda não chegou ou terminou
+            # IMPORTANTE: Respeitar min_wait para dar tempo de gerar/entregar
+            actual_wait = max(min_wait - generation_wait, 0.3)
+            logger.debug(f"🔊 [{context}] Sem bytes pendentes, aguardando min_wait: {actual_wait:.1f}s")
+            await asyncio.sleep(actual_wait)
         
         total_wait = time.time() - start_time
         logger.debug(f"🔊 [{context}] Total aguardado: {total_wait:.1f}s")
