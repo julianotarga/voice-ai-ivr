@@ -532,6 +532,9 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                     "voice": voice,
                     "input_audio_format": input_audio_fmt,
                     "output_audio_format": "pcm16",  # Output sempre PCM16
+                    # Noise reduction para ambientes ruidosos (viva-voz, salas)
+                    # far_field = microfone distante (telefonia), near_field = headset
+                    "input_audio_noise_reduction": {"type": "far_field"},
                     "tools": tools,
                     "tool_choice": "auto",
                 }

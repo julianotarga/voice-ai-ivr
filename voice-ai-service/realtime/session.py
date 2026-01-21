@@ -324,12 +324,15 @@ class RealtimeSessionConfig:
     language: str = "pt-BR"  # Idioma da secretária
     
     # VAD (Voice Activity Detection) - Configuração
-    # Tipo: "server_vad" (baseado em silêncio) ou "semantic_vad" (baseado em semântica)
-    vad_type: str = "semantic_vad"  # RECOMENDADO: semantic_vad é mais inteligente
-    vad_threshold: float = 0.6  # 0.0-1.0 (maior = menos sensível, ajustado para viva-voz)
-    vad_eagerness: str = "medium"  # medium é mais tolerante a eco que high
-    silence_duration_ms: int = 600  # Tempo de silêncio para encerrar turno (aumentado para eco)
-    prefix_padding_ms: int = 400  # Áudio antes da fala (aumentado para ignorar eco curto)
+    # Ref: OpenAI Realtime API best practices (Context7 Jan/2026)
+    # - semantic_vad: entende contexto semântico, menos falsos positivos
+    # - server_vad: baseado em silêncio, mais rápido mas mais sensível a ruído
+    # - eagerness: low=paciente (8s timeout), medium=balanceado (4s), high=rápido (2s)
+    vad_type: str = "semantic_vad"  # RECOMENDADO: entende quando usuário TERMINOU de falar
+    vad_threshold: float = 0.6  # 0.0-1.0 (maior = menos sensível a ruído) - usado por server_vad
+    vad_eagerness: str = "low"  # low é mais paciente, evita cortar fala e falsos positivos
+    silence_duration_ms: int = 800  # Tempo de silêncio para encerrar turno (800ms evita cortar pausas)
+    prefix_padding_ms: int = 400  # Áudio antes da fala (400ms captura início da frase)
     
     # Guardrails - Segurança e moderação
     guardrails_enabled: bool = True  # Ativa instruções de segurança
@@ -415,9 +418,10 @@ class RealtimeSessionConfig:
     
     # Echo Cancellation (Speex AEC) - para viva-voz
     # Remove eco do agente capturado pelo microfone do caller
+    # Ref: SpeexDSP best practices - filter_length deve cobrir reverberação, echo_delay < 100ms
     aec_enabled: bool = True  # Habilitar AEC por padrão
-    aec_filter_length_ms: int = 256  # Quanto eco pode remover (256ms para viva-voz)
-    aec_echo_delay_ms: int = 300  # Delay do echo (300ms mais robusto para viva-voz)
+    aec_filter_length_ms: int = 200  # Quanto eco pode remover (100-200ms típico para telefonia)
+    aec_echo_delay_ms: int = 100  # Delay do echo VoIP típico (50-100ms, não 300ms!)
     input_min_rms: int = 300
     input_max_gain: float = 3.0
 
