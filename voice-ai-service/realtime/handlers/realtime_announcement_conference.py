@@ -201,7 +201,7 @@ class ConferenceAnnouncementSession:
             logger.info("✅ Step 4: Initial message sent")
             
             # 5. Loop principal - processar eventos até decisão ou timeout
-            logger.info("▶️ Step 5: Waiting for decision...")
+            logger.info(f"▶️ Step 5: Waiting for decision (timeout={timeout}s)...")
             
             # Usar wait com timeout em vez de wait_for no loop inteiro
             try:
@@ -209,17 +209,25 @@ class ConferenceAnnouncementSession:
                     self._wait_for_decision(),
                     timeout=timeout
                 )
+                logger.info(
+                    f"✅ [DECISION] Decision received: accepted={self._accepted}, rejected={self._rejected}"
+                )
             except asyncio.TimeoutError:
-                logger.info("⏱️ Timeout reached without decision")
+                logger.warning(f"⏱️ [TIMEOUT] No decision after {timeout}s - will use default behavior")
             
         except asyncio.CancelledError:
-            logger.info("Announcement cancelled")
+            logger.info("🚫 [ANNOUNCEMENT] Cancelled externally")
             raise
         
         except Exception as e:
-            logger.exception(f"Announcement error: {e}")
+            logger.exception(f"❌ [ANNOUNCEMENT] Error: {e}")
         
         finally:
+            logger.info(
+                f"🏁 [ANNOUNCEMENT] Session ending - "
+                f"accepted={self._accepted}, rejected={self._rejected}, "
+                f"decision_event={self._decision_event.is_set()}"
+            )
             self._running = False
             await self._cleanup()
         
@@ -250,11 +258,13 @@ class ConferenceAnnouncementSession:
     
     async def _wait_for_decision(self) -> None:
         """Aguarda decisão via function call ou patterns de texto."""
+        loop_count = 0
         while self._running and not self._accepted and not self._rejected:
+            loop_count += 1
             try:
                 # Verificar se WebSocket ainda conectado
                 if self._is_ws_closed():
-                    logger.warning("OpenAI WebSocket closed")
+                    logger.warning(f"🔌 [LOOP {loop_count}] OpenAI WebSocket closed unexpectedly")
                     break
                 
                 msg = await asyncio.wait_for(self._ws.recv(), timeout=1.0)
@@ -266,6 +276,10 @@ class ConferenceAnnouncementSession:
                     break
                 
             except asyncio.TimeoutError:
+                # Log periódico a cada 5 segundos de espera
+                if loop_count % 5 == 0:
+                    logger.debug(f"⏳ [LOOP {loop_count}] Still waiting for decision...")
+                
                 # Verificar se B-leg ainda existe
                 try:
                     b_exists = await asyncio.wait_for(
@@ -273,12 +287,12 @@ class ConferenceAnnouncementSession:
                         timeout=1.0
                     )
                     if not b_exists:
-                        logger.info("B-leg hangup detected")
+                        logger.info(f"📞 [LOOP {loop_count}] B-leg hangup detected - attendant disconnected")
                         self._rejected = True
                         self._rejection_message = "Atendente desligou"
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"⚠️ [LOOP {loop_count}] B-leg check failed: {e}")
                 
                 # TAMBÉM verificar se A-leg (cliente) ainda existe
                 # Se o cliente desligou, não faz sentido continuar o anúncio
@@ -961,7 +975,12 @@ class ConferenceAnnouncementSession:
             return
         self._cleanup_done = True
         
-        logger.debug("Starting announcement session cleanup...")
+        # Log detalhado do motivo do cleanup
+        logger.info(
+            f"🧹 [CLEANUP] Starting announcement session cleanup - "
+            f"accepted={self._accepted}, rejected={self._rejected}, "
+            f"running={self._running}, port={self._audio_ws_port}"
+        )
         
         # 1. Flush áudio pendente
         try:
@@ -989,16 +1008,18 @@ class ConferenceAnnouncementSession:
                 pass
             self._fs_ws = None
         
-        # 4. Fechar servidor WebSocket
+        # 4. Fechar servidor WebSocket (porta 8086)
         if self._audio_ws_server:
+            logger.info(f"🧹 [CLEANUP] Closing WebSocket server on port {self._audio_ws_port}")
             self._audio_ws_server.close()
             try:
                 await asyncio.wait_for(
                     self._audio_ws_server.wait_closed(),
                     timeout=2.0
                 )
-            except (Exception, asyncio.TimeoutError):
-                pass
+                logger.info(f"🧹 [CLEANUP] WebSocket server closed (port {self._audio_ws_port})")
+            except (Exception, asyncio.TimeoutError) as e:
+                logger.warning(f"🧹 [CLEANUP] WebSocket server close timeout/error: {e}")
             self._audio_ws_server = None
         
         # 5. Fechar WebSocket do OpenAI
