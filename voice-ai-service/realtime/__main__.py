@@ -23,6 +23,34 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class WebSocketHandshakeFilter(logging.Filter):
+    """
+    Filtra erros de handshake WebSocket inválido.
+    
+    Esses erros são esperados quando:
+    - Load balancers fazem health checks via TCP
+    - Port scanners tentam conectar
+    - Conexões TCP brutas sem protocolo WebSocket
+    
+    Não são bugs - apenas conexões que não são WebSocket válidas.
+    """
+    
+    IGNORE_MESSAGES = [
+        "opening handshake failed",
+        "did not receive a valid HTTP request",
+        "connection closed while reading HTTP request",
+        "line without CRLF",
+    ]
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Verificar se é uma mensagem de handshake inválido
+        msg = str(record.getMessage()).lower()
+        for ignore_msg in self.IGNORE_MESSAGES:
+            if ignore_msg.lower() in msg:
+                return False  # Não logar
+        return True  # Logar normalmente
+
+
 def setup_logging() -> None:
     """Configura logging baseado em DEBUG env."""
     level = logging.DEBUG if os.getenv("DEBUG") else logging.INFO
@@ -35,6 +63,11 @@ def setup_logging() -> None:
     # Reduzir verbosidade de algumas libs
     logging.getLogger("websockets").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    
+    # Filtrar erros de handshake inválido do WebSocket
+    # Esses são esperados (health checks, port scans) e não são bugs
+    ws_server_logger = logging.getLogger("websockets.server")
+    ws_server_logger.addFilter(WebSocketHandshakeFilter())
 
 
 def run_websocket_server(host: str, port: int) -> None:
