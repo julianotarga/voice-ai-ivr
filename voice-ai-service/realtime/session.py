@@ -1404,6 +1404,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             if not self._provider:
                 return
 
+            # Durante transferência, se provider desconectou, aguardar
+            # A reconexão será feita em _handle_transfer_result
+            if self._transfer_in_progress and not getattr(self._provider, '_connected', False):
+                logger.debug("Event loop: waiting for transfer to complete (provider disconnected)")
+                await asyncio.sleep(1.0)
+                continue
+
             try:
                 async for event in self._provider.receive_events():
                     action = await self._handle_event(event)
@@ -1663,6 +1670,21 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         elif event.type in (ProviderEventType.ERROR, ProviderEventType.RATE_LIMITED, ProviderEventType.SESSION_ENDED):
             error_data = event.data.get("error", {})
             error_code = error_data.get("code", "") if isinstance(error_data, dict) else ""
+            
+            # Durante transferência, NÃO encerrar a sessão por timeout do provider
+            # A reconexão será feita em _handle_transfer_result quando necessário
+            if self._transfer_in_progress:
+                logger.warning(
+                    f"Provider event during transfer (ignoring): {event.type}",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "event_type": str(event.type),
+                        "error_code": error_code,
+                    }
+                )
+                # Aguardar até a transferência terminar - loop vai iterar novamente
+                await asyncio.sleep(1.0)
+                return "continue"
             
             # Reconexão automática para sessão expirando (limite OpenAI de 60min)
             if error_code == "session_expiring":
@@ -2212,6 +2234,42 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 await self._provider.send_text(text, request_response=request_response)
             except RuntimeError as e:
                 logger.warning(f"Provider not connected, skipping send_text: {e}")
+    
+    async def _ensure_provider_connected(self) -> None:
+        """
+        Garante que o provider está conectado.
+        
+        Durante transferências longas (>20s), o OpenAI pode desconectar por
+        timeout de inatividade. Este método verifica e reconecta se necessário.
+        
+        Raises:
+            Exception: Se não conseguir reconectar
+        """
+        if not self._provider:
+            raise RuntimeError("Provider não inicializado")
+        
+        # Verificar se já está conectado
+        is_connected = getattr(self._provider, '_connected', False)
+        if is_connected:
+            return
+        
+        logger.info("🔄 Reconectando provider OpenAI...")
+        
+        # Reconectar
+        await self._provider.connect()
+        await self._provider.configure()
+        
+        # Resetar estados para evitar problemas
+        self._assistant_speaking = False
+        self._user_speaking = False
+        self._input_audio_buffer.clear()
+        if self._resampler:
+            try:
+                self._resampler.reset_output_buffer()
+            except Exception:
+                pass
+        
+        logger.info("✅ Provider reconectado com sucesso")
     
     def _get_filler_for_function(self, function_name: str) -> Optional[str]:
         """
@@ -3588,7 +3646,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 4: Habilitando áudio (transfer_in_progress=False)...")
             self._set_transfer_in_progress(False, "transfer_not_completed")
             
-            # 5. Enviar mensagem ao OpenAI para ele FALAR
+            # 5. Verificar e reconectar provider se necessário
+            # Durante transferências longas (>20s), o OpenAI pode desconectar por timeout
+            if not self._provider or not getattr(self._provider, '_connected', False):
+                logger.warning("📋 [HANDLE_TRANSFER_RESULT] Provider desconectado - reconectando...")
+                try:
+                    await self._ensure_provider_connected()
+                    logger.info("📋 [HANDLE_TRANSFER_RESULT] Provider reconectado com sucesso")
+                except Exception as e:
+                    logger.error(f"📋 [HANDLE_TRANSFER_RESULT] Falha ao reconectar provider: {e}")
+                    # Continuar mesmo assim - pior caso, a mensagem não é enviada
+            
+            # 6. Enviar mensagem ao OpenAI para ele FALAR
             # O OpenAI vai gerar uma resposta de voz natural
             # Usar mensagens contextuais baseadas no status (tornam respostas mais naturais)
             destination_name = result.destination.name if result.destination else "o ramal"
@@ -3614,7 +3683,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             )
             
             logger.info(
-                "📋 [HANDLE_TRANSFER_RESULT] Step 5: Enviando instrução ao OpenAI...",
+                "📋 [HANDLE_TRANSFER_RESULT] Step 6: Enviando instrução ao OpenAI...",
                 extra={"instruction": openai_instruction}
             )
             
