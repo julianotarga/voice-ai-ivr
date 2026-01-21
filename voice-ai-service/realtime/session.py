@@ -2701,8 +2701,18 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             remaining_time = audio_duration - audio_elapsed
             
             if remaining_time > 0:
-                # Margem de 20% para latência de rede + 300ms buffer
-                wait_playback = remaining_time * 1.2 + 0.3
+                # =========================================================
+                # MARGEM DE SEGURANÇA: 30% + 800ms
+                # 
+                # Motivo: O áudio precisa percorrer:
+                # 1. Python → FreeSWITCH (rede local ou docker)
+                # 2. Buffer interno do FreeSWITCH
+                # 3. FreeSWITCH → Telefone (rede pública, latência variável)
+                #
+                # Uma margem de 20% + 300ms era insuficiente e causava
+                # corte no final das frases antes de transferências.
+                # =========================================================
+                wait_playback = remaining_time * 1.3 + 0.8
                 
                 # Aplicar limites
                 wait_playback = max(min_wait, min(wait_playback, max_wait))
