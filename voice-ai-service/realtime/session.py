@@ -3488,11 +3488,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     )
                     
                     # Executar transferência via conferência
+                    # IMPORTANTE: Usar o nome do cliente extraído, não o caller_id (número)
+                    extracted_caller_name = self._extract_caller_name()
+                    logger.info(f"📋 [CONFERENCE] caller_name extraído: {extracted_caller_name or 'Não informado'}")
+                    
                     conf_result = await conf_manager.execute_announced_transfer(
                         destination=destination.destination_number,
                         context=reason,
                         announcement=announcement,
-                        caller_name=self.config.caller_id,
+                        caller_name=extracted_caller_name,
                     )
                     
                     # Converter ConferenceTransferResult para TransferResult
