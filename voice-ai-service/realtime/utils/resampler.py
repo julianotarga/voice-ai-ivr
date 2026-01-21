@@ -31,6 +31,34 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _warmup_scipy():
+    """
+    Força a inicialização/JIT do scipy.signal.resample_poly.
+    
+    O scipy/numpy pode levar vários segundos na primeira execução devido a:
+    1. Carregamento lazy de módulos internos
+    2. Compilação JIT de funções numéricas
+    3. Alocação de buffers internos
+    
+    Chamando uma vez com dados dummy durante o import, evitamos esse delay
+    na primeira chamada real durante uma ligação.
+    """
+    if not SCIPY_AVAILABLE or scipy_signal is None:
+        return
+    
+    try:
+        # Simular um resample típico: 2400 samples @ 24kHz -> 800 samples @ 8kHz
+        dummy_input = np.zeros(2400, dtype=np.float32)
+        _ = scipy_signal.resample_poly(dummy_input, 1, 3)
+        logger.info("✅ scipy.signal warmup complete - resample_poly ready")
+    except Exception as e:
+        logger.warning(f"⚠️ scipy.signal warmup failed: {e}")
+
+
+# Executar warmup imediatamente ao importar o módulo
+_warmup_scipy()
+
+
 class Resampler:
     """
     Resampler eficiente para streaming de áudio.
