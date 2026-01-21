@@ -172,12 +172,11 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
 # ========================================
 
 FUNCTION_FILLERS = {
-    # Transferências
-    "request_handoff": [
-        "Vou verificar a disponibilidade do atendente...",
-        "Deixa eu ver quem pode te atender...",
-        "Um momento, vou te conectar...",
-    ],
+    # Transferências - SEM FILLER
+    # O resultado do function call já inclui a mensagem personalizada
+    # "Um momento [nome], vou transferir para [destino]."
+    # Ter filler + result causa mensagens duplicadas/conflitantes
+    "request_handoff": [],
     # Verificação de disponibilidade
     "check_availability": [
         "Consultando a disponibilidade...",
@@ -1007,8 +1006,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
 
 ## TRANSFERÊNCIA (OBRIGATÓRIA)
 - Se o cliente pedir para falar com humano/setor, **sempre** chame a função `request_handoff`.
+- **NÃO pergunte o nome do cliente** - transfira imediatamente. O nome é opcional.
 - **Não** continue respondendo com texto quando iniciar transferência.
-- Se houver ambiguidade, peça o setor/ramal antes de transferir.
+- Se houver ambiguidade sobre o SETOR, peça o setor/ramal antes de transferir.
+- Após chamar `request_handoff`, diga apenas: "Um momento, vou transferir."
 """
         
         if not self.config.guardrails_enabled:
@@ -1982,12 +1983,19 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     spoken_message = f"Um momento, vou transferir para {spoken_destination}."
                 
                 logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
+                
+                # IMPORTANTE: Enviar instrução explícita para o OpenAI falar
+                # O result do function call é processado internamente, mas
+                # precisamos garantir que o OpenAI gere uma resposta de voz
+                await self._send_text_to_provider(
+                    f"[SISTEMA] Diga apenas: '{spoken_message}' - exatamente assim, breve e direto.",
+                    request_response=True
+                )
+                
                 return {
                     "status": "verifying",
-                    "message": f"Diga brevemente: '{spoken_message}'",
                     "destination": destination,
-                    "caller_name": caller_name,
-                    "action": "FALE_AGORA_E_AGUARDE"
+                    "caller_name": caller_name
                 }
             else:
                 # Fallback para handoff legacy (cria ticket)
