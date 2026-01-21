@@ -97,6 +97,7 @@ class ConferenceAnnouncementSession:
         initial_message: str,
         voice: str = OPENAI_REALTIME_VOICE,
         model: str = OPENAI_REALTIME_MODEL,
+        courtesy_message: Optional[str] = None,
     ):
         """
         Args:
@@ -106,6 +107,7 @@ class ConferenceAnnouncementSession:
             initial_message: Mensagem inicial de anúncio
             voice: Voz do OpenAI
             model: Modelo Realtime
+            courtesy_message: Mensagem de cortesia ao recusar (do banco de dados)
         """
         self.esl = esl_client
         self.b_leg_uuid = b_leg_uuid
@@ -113,6 +115,7 @@ class ConferenceAnnouncementSession:
         self.initial_message = initial_message
         self.voice = voice
         self.model = model
+        self.courtesy_message = courtesy_message
         
         self._ws: Optional[ClientConnection] = None
         self._running = False
@@ -627,6 +630,91 @@ class ConferenceAnnouncementSession:
         
         logger.info(f"Initial message sent: {self.initial_message[:50]}...")
     
+    async def _send_courtesy_response(self) -> None:
+        """
+        Envia resposta de cortesia quando o atendente recusa a chamada.
+        
+        Faz a IA dizer algo como "OK, obrigado" antes de desconectar,
+        tornando a interação mais natural e educada.
+        
+        PRIORIDADE:
+        1. Usa mensagem customizada do banco de dados (self.courtesy_message) se disponível
+        2. Usa mensagem padrão hardcoded como fallback
+        """
+        if not self._ws or self._is_ws_closed():
+            logger.debug("Cannot send courtesy response - WebSocket closed")
+            return
+        
+        try:
+            # PRIORIDADE: Usar mensagem do banco de dados se disponível
+            if self.courtesy_message:
+                courtesy_text = self.courtesy_message
+                logger.info("Using custom courtesy message from database")
+            else:
+                # FALLBACK: Mensagem padrão
+                courtesy_text = "OK, obrigado. Até logo."
+            
+            # Instrução clara e curta para a IA
+            courtesy_instruction = (
+                f"[SISTEMA] O atendente recusou a chamada. "
+                f"Diga apenas: '{courtesy_text}' e encerre."
+            )
+            
+            logger.info("💬 Sending courtesy response to attendant...")
+            
+            # Enviar instrução
+            await self._ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": courtesy_instruction}]
+                }
+            }))
+            
+            # Solicitar resposta
+            await self._ws.send(json.dumps({"type": "response.create"}))
+            
+            # Aguardar a IA gerar e reproduzir o áudio de cortesia
+            # Timeout curto pois é uma frase simples
+            max_wait = 3.0  # segundos
+            wait_interval = 0.1
+            waited = 0.0
+            
+            while waited < max_wait:
+                try:
+                    msg = await asyncio.wait_for(self._ws.recv(), timeout=wait_interval)
+                    event = json.loads(msg)
+                    etype = event.get("type", "")
+                    
+                    # Processar áudio de resposta
+                    if etype in ("response.audio.delta", "response.output_audio.delta"):
+                        audio_b64 = event.get("delta", "")
+                        if audio_b64:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            await self._handle_audio_output(audio_bytes)
+                    
+                    # Se resposta terminou, sair do loop
+                    if etype == "response.done":
+                        logger.info("✅ Courtesy response completed")
+                        break
+                    
+                except asyncio.TimeoutError:
+                    waited += wait_interval
+                    continue
+                except Exception as e:
+                    logger.debug(f"Error receiving courtesy event: {e}")
+                    break
+            
+            # Aguardar flush do áudio pendente
+            if self._pending_audio_bytes > 0:
+                pending_ms = self._pending_audio_bytes / 16.0
+                logger.debug(f"Waiting for {pending_ms:.0f}ms of courtesy audio to play...")
+                await asyncio.sleep(min(pending_ms / 1000.0 + 0.5, 2.0))
+            
+        except Exception as e:
+            logger.warning(f"Could not send courtesy response: {e}")
+    
     async def _handle_event(self, event: dict) -> None:
         """Processa evento do OpenAI Realtime."""
         etype = event.get("type", "")
@@ -701,7 +789,7 @@ class ConferenceAnnouncementSession:
         # Resposta completa (texto + áudio + function calls)
         elif etype == "response.done":
             await self._flush_audio_buffer(force=True)
-            self._check_assistant_decision()
+            await self._check_assistant_decision()
         
         # Erro
         elif etype == "error":
@@ -749,7 +837,6 @@ class ConferenceAnnouncementSession:
                 logger.info("✅ Function call: ACCEPTED")
                 
             elif function_name == "reject_transfer":
-                self._rejected = True
                 # Extrair motivo se fornecido
                 try:
                     args = json.loads(arguments) if isinstance(arguments, str) else arguments
@@ -757,6 +844,12 @@ class ConferenceAnnouncementSession:
                 except Exception:
                     self._rejection_message = "Recusado pelo atendente"
                 logger.info(f"❌ Function call: REJECTED - {self._rejection_message}")
+                
+                # Enviar resposta de cortesia ANTES de marcar como rejeitado
+                # Isso permite a IA falar "OK, obrigado" antes de desconectar
+                await self._send_courtesy_response()
+                
+                self._rejected = True
             
             # Enviar output da function (obrigatório)
             if call_id:
@@ -879,13 +972,18 @@ class ConferenceAnnouncementSession:
             # Verificar patterns de recusa
             for pattern in reject_patterns:
                 if pattern in text_lower:
-                    self._rejected = True
                     self._rejection_message = human_text
                     logger.info(f"Human REJECTED: matched '{pattern}'")
+                    
+                    # Enviar resposta de cortesia ANTES de marcar como rejeitado
+                    # Isso permite a IA falar "OK, obrigado" antes de desconectar
+                    await self._send_courtesy_response()
+                    
+                    self._rejected = True
                     self._decision_event.set()
                     return
     
-    def _check_assistant_decision(self) -> None:
+    async def _check_assistant_decision(self) -> None:
         """Verifica decisão na transcrição do assistente (fallback)."""
         text = self._transcript.upper()
         
@@ -895,11 +993,15 @@ class ConferenceAnnouncementSession:
             self._decision_event.set()
         
         elif "RECUSADO" in text and not self._accepted:
-            self._rejected = True
             parts = self._transcript.split("RECUSADO:")
             if len(parts) > 1:
                 self._rejection_message = parts[1].strip()[:200]
             logger.info(f"Assistant indicated: REJECTED")
+            
+            # Enviar resposta de cortesia antes de marcar como rejeitado
+            await self._send_courtesy_response()
+            
+            self._rejected = True
             self._decision_event.set()
     
     async def _play_audio_fallback(self, audio_bytes: bytes) -> None:

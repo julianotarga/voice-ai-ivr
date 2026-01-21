@@ -3500,8 +3500,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                             announcement_timeout=self.config.transfer_realtime_timeout,
                             openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                             openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
+                            # Prompts customizados do banco de dados (FusionPBX)
+                            # Se None, usa prompts padrão hardcoded como fallback
+                            announcement_prompt=self.config.transfer_realtime_prompt,
                         ),
                         on_resume=self._resume_voice_ai,
+                        secretary_uuid=self.config.secretary_uuid,
                     )
                     
                     # Executar transferência via conferência

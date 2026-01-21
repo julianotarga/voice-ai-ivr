@@ -63,6 +63,11 @@ class ConferenceTransferConfig:
     # IMPORTANTE: accept_on_timeout=False para evitar conectar quando atendente recusa
     # mas a IA não chama reject_transfer(). Melhor rejeitar por timeout do que conectar errado.
     accept_on_timeout: bool = False
+    
+    # Prompts customizados (do banco de dados via FusionPBX)
+    # Se None, usa prompts padrão hardcoded como fallback
+    announcement_prompt: Optional[str] = None  # Prompt para anúncio ao atendente
+    courtesy_message: Optional[str] = None  # Mensagem de cortesia ao recusar
 
 
 class ConferenceTransferManager:
@@ -108,6 +113,7 @@ class ConferenceTransferManager:
         openai_api_key: Optional[str] = None,
         on_resume: Optional[Callable[[], Awaitable[Any]]] = None,
         omniplay_api: Any = None,
+        secretary_uuid: Optional[str] = None,  # Mantido para compatibilidade
     ):
         """
         Inicializa o transfer manager.
@@ -121,6 +127,7 @@ class ConferenceTransferManager:
             openai_api_key: API key OpenAI (usa env se não fornecida)
             on_resume: Callback para retomar Voice AI após falha
             omniplay_api: API OmniPlay para criar tickets (opcional)
+            secretary_uuid: UUID da secretária (para fallback de reconexão)
         """
         self.esl = esl_client
         self.a_leg_uuid = a_leg_uuid
@@ -130,6 +137,7 @@ class ConferenceTransferManager:
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.on_resume = on_resume
         self.omniplay_api = omniplay_api
+        self.secretary_uuid = secretary_uuid  # Mantido para fallback
         
         # Estado da transferência
         self.b_leg_uuid: Optional[str] = None
@@ -641,11 +649,19 @@ class ConferenceTransferManager:
             return True
     
     async def _stop_voiceai_stream(self) -> None:
-        """Para o stream de áudio do Voice AI no A-leg."""
-        logger.debug(f"_stop_voiceai_stream: Sending uuid_audio_stream stop for {self.a_leg_uuid}")
+        """
+        Pausa o stream de áudio do Voice AI no A-leg.
+        
+        IMPORTANTE: Usamos PAUSE em vez de STOP para manter a conexão WebSocket
+        ativa. Isso permite retomar a sessão sem perder o contexto da conversa.
+        
+        O STOP fecha a conexão WebSocket e encerra a RealtimeSession.
+        O PAUSE mantém a conexão aberta mas para de enviar/receber áudio.
+        """
+        logger.debug(f"_stop_voiceai_stream: Sending uuid_audio_stream pause for {self.a_leg_uuid}")
         try:
             result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
+                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} pause"),
                 timeout=3.0
             )
             logger.debug(f"_stop_voiceai_stream: Result: {result}")
@@ -955,6 +971,7 @@ class ConferenceTransferManager:
                 initial_message=initial_message,
                 model=self.config.openai_model,
                 voice=self.config.openai_voice,
+                courtesy_message=self.config.courtesy_message,
             )
             
             # Executar anúncio
@@ -999,6 +1016,10 @@ class ConferenceTransferManager:
         """
         Constrói prompt de sistema para o anúncio.
         
+        PRIORIDADE:
+        1. Usa prompt customizado do banco de dados (config.announcement_prompt) se disponível
+        2. Usa prompt padrão hardcoded como fallback
+        
         IMPORTANTE: Este prompt é crítico para garantir que a IA:
         1. Não interprete saudações como aceitação
         2. Faça um anúncio claro e breve
@@ -1024,61 +1045,91 @@ INFORMAÇÕES DO CLIENTE:
 - NUNCA invente nomes!
 """
         
-        return f"""Você é uma secretária virtual fazendo uma ligação para ANUNCIAR que há um cliente aguardando.
+        # PRIORIDADE: Usar prompt do banco de dados se disponível
+        if self.config.announcement_prompt:
+            # Injetar variáveis dinâmicas no prompt customizado
+            custom_prompt = self.config.announcement_prompt
+            custom_prompt = custom_prompt.replace("{context}", context)
+            custom_prompt = custom_prompt.replace("{caller_name}", caller_name or "Não informado")
+            custom_prompt = custom_prompt.replace("{caller_info}", caller_info)
+            logger.info("Using custom announcement prompt from database")
+            return custom_prompt
+        
+        # FALLBACK: Prompt padrão hardcoded
+        return f"""# Role & Objective
+Você é a secretária virtual anunciando uma ligação para um atendente interno.
+Seu objetivo é: informar quem está na linha e obter uma decisão clara (aceitar ou recusar).
 
 CONTEXTO DA LIGAÇÃO: {context}
 {caller_info}
-═══════════════════════════════════════════════════════
-REGRAS ABSOLUTAS (NÃO VIOLE NUNCA):
-═══════════════════════════════════════════════════════
 
-1. VOCÊ NÃO FAZ PERGUNTAS SOBRE O CLIENTE
-   Você só ANUNCIA e aguarda a decisão do atendente.
-   NÃO pergunte: "Qual o nome?" ou "Como se chama?"
-   Você já tem as informações acima. Use-as!
+# Personality & Tone
+- Profissional e objetiva.
+- Breve (cliente está aguardando em espera).
+- 1 frase por resposta, máximo 2.
 
-2. SAUDAÇÕES NÃO SÃO ACEITAÇÃO
-   "Alô", "Oi", "Olá", "Pois não", "Sim?" 
-   → APENAS saudações. Repita seu anúncio!
-   → NUNCA chame accept_transfer após saudação
+# Language
+- Português do Brasil.
+- Linguagem formal mas acessível.
 
-3. SE O ATENDENTE PERGUNTAR, RESPONDA COM AS INFORMAÇÕES ACIMA
-   Atendente: "Como a pessoa se chama?" → Use o nome das INFORMAÇÕES acima
-   Atendente: "Qual o assunto?" → Diga o contexto da ligação
-   → Após responder: "Pode atendê-lo agora?"
+# Instructions/Rules
 
-4. ACEITAÇÃO = accept_transfer()
-   SOMENTE quando ouvir CLARAMENTE:
-   - "Sim, pode passar" / "Pode conectar" / "Manda" / "Ok, pode"
+## Regra Principal
+- ANUNCIE e aguarde decisão.
+- NÃO faça perguntas sobre o cliente - você já tem as informações acima.
+- Se o atendente perguntar algo, responda com as INFORMAÇÕES acima.
 
-5. RECUSA = reject_transfer()
-   Quando ouvir:
-   - "Não posso agora" / "Estou ocupado" / "Liga depois" / "Não quero"
-   → OBRIGATÓRIO chamar reject_transfer()!
+## Saudações NÃO são Aceitação
+- "Alô", "Oi", "Pois não", "Sim?" → Apenas saudações.
+- Repita seu anúncio após saudação.
+- NUNCA interprete saudação como aceitação.
 
-═══════════════════════════════════════════════════════
-EXEMPLO CORRETO:
-═══════════════════════════════════════════════════════
+## Quando Perguntar Algo
+- "Quem é?" / "Como se chama?" → Use o nome das INFORMAÇÕES acima
+- "Qual o assunto?" → Diga o contexto
+- Após responder: "Pode atendê-lo agora?"
 
-Você: "Olá, tenho {caller_name or 'um cliente'} aguardando sobre {context}. Pode atendê-lo?"
-Atendente: "Não posso agora, estou em reunião"
-→ CHAME reject_transfer() IMEDIATAMENTE!
+# Tools
 
-═══════════════════════════════════════════════════════
-EXEMPLO ERRADO (NÃO FAÇA):
-═══════════════════════════════════════════════════════
+## accept_transfer()
+Usar SOMENTE quando ouvir CLARAMENTE:
+- "Pode passar" / "Pode conectar" / "Manda" / "Ok, pode" / "Sim"
+- Confirmação EXPLÍCITA de que pode atender
 
-❌ Você perguntar: "Qual o nome do cliente?"
-❌ Você inventar nomes que não estão nas INFORMAÇÕES
-❌ Ignorar recusa e chamar accept_transfer()
-❌ Conectar sem confirmação explícita
+## reject_transfer(reason)
+Usar quando ouvir:
+- "Não posso agora" / "Estou ocupado" / "Liga depois" / "Não quero"
+- Qualquer negativa clara
+Parâmetro reason: resumo do motivo (ex: "em reunião", "ocupado")
 
-═══════════════════════════════════════════════════════
-ESTILO:
-═══════════════════════════════════════════════════════
-- Seja BREVE (cliente esperando)
-- Tom profissional
-- TERMINE com: "Pode atendê-lo agora?"
+# Conversation Flow
+
+## 1) Anúncio Inicial
+"Olá, tenho {caller_name or 'um cliente'} aguardando sobre {context}. Pode atendê-lo?"
+
+## 2) Se Saudação
+Atendente: "Alô?" / "Oi"
+Você: "Tenho {caller_name or 'um cliente'} na linha sobre {context}. Pode atender agora?"
+
+## 3) Se Pergunta
+Atendente: "Quem é?"
+Você: "É {caller_name or 'o cliente'}. Pode atendê-lo?"
+
+## 4) Se Aceitar
+Atendente: "Pode passar" / "Manda"
+→ Chame accept_transfer() IMEDIATAMENTE
+
+## 5) Se Recusar
+Atendente: "Não posso agora" / "Estou ocupado"
+→ Chame reject_transfer(reason) IMEDIATAMENTE
+
+# REGRAS CRÍTICAS
+
+1. NUNCA invente informações - use APENAS o que está nas INFORMAÇÕES acima
+2. NUNCA interprete saudação como aceitação
+3. SEMPRE aguarde confirmação EXPLÍCITA antes de accept_transfer
+4. SEMPRE chame reject_transfer ao ouvir recusa
+5. Seja BREVE - o cliente está esperando
 """
     
     async def _process_decision(
@@ -1420,7 +1471,11 @@ ESTILO:
         """
         Retorna A-leg ao Voice AI.
         
-        Remove da conferência e reinicia stream de áudio.
+        Remove da conferência e retoma stream de áudio.
+        
+        IMPORTANTE: Usamos RESUME porque o stream foi PAUSADO (não parado)
+        em _stop_voiceai_stream(). Isso mantém a conexão WebSocket ativa
+        e preserva o contexto da conversa.
         """
         logger.info("🔙 Returning A-leg to Voice AI...")
         
@@ -1460,6 +1515,36 @@ ESTILO:
                 logger.info("✅ A-leg removido do HOLD")
             except (asyncio.TimeoutError, Exception) as e:
                 logger.debug(f"Não foi possível remover HOLD do A-leg: {e}")
+            
+            # =================================================================
+            # CRÍTICO: Retomar uuid_audio_stream
+            # 
+            # O stream foi PAUSADO (não parado) em _stop_voiceai_stream().
+            # Agora precisamos RETOMÁ-LO para que o áudio bidirecional
+            # entre FreeSWITCH e Python volte a funcionar.
+            #
+            # RESUME mantém a sessão RealtimeSession intacta com:
+            # - Histórico da conversa
+            # - Nome do cliente extraído
+            # - Contexto do provider OpenAI
+            # =================================================================
+            try:
+                logger.info(f"🔄 Retomando audio stream (uuid_audio_stream resume)...")
+                
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} resume"),
+                    timeout=3.0
+                )
+                
+                if result and "+OK" in str(result):
+                    logger.info(f"✅ Audio stream retomado com sucesso")
+                else:
+                    logger.warning(f"⚠️ Audio stream resume resultado: {result}")
+                
+            except asyncio.TimeoutError:
+                logger.error("❌ Timeout ao retomar audio stream")
+            except Exception as e:
+                logger.error(f"❌ Erro ao retomar audio stream: {e}")
             
             # Retomar Voice AI via callback
             if self.on_resume:
@@ -1565,20 +1650,13 @@ ESTILO:
         logger.info("🧹 Cleaning up after error...")
         
         try:
-            # 1. Parar streams de áudio (evita áudio residual) - timeout curto
+            # 1. Parar stream de áudio do B-leg (evita áudio residual) - timeout curto
+            # NOTA: NÃO paramos o stream do A-leg aqui porque queremos fazer
+            # RESUME em _return_a_leg_to_voiceai() para manter o contexto da conversa
             if self.b_leg_uuid:
                 try:
                     await asyncio.wait_for(
                         self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
-                        timeout=2.0
-                    )
-                except (asyncio.TimeoutError, Exception):
-                    pass
-            
-            if self.a_leg_uuid:
-                try:
-                    await asyncio.wait_for(
-                        self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
                         timeout=2.0
                     )
                 except (asyncio.TimeoutError, Exception):
