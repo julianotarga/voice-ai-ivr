@@ -1676,12 +1676,17 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # - Adicionar margem para latência de rede e buffer
             audio_duration_ms = self._pending_audio_bytes / 16.0
             
-            # Proteção = duração do áudio + margem de 500ms
-            # (warmup buffer 100ms + latência de rede + margem de segurança)
-            protection_duration = (audio_duration_ms / 1000.0) + 0.5
+            # Proteção REDUZIDA para permitir conversação mais natural:
+            # - Usar apenas 30% da duração do áudio (AEC cuida do eco)
+            # - Margem de 200ms para buffer inicial
+            # - Máximo de 1.5s para não bloquear demais
+            # 
+            # ANTES: 4100ms de áudio = 4.6s de proteção (muito longo!)
+            # AGORA: 4100ms de áudio = 1.43s de proteção (mais natural)
+            protection_duration = (audio_duration_ms * 0.3 / 1000.0) + 0.2
             
-            # Limitar a proteção máxima a 5 segundos para não bloquear muito
-            protection_duration = min(protection_duration, 5.0)
+            # Limitar a proteção máxima a 1.5 segundos
+            protection_duration = min(protection_duration, 1.5)
             
             # Aplicar proteção apenas se a duração for significativa (>500ms)
             if audio_duration_ms > 500:
