@@ -2702,24 +2702,31 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             if remaining_time > 0:
                 # =========================================================
-                # MARGEM DE SEGURANÇA: 30% + 800ms
+                # MARGEM DE SEGURANÇA: tempo restante + 500ms FIXO
                 # 
-                # Motivo: O áudio precisa percorrer:
-                # 1. Python → FreeSWITCH (rede local ou docker)
-                # 2. Buffer interno do FreeSWITCH
-                # 3. FreeSWITCH → Telefone (rede pública, latência variável)
+                # O cálculo é simples:
+                # - remaining_time = tempo que falta reproduzir
+                # - 500ms = margem fixa para latência de rede
                 #
-                # Uma margem de 20% + 300ms era insuficiente e causava
-                # corte no final das frases antes de transferências.
+                # Para frase de 5s com 2s reproduzidos:
+                #   remaining = 3s, wait = 3.5s
+                #
+                # Para frase de 1s com 0.5s reproduzidos:
+                #   remaining = 0.5s, wait = 1.0s
+                #
+                # A margem é FIXA, não percentual, evitando silêncio excessivo.
                 # =========================================================
-                wait_playback = remaining_time * 1.3 + 0.8
+                NETWORK_LATENCY_MARGIN = 0.5  # 500ms margem fixa
+                
+                wait_playback = remaining_time + NETWORK_LATENCY_MARGIN
                 
                 # Aplicar limites
                 wait_playback = max(min_wait, min(wait_playback, max_wait))
                 
                 logger.info(
                     f"🔊 [{context}] Audio: {audio_duration:.1f}s total, "
-                    f"{audio_elapsed:.1f}s elapsed, aguardando {wait_playback:.1f}s",
+                    f"{audio_elapsed:.1f}s elapsed, remaining={remaining_time:.1f}s, "
+                    f"aguardando {wait_playback:.1f}s (margem fixa {NETWORK_LATENCY_MARGIN}s)",
                     extra={
                         "call_uuid": self.call_uuid,
                         "pending_audio_bytes": self._pending_audio_bytes,
@@ -2728,7 +2735,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 
                 await asyncio.sleep(wait_playback)
             else:
-                # Áudio já terminou, pequena margem
+                # Áudio já terminou, apenas margem de latência
                 await asyncio.sleep(0.3)
         else:
             # Sem áudio pendente, pequena margem
