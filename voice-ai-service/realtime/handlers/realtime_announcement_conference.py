@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -137,11 +138,11 @@ class ConferenceAnnouncementSession:
         
         # Resamplers: FS 16kHz <-> OpenAI 24kHz
         self._resampler_in = Resampler(16000, 24000)
-        self._resampler_out = Resampler(24000, 16000)
         # IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz
-        # Então precisamos: OpenAI 24kHz -> 16kHz -> 8kHz
-        self._resampler_to_8k = Resampler(16000, 8000)
-        self._fs_audio_buffer = AudioBuffer(warmup_ms=300, sample_rate=8000)
+        # Resample direto 24kHz -> 8kHz (evita artefatos de resampling em cadeia)
+        self._resampler_out_8k = Resampler(24000, 8000)
+        # Warmup de 400ms para buffer mais suave e evitar cortes iniciais
+        self._fs_audio_buffer = AudioBuffer(warmup_ms=400, sample_rate=8000)
         
         # Buffer de áudio para fallback TTS
         self._audio_buffer = bytearray()
@@ -1015,23 +1016,19 @@ class ConferenceAnnouncementSession:
         """Enfileira áudio do OpenAI para o FreeSWITCH.
         
         IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz!
-        Fluxo: OpenAI 24kHz -> 16kHz -> 8kHz
+        Fluxo: OpenAI 24kHz -> 8kHz (direto, sem cadeia)
         """
         if not audio_bytes:
             return
         
-        # Primeiro resample: 24kHz -> 16kHz
+        # Resample direto: 24kHz -> 8kHz
+        # Evita artefatos de resampling em cadeia (24->16->8)
         try:
-            audio_16k = self._resampler_out.process(audio_bytes)
+            audio_8k = self._resampler_out_8k.process(audio_bytes)
         except Exception:
-            audio_16k = audio_bytes
+            audio_8k = audio_bytes
         
-        # Segundo resample: 16kHz -> 8kHz (mod_audio_stream playback requer 8kHz)
-        try:
-            audio_8k = self._resampler_to_8k.process(audio_16k)
-        except Exception:
-            audio_8k = audio_16k
-        
+        # Buffer de warmup para playback suave
         audio_8k = self._fs_audio_buffer.add(audio_8k)
         if not audio_8k:
             return
@@ -1051,12 +1048,14 @@ class ConferenceAnnouncementSession:
             logger.debug(f"🔊 Audio enqueued: {chunks_enqueued} chunks ({len(audio_8k)} bytes) to FS @ 8kHz")
     
     async def _fs_sender_loop(self) -> None:
-        """Envia áudio para o FreeSWITCH.
+        """Envia áudio para o FreeSWITCH com rate limiting.
         
         IMPORTANTE: mod_audio_stream espera JSON com formato:
         {"type": "streamAudio", "data": {"audioData": "<base64>", "audioDataType": "raw"}}
         
         Mensagens binárias são IGNORADAS pelo mod_audio_stream!
+        
+        Rate limiting: envia na velocidade de tempo real para evitar buffer overrun.
         """
         if not self._fs_ws:
             logger.warning("🔊 _fs_sender_loop: No FS WebSocket!")
@@ -1064,6 +1063,14 @@ class ConferenceAnnouncementSession:
         
         total_bytes_sent = 0
         chunks_sent = 0
+        batch_buffer = bytearray()
+        last_send_time = 0.0
+        
+        # Configuração de batching para suavizar playback
+        # 320 bytes = 20ms @ 8kHz L16
+        # Batch de 5 chunks = 100ms = 1600 bytes
+        batch_bytes = 1600
+        batch_duration_ms = 100.0
         
         try:
             # Enviar mensagem de configuração inicial (opcional, para compatibilidade)
@@ -1084,74 +1091,98 @@ class ConferenceAnnouncementSession:
                         timeout=0.5
                     )
                     
-                    # CORREÇÃO: mod_audio_stream espera JSON, não binary frames!
-                    # O áudio L16 deve ser codificado em base64 e enviado como JSON
-                    audio_msg = json.dumps({
-                        "type": "streamAudio",
-                        "data": {
-                            "audioData": base64.b64encode(chunk).decode("utf-8"),
-                            "audioDataType": "raw"
-                        }
-                    })
-                    await self._fs_ws.send(audio_msg)
+                    # Acumular no batch buffer
+                    batch_buffer.extend(chunk)
                     
-                    total_bytes_sent += len(chunk)
-                    chunks_sent += 1
-                    
-                    # Log a cada 50 chunks (~1 segundo de áudio)
-                    if chunks_sent % 50 == 0:
-                        logger.debug(f"🔊 FS sender: {chunks_sent} chunks sent ({total_bytes_sent} bytes total)")
+                    # Enviar batch quando atingir tamanho alvo
+                    if len(batch_buffer) >= batch_bytes:
+                        # Rate limit: esperar tempo real antes de enviar próximo batch
+                        if last_send_time > 0:
+                            now = time.time()
+                            elapsed_ms = (now - last_send_time) * 1000
+                            if elapsed_ms < batch_duration_ms:
+                                wait_ms = batch_duration_ms - elapsed_ms
+                                await asyncio.sleep(wait_ms / 1000.0)
                         
-                except asyncio.TimeoutError:
-                    # Continuar loop para verificar self._running
-                    continue
-                    
-        except asyncio.CancelledError:
-            logger.debug(f"🔊 FS sender: cancelled after {chunks_sent} chunks ({total_bytes_sent} bytes)")
-        except Exception as e:
-            logger.debug(f"🔊 FS sender loop ended: {e} (sent {chunks_sent} chunks, {total_bytes_sent} bytes)")
-        finally:
-            # FLUSH: Enviar áudio restante no buffer para evitar cortes no final das frases
-            try:
-                # 1. Drenar a fila restante
-                while not self._fs_audio_queue.empty():
-                    try:
-                        chunk = self._fs_audio_queue.get_nowait()
-                        if self._fs_ws:
-                            audio_msg = json.dumps({
-                                "type": "streamAudio",
-                                "data": {
-                                    "audioData": base64.b64encode(chunk).decode("utf-8"),
-                                    "audioDataType": "raw"
-                                }
-                            })
-                            await self._fs_ws.send(audio_msg)
-                            total_bytes_sent += len(chunk)
-                            chunks_sent += 1
-                    except Exception:
-                        break
-                
-                # 2. Flush do AudioBuffer (áudio pendente de warmup)
-                remaining = self._fs_audio_buffer.flush()
-                if remaining and self._fs_ws:
-                    # Dividir em chunks de 320 bytes
-                    for i in range(0, len(remaining), 320):
-                        chunk = remaining[i:i + 320]
+                        # CORREÇÃO: mod_audio_stream espera JSON, não binary frames!
                         audio_msg = json.dumps({
                             "type": "streamAudio",
                             "data": {
-                                "audioData": base64.b64encode(chunk).decode("utf-8"),
+                                "audioData": base64.b64encode(bytes(batch_buffer)).decode("utf-8"),
                                 "audioDataType": "raw"
                             }
                         })
                         await self._fs_ws.send(audio_msg)
-                        total_bytes_sent += len(chunk)
+                        
+                        total_bytes_sent += len(batch_buffer)
                         chunks_sent += 1
-                    logger.debug(f"🔊 FS sender: flushed {len(remaining)} bytes from buffer")
+                        last_send_time = time.time()
+                        batch_buffer.clear()
+                    
+                    # Log a cada 10 batches (~1 segundo de áudio)
+                    if chunks_sent > 0 and chunks_sent % 10 == 0:
+                        logger.debug(f"🔊 FS sender: {chunks_sent} batches sent ({total_bytes_sent} bytes total)")
+                        
+                except asyncio.TimeoutError:
+                    # Timeout - enviar batch parcial se houver dados
+                    if batch_buffer and self._fs_ws:
+                        audio_msg = json.dumps({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioData": base64.b64encode(bytes(batch_buffer)).decode("utf-8"),
+                                "audioDataType": "raw"
+                            }
+                        })
+                        await self._fs_ws.send(audio_msg)
+                        total_bytes_sent += len(batch_buffer)
+                        chunks_sent += 1
+                        last_send_time = time.time()
+                        batch_buffer.clear()
+                    continue
+                    
+        except asyncio.CancelledError:
+            logger.debug(f"🔊 FS sender: cancelled after {chunks_sent} batches ({total_bytes_sent} bytes)")
+        except Exception as e:
+            logger.debug(f"🔊 FS sender loop ended: {e} (sent {chunks_sent} batches, {total_bytes_sent} bytes)")
+        finally:
+            # FLUSH: Enviar áudio restante para evitar cortes no final das frases
+            try:
+                flush_buffer = bytearray()
+                
+                # 1. Adicionar batch_buffer local
+                if batch_buffer:
+                    flush_buffer.extend(batch_buffer)
+                
+                # 2. Drenar a fila restante
+                while not self._fs_audio_queue.empty():
+                    try:
+                        chunk = self._fs_audio_queue.get_nowait()
+                        flush_buffer.extend(chunk)
+                    except Exception:
+                        break
+                
+                # 3. Flush do AudioBuffer (áudio pendente de warmup)
+                remaining = self._fs_audio_buffer.flush()
+                if remaining:
+                    flush_buffer.extend(remaining)
+                
+                # 4. Enviar tudo de uma vez
+                if flush_buffer and self._fs_ws:
+                    audio_msg = json.dumps({
+                        "type": "streamAudio",
+                        "data": {
+                            "audioData": base64.b64encode(bytes(flush_buffer)).decode("utf-8"),
+                            "audioDataType": "raw"
+                        }
+                    })
+                    await self._fs_ws.send(audio_msg)
+                    total_bytes_sent += len(flush_buffer)
+                    logger.debug(f"🔊 FS sender: flushed {len(flush_buffer)} bytes on exit")
+                    
             except Exception as flush_err:
                 logger.debug(f"🔊 FS sender: flush error: {flush_err}")
             
-            if chunks_sent > 0:
-                logger.info(f"🔊 FS sender: TOTAL sent {chunks_sent} chunks ({total_bytes_sent} bytes)")
+            if total_bytes_sent > 0:
+                logger.info(f"🔊 FS sender: TOTAL sent {total_bytes_sent} bytes in {chunks_sent} batches")
             else:
                 logger.warning("🔊 FS sender: NO audio was sent to FreeSWITCH!")

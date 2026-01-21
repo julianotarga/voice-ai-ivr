@@ -1009,6 +1009,16 @@ class RealtimeServer:
                         await _send_stop_audio()
                         continue
                     
+                    # Tratar sentinela FLUSH (fim de resposta)
+                    # Envia os bytes restantes no batch_buffer para evitar cortes
+                    if isinstance(item[0], str) and item[0] == "FLUSH":
+                        if batch_buffer:
+                            await _send_streamaudio_chunk(bytes(batch_buffer))
+                            logger.debug(f"FLUSH: sent remaining {len(batch_buffer)} bytes", 
+                                        extra={"call_uuid": call_uuid})
+                            batch_buffer.clear()
+                        continue
+                    
                     generation, chunk = item
                     if generation != playback_generation:
                         continue
@@ -1106,6 +1116,15 @@ class RealtimeServer:
                 if sender_task is not None:
                     await audio_out_queue.put(("STOP", playback_generation))
         
+        async def flush_audio():
+            """
+            Callback quando a resposta de áudio termina.
+            Envia FLUSH para o sender loop enviar os bytes restantes no batch_buffer.
+            """
+            if sender_task is not None:
+                await audio_out_queue.put(("FLUSH", playback_generation))
+                logger.debug("FLUSH signal sent to sender loop", extra={"call_uuid": call_uuid})
+        
         # Criar sessão via manager
         manager = get_session_manager()
         session = await manager.create_session(
@@ -1113,6 +1132,7 @@ class RealtimeServer:
             on_audio_output=send_audio,
             on_barge_in=clear_playback,
             on_transfer=clear_playback,
+            on_audio_done=flush_audio,
         )
         
         return session
