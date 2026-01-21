@@ -659,12 +659,13 @@ class ConferenceTransferManager:
         Flags:
         - mute: Cliente não pode falar (ainda, será desmutado após aceitação)
         
-        IMPORTANTE: Configura hangup_after_conference ANTES de mover.
-        Isso garante que quando o B-leg sair (com endconf), o A-leg também desliga.
+        IMPORTANTE: NÃO setamos hangup_after_conference aqui!
+        Isso é feito em _handle_accepted APENAS quando a transferência for aceita.
+        Se o atendente desligar/recusar, o cliente fica na linha para deixar recado.
         
         A conferência será criada automaticamente.
         
-        Ref: Context7 /signalwire/freeswitch-docs - hangup_after_conference, endconf
+        Ref: Context7 /signalwire/freeswitch-docs - conference, endconf
         """
         logger.info(f"_move_a_leg_to_conference: START - A-leg={self.a_leg_uuid}")
         
