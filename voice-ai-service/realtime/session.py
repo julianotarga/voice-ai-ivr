@@ -1658,20 +1658,39 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 "call_uuid": self.call_uuid,
             })
             
-            # PROTEÇÃO PÓS-SAUDAÇÃO:
-            # Após a PRIMEIRA resposta (saudação), silenciar o envio de áudio
-            # para o OpenAI por 1.5 segundos para evitar que o VAD detecte
-            # ruído/eco como fala e o modelo peça desculpas.
-            if not self._first_response_done:
-                self._first_response_done = True
-                # 1.5 segundos de proteção após a saudação
-                protection_duration = 1.5
+            # PROTEÇÃO PÓS-RESPOSTA:
+            # Silenciar envio de áudio para o OpenAI durante o playback
+            # para evitar que o VAD detecte eco como fala do usuário.
+            # 
+            # A proteção é calculada baseada na duração REAL do áudio:
+            # - L16 @ 8kHz = 16 bytes/ms
+            # - Adicionar margem para latência de rede e buffer
+            audio_duration_ms = self._pending_audio_bytes / 16.0
+            
+            # Proteção = duração do áudio + margem de 500ms
+            # (warmup buffer 100ms + latência de rede + margem de segurança)
+            protection_duration = (audio_duration_ms / 1000.0) + 0.5
+            
+            # Limitar a proteção máxima a 5 segundos para não bloquear muito
+            protection_duration = min(protection_duration, 5.0)
+            
+            # Aplicar proteção apenas se a duração for significativa (>500ms)
+            if audio_duration_ms > 500:
                 self._audio_muted_until = time.time() + protection_duration
-                logger.info(
-                    f"🛡️ Proteção pós-saudação ativada ({protection_duration}s) - "
-                    "áudio de input silenciado para evitar falsos positivos de VAD",
-                    extra={"call_uuid": self.call_uuid}
-                )
+                
+                if not self._first_response_done:
+                    self._first_response_done = True
+                    logger.info(
+                        f"🛡️ Proteção pós-saudação ativada ({protection_duration:.1f}s) - "
+                        f"áudio de {audio_duration_ms:.0f}ms será reproduzido",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                else:
+                    logger.debug(
+                        f"🛡️ Proteção pós-resposta ({protection_duration:.1f}s) - "
+                        f"áudio de {audio_duration_ms:.0f}ms",
+                        extra={"call_uuid": self.call_uuid}
+                    )
             
             if self._speech_start_time:
                 self._metrics.record_latency(self.call_uuid, time.time() - self._speech_start_time)
