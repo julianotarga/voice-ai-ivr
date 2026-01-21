@@ -193,11 +193,23 @@ class AudioBuffer:
             return result
         return b""
     
-    def reset(self) -> None:
-        """Reseta o buffer para nova sessão."""
+    def reset(self, extended_warmup_ms: Optional[int] = None) -> None:
+        """
+        Reseta o buffer para nova sessão.
+        
+        Args:
+            extended_warmup_ms: Se fornecido, usa este valor como warmup
+                               (útil após resume de transferência onde há mais jitter)
+        """
         self._buffer.clear()
         self._warmup_complete = False
         self._total_buffered = 0
+        
+        if extended_warmup_ms is not None:
+            samples_per_ms = self.sample_rate / 1000
+            self.warmup_bytes = int(extended_warmup_ms * samples_per_ms * self.bytes_per_sample)
+            self.warmup_ms = extended_warmup_ms
+            logger.debug(f"AudioBuffer: reset with extended warmup={extended_warmup_ms}ms, {self.warmup_bytes} bytes")
     
     @property
     def is_warming_up(self) -> bool:
@@ -280,9 +292,15 @@ class ResamplerPair:
         """Força envio do buffer restante."""
         return self.output_buffer.flush()
     
-    def reset_output_buffer(self) -> None:
-        """Reseta buffer para nova resposta."""
-        self.output_buffer.reset()
+    def reset_output_buffer(self, extended_warmup_ms: Optional[int] = None) -> None:
+        """
+        Reseta buffer para nova resposta.
+        
+        Args:
+            extended_warmup_ms: Se fornecido, usa warmup estendido
+                               (recomendado após resume de transferência)
+        """
+        self.output_buffer.reset(extended_warmup_ms)
     
     @property
     def is_output_warming_up(self) -> bool:

@@ -3870,7 +3870,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             self._input_audio_buffer.clear()
             if self._resampler:
                 try:
-                    self._resampler.reset_output_buffer()
+                    # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
+                    # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
+                    self._resampler.reset_output_buffer(extended_warmup_ms=400)
                 except Exception:
                     pass
             
@@ -3981,7 +3983,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         self._input_audio_buffer.clear()
         if self._resampler:
             try:
-                self._resampler.reset_output_buffer()
+                # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
+                # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
+                self._resampler.reset_output_buffer(extended_warmup_ms=400)
             except Exception:
                 pass
         
