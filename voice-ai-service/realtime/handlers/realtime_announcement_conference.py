@@ -1168,23 +1168,26 @@ class ConferenceAnnouncementSession:
                 logger.warning(f"🧹 [CLEANUP] WebSocket server close timeout/error: {e}")
             self._audio_ws_server = None
         
-        # 5. Fechar WebSocket do OpenAI
+        # 5. Fechar WebSocket do OpenAI (com timeout curto!)
         if self._ws:
             try:
-                await self._ws.close()
-            except Exception:
-                pass
+                await asyncio.wait_for(self._ws.close(), timeout=1.0)
+            except (Exception, asyncio.TimeoutError) as e:
+                logger.debug(f"🧹 [CLEANUP] OpenAI WS close: {type(e).__name__}")
             self._ws = None
         
         # 6. Parar stream no B-leg (verificar se ainda existe)
         try:
             b_exists = await asyncio.wait_for(
                 self.esl.uuid_exists(self.b_leg_uuid),
-                timeout=1.0
+                timeout=0.5
             )
             if b_exists:
-                await self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop")
-        except Exception:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                    timeout=0.5
+                )
+        except (Exception, asyncio.TimeoutError):
             pass
         
         logger.debug("Conference announcement session cleaned up")

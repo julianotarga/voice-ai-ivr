@@ -76,11 +76,11 @@ class ConferenceTransferManager:
     
     Fluxo:
     1. Cria conferência temporária única
-    2. Move A-leg (cliente) para conferência com flags {mute}
+    2. Move A-leg (cliente) para conferência com flags {mute|deaf}
     3. Origina B-leg (atendente) para conferência como moderador
     4. OpenAI anuncia para B-leg via uuid_audio_stream
     5. B-leg aceita/recusa via função call ou DTMF
-    6. Se aceito: unmute A-leg, ambos conversam
+    6. Se aceito: unmute+undeaf A-leg, ambos conversam
     7. Se recusado: kick B-leg, retornar A-leg ao Voice AI
     
     Uso:
@@ -676,6 +676,7 @@ class ConferenceTransferManager:
         
         Flags:
         - mute: Cliente não pode falar (ainda, será desmutado após aceitação)
+        - deaf: Cliente não pode ouvir a conversa entre IA e atendente
         
         IMPORTANTE: NÃO setamos hangup_after_conference aqui!
         Isso é feito em _handle_accepted APENAS quando a transferência for aceita.
@@ -697,11 +698,16 @@ class ConferenceTransferManager:
         
         # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
         # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
-        # NOTA: As chaves simples {mute} são interpretadas pelo FreeSWITCH
+        # NOTA: As chaves {mute|deaf} são interpretadas pelo FreeSWITCH
         # Python f-string requer {{ }} para escapar, resultando em { } no output
+        #
+        # FLAGS IMPORTANTES:
+        # - mute: Cliente não pode falar na conferência
+        # - deaf: Cliente não pode OUVIR a conferência (evita ouvir IA conversando com atendente)
+        # O cliente continua ouvindo MOH via uuid_hold separadamente
         transfer_cmd = (
             f"uuid_transfer {self.a_leg_uuid} "
-            f"'conference:{self.conference_name}@{profile}+flags{{mute}}' inline"
+            f"'conference:{self.conference_name}@{profile}+flags{{mute|deaf}}' inline"
         )
         
         logger.info(f"_move_a_leg_to_conference: Sending command: {transfer_cmd}")
@@ -1254,42 +1260,63 @@ Atendente: "Não posso agora" / "Estou ocupado"
             except asyncio.TimeoutError:
                 logger.warning("B-leg transfer timeout, continuing anyway")
             
-            # 4. Desmutar A-leg na conferência
-            # NOTA: O comando unmute requer member_id (número), não UUID
-            # Ref: Context7 - conference <confname> unmute <member_id>|all|last|non_moderator
+            # 4. Desmutar e tirar deaf da A-leg na conferência
+            # NOTA: Os comandos unmute/undeaf requerem member_id (número), não UUID
+            # Ref: Context7 - conference <confname> unmute/undeaf <member_id>|all|last|non_moderator
             
             member_id = await self._get_conference_member_id(self.a_leg_uuid)
             
             if member_id:
+                # Unmute: permitir que cliente FALE
                 unmute_cmd = f"conference {self.conference_name} unmute {member_id}"
+                # Undeaf: permitir que cliente OUÇA
+                undeaf_cmd = f"conference {self.conference_name} undeaf {member_id}"
+                
                 logger.debug(f"Unmute command: {unmute_cmd}")
+                logger.debug(f"Undeaf command: {undeaf_cmd}")
                 
                 try:
-                    result = await asyncio.wait_for(
+                    # Executar ambos comandos
+                    unmute_result = await asyncio.wait_for(
                         self.esl.execute_api(unmute_cmd),
                         timeout=3.0
                     )
-                    if "-ERR" in str(result):
-                        logger.warning(f"Unmute may have failed: {result}")
+                    undeaf_result = await asyncio.wait_for(
+                        self.esl.execute_api(undeaf_cmd),
+                        timeout=3.0
+                    )
+                    
+                    if "-ERR" in str(unmute_result):
+                        logger.warning(f"Unmute may have failed: {unmute_result}")
                     else:
                         logger.info(f"A-leg unmuted (member_id={member_id})")
+                    
+                    if "-ERR" in str(undeaf_result):
+                        logger.warning(f"Undeaf may have failed: {undeaf_result}")
+                    else:
+                        logger.info(f"A-leg undeaf (member_id={member_id})")
+                        
                 except asyncio.TimeoutError:
-                    logger.warning("Unmute command timeout")
+                    logger.warning("Unmute/undeaf command timeout")
             else:
-                # Fallback: desmutar todos os não-moderadores
-                logger.warning("Could not find A-leg member_id, unmuting all non_moderator")
+                # Fallback: desmutar e tirar deaf de todos os não-moderadores
+                logger.warning("Could not find A-leg member_id, unmuting/undeafing all non_moderator")
                 try:
                     await asyncio.wait_for(
                         self.esl.execute_api(f"conference {self.conference_name} unmute non_moderator"),
                         timeout=3.0
                     )
+                    await asyncio.wait_for(
+                        self.esl.execute_api(f"conference {self.conference_name} undeaf non_moderator"),
+                        timeout=3.0
+                    )
                 except asyncio.TimeoutError:
                     pass
             
-            # 4. Pronto! Ambos estão na conferência
+            # 5. Pronto! Ambos estão na conferência
             logger.info("🎉 Transfer completed - both parties in conference")
             logger.info(f"   Conference: {self.conference_name}")
-            logger.info(f"   A-leg (cliente): {self.a_leg_uuid} - unmuted")
+            logger.info(f"   A-leg (cliente): {self.a_leg_uuid} - unmuted+undeaf")
             logger.info(f"   B-leg (atendente): {self.b_leg_uuid} - moderator|endconf")
             
             return ConferenceTransferResult(
