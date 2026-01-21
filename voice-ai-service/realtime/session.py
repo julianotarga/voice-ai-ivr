@@ -47,6 +47,7 @@ from .handlers.transfer_manager import (
     get_busy_message,
 )
 from .handlers.transfer_destination_loader import TransferDestination
+from .config.prompts import get_early_conversation_rules
 
 # FASE 2: Transferência via Conferência (mod_conference)
 # Ref: voice-ai-ivr/docs/announced-transfer-conference.md
@@ -326,10 +327,10 @@ class RealtimeSessionConfig:
     # VAD (Voice Activity Detection) - Configuração
     # Tipo: "server_vad" (baseado em silêncio) ou "semantic_vad" (baseado em semântica)
     vad_type: str = "semantic_vad"  # RECOMENDADO: semantic_vad é mais inteligente
-    vad_threshold: float = 0.6  # 0.0-1.0 (maior = menos sensível, ajustado para viva-voz)
-    vad_eagerness: str = "medium"  # medium é mais tolerante a eco que high
-    silence_duration_ms: int = 600  # Tempo de silêncio para encerrar turno (aumentado para eco)
-    prefix_padding_ms: int = 400  # Áudio antes da fala (aumentado para ignorar eco curto)
+    vad_threshold: float = 0.7  # 0.0-1.0 (maior = menos sensível, aumentado para evitar falsos positivos)
+    vad_eagerness: str = "low"  # low é mais paciente, evita responder a eco/ruído
+    silence_duration_ms: int = 800  # Tempo de silêncio para encerrar turno (aumentado para mais paciência)
+    prefix_padding_ms: int = 500  # Áudio antes da fala (aumentado para ignorar eco/ruído inicial)
     
     # Guardrails - Segurança e moderação
     guardrails_enabled: bool = True  # Ativa instruções de segurança
@@ -972,6 +973,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             System prompt com guardrails incorporados
         """
         base_prompt = self.config.system_prompt or ""
+
+        # Regras anti-desculpas prematuras (evita problema de VAD detectando eco/ruído)
+        base_prompt += "\n\n" + get_early_conversation_rules()
 
         # Regra explícita para transferência (OpenAI Realtime)
         if self.config.intelligent_handoff_enabled:
