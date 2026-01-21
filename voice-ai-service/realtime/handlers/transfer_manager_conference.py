@@ -1562,27 +1562,13 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 logger.warning(f"Não foi possível parar MOH: {e}")
             
             # =================================================================
-            # STEP 3: Remover estado de HOLD via uuid_hold off
-            # 
-            # CRÍTICO: O uuid_break para o MOH atual, mas o estado de HOLD
-            # permanece ativo. Se não fizermos uuid_hold off, o FreeSWITCH
-            # vai reiniciar o MOH quando a IA parar de falar!
+            # STEP 3: Aguardar MOH parar completamente
+            #
+            # NOTA: Não usamos uuid_hold off aqui porque:
+            # 1. O cliente foi transferido para a conferência (não está em uuid_hold)
+            # 2. O uuid_break já parou qualquer áudio em reprodução
+            # 3. O uuid_hold off falha com "Operation failed" em conferências
             # =================================================================
-            try:
-                logger.info("⏸️ Removendo estado de HOLD (uuid_hold off)...")
-                result = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_hold off {self.a_leg_uuid}"),
-                    timeout=2.0
-                )
-                if result and "+OK" in str(result):
-                    logger.info("✅ Estado de HOLD removido com sucesso")
-                else:
-                    logger.warning(f"⚠️ uuid_hold off resultado: {result}")
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"Não foi possível remover estado de HOLD: {e}")
-            
-            # =================================================================
-            # STEP 4: Aguardar MOH parar completamente
             # 
             # Tempo suficiente para:
             # - FreeSWITCH processar o uuid_break e uuid_hold off

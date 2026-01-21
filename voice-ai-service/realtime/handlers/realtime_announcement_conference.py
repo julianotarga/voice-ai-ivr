@@ -718,7 +718,8 @@ class ConferenceAnnouncementSession:
                         audio_b64 = event.get("delta", "")
                         if audio_b64:
                             audio_bytes = base64.b64decode(audio_b64)
-                            await self._handle_audio_output(audio_bytes)
+                            # Usar o método correto para enfileirar áudio
+                            await self._enqueue_audio_to_freeswitch(audio_bytes)
                             audio_received = True
                     
                     # Se resposta terminou E recebemos áudio, sair do loop
