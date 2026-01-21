@@ -2516,11 +2516,13 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 # Evitar disparos consecutivos imediatos
                 self._last_activity = time.time()
 
-            if idle_time > self.config.idle_timeout_seconds:
+            # IMPORTANTE: Não encerrar por idle_timeout durante transferência
+            # Durante conferência, o stream de áudio está pausado e não há atividade
+            if idle_time > self.config.idle_timeout_seconds and not self._transfer_in_progress:
                 await self.stop("idle_timeout")
                 return
             
-            if self._started_at:
+            if self._started_at and not self._transfer_in_progress:
                 duration = (datetime.now() - self._started_at).total_seconds()
                 if duration > self.config.max_duration_seconds:
                     await self.stop("max_duration")
