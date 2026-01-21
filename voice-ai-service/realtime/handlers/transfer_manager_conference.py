@@ -48,7 +48,7 @@ class ConferenceTransferConfig:
     """Configuração para transferência via conferência."""
     # Timeouts
     originate_timeout: int = 30
-    announcement_timeout: float = 15.0
+    announcement_timeout: float = 30.0  # 30s para permitir conversa com perguntas
     dtmf_timeout: float = 10.0
     
     # Conferência
@@ -422,7 +422,7 @@ class ConferenceTransferManager:
                     error="Cliente desligou durante transferência"
                 )
             
-            decision = await self._announce_to_b_leg(announcement, context)
+            decision = await self._announce_to_b_leg(announcement, context, caller_name)
             
             # Verificar se hangup ocorreu durante anúncio
             if self._check_a_leg_hangup():
@@ -885,6 +885,7 @@ class ConferenceTransferManager:
         self,
         announcement: str,
         context: str,
+        caller_name: Optional[str] = None,
     ) -> TransferDecision:
         """
         Faz anúncio para B-leg via OpenAI Realtime.
@@ -934,8 +935,8 @@ class ConferenceTransferManager:
         # Importar aqui para evitar circular import
         from .realtime_announcement_conference import ConferenceAnnouncementSession
         
-        # Prompt para o agente
-        system_prompt = self._build_announcement_prompt(context)
+        # Prompt para o agente - inclui nome do cliente para responder perguntas
+        system_prompt = self._build_announcement_prompt(context, caller_name)
         
         # Mensagem inicial - usar o anúncio já formatado (já contém "Olá, tenho...")
         # O announcement vem de _build_announcement_for_human e já está completo
@@ -992,7 +993,7 @@ class ConferenceTransferManager:
             logger.error(f"Announcement error: {e}")
             return TransferDecision.ERROR
     
-    def _build_announcement_prompt(self, context: str) -> str:
+    def _build_announcement_prompt(self, context: str, caller_name: Optional[str] = None) -> str:
         """
         Constrói prompt de sistema para o anúncio.
         
@@ -1000,13 +1001,29 @@ class ConferenceTransferManager:
         1. Não interprete saudações como aceitação
         2. Faça um anúncio claro e breve
         3. Aguarde confirmação EXPLÍCITA antes de chamar accept_transfer
+        4. RESPONDA PERGUNTAS do atendente antes de aceitar
         
         Ref: Bug identificado no log - IA interpretou "Alô" como aceitação
         """
+        # Informações do cliente para responder perguntas
+        caller_info = ""
+        if caller_name:
+            caller_info = f"""
+INFORMAÇÕES DO CLIENTE:
+- Nome: {caller_name}
+- Se perguntarem "como a pessoa se chama?", responda: "{caller_name}"
+"""
+        else:
+            caller_info = """
+INFORMAÇÕES DO CLIENTE:
+- Nome: Não informado (o cliente não disse o nome)
+- Se perguntarem "como a pessoa se chama?", diga: "O cliente não informou o nome"
+"""
+        
         return f"""Você é uma secretária virtual profissional fazendo uma ligação para anunciar que há um cliente aguardando.
 
 CONTEXTO: {context}
-
+{caller_info}
 ═══════════════════════════════════════════════════════
 REGRAS ABSOLUTAS (NÃO VIOLE NUNCA):
 ═══════════════════════════════════════════════════════
@@ -1016,7 +1033,15 @@ REGRAS ABSOLUTAS (NÃO VIOLE NUNCA):
    → Estas são APENAS saudações iniciais. CONTINUE a conversa!
    → NUNCA chame accept_transfer após ouvir apenas uma saudação
 
-2. ACEITAÇÃO DEVE SER EXPLÍCITA
+2. RESPONDA PERGUNTAS ANTES DE ACEITAR
+   Se o atendente perguntar algo, RESPONDA primeiro:
+   - "Como a pessoa se chama?" → Responda o nome do cliente
+   - "Qual o assunto?" → Diga o contexto da ligação
+   - "É urgente?" → Diga que o cliente está aguardando
+   → Após responder, pergunte novamente: "Pode atendê-lo?"
+   → NÃO chame accept_transfer até ter confirmação EXPLÍCITA
+
+3. ACEITAÇÃO DEVE SER EXPLÍCITA
    Só chame accept_transfer() quando ouvir CLARAMENTE:
    - "Sim, pode passar"
    - "Pode conectar"
@@ -1026,7 +1051,7 @@ REGRAS ABSOLUTAS (NÃO VIOLE NUNCA):
    - "Pode ser"
    - "Tá bom, pode passar"
 
-3. RECUSA
+4. RECUSA
    Chame reject_transfer() quando ouvir:
    - "Não posso agora"
    - "Estou ocupado/a"
@@ -1040,16 +1065,17 @@ FLUXO DA CONVERSA:
 
 PASSO 1: Faça o anúncio (já está pronto na primeira mensagem)
 PASSO 2: Aguarde a resposta
-PASSO 3: Se for saudação, REPITA a pergunta
-PASSO 4: Se for confirmação clara, chame accept_transfer()
+PASSO 3: Se for saudação → REPITA a pergunta
+PASSO 4: Se for PERGUNTA → RESPONDA e pergunte se pode atender
+PASSO 5: Se for confirmação clara → chame accept_transfer()
 
 ═══════════════════════════════════════════════════════
-EXEMPLO CORRETO:
+EXEMPLO COM PERGUNTA:
 ═══════════════════════════════════════════════════════
 
 Você: "Olá, tenho um cliente aguardando sobre vendas. Pode atendê-lo agora?"
-Atendente: "Alô"
-Você: "Há um cliente na linha querendo falar sobre vendas. Você pode atendê-lo?"
+Atendente: "Como a pessoa se chama?"
+Você: "O nome é João. Posso conectar?"
 Atendente: "Sim, pode passar"
 → AGORA chame accept_transfer()
 
@@ -1058,8 +1084,8 @@ EXEMPLO ERRADO (NÃO FAÇA ISSO):
 ═══════════════════════════════════════════════════════
 
 Você: "Olá, tenho um cliente aguardando..."
-Atendente: "Alô"
-→ ERRADO chamar accept_transfer() aqui!
+Atendente: "Como a pessoa se chama?"
+→ ERRADO chamar accept_transfer() aqui! Primeiro responda a pergunta!
 
 ═══════════════════════════════════════════════════════
 ESTILO:
@@ -1067,6 +1093,7 @@ ESTILO:
 - Seja BREVE (o cliente está esperando)
 - Fale naturalmente, como uma pessoa real
 - Tom profissional mas amigável
+- SEMPRE termine com uma pergunta ("Pode atendê-lo?", "Posso conectar?")
 """
     
     async def _process_decision(
