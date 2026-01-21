@@ -2664,10 +2664,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """
         Espera o áudio terminar de reproduzir no FreeSWITCH.
         
-        Esta função usa lógica event-driven:
-        1. Espera OpenAI terminar de GERAR (assistant_speaking = False)
-        2. Calcula tempo restante baseado nos bytes pendentes
-        3. Aguarda o tempo necessário com margem de segurança
+        Esta função usa lógica em 3 fases:
+        1. Espera bytes chegarem (se ainda não chegaram)
+        2. Espera OpenAI terminar de GERAR (assistant_speaking = False)
+        3. Calcula tempo restante baseado nos bytes pendentes
         
         Args:
             min_wait: Tempo mínimo de espera em segundos
@@ -2679,8 +2679,24 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         """
         start_time = time.time()
         
-        # === FASE 1: Esperar OpenAI terminar de GERAR ===
-        generation_wait = 0.0
+        # === FASE 1: Esperar bytes chegarem ===
+        # Se _pending_audio_bytes == 0, pode ser que o áudio ainda não começou a chegar
+        bytes_wait = 0.0
+        while self._pending_audio_bytes == 0 and bytes_wait < 2.0:
+            if self._ended or self._ending_call:
+                logger.debug(f"🔊 [{context}] Chamada encerrada durante espera por bytes")
+                return time.time() - start_time
+            await asyncio.sleep(0.05)
+            bytes_wait += 0.05
+        
+        if bytes_wait > 0.1 and self._pending_audio_bytes > 0:
+            logger.debug(
+                f"🔊 [{context}] Bytes chegaram após {bytes_wait:.2f}s "
+                f"({self._pending_audio_bytes} bytes)"
+            )
+        
+        # === FASE 2: Esperar OpenAI terminar de GERAR ===
+        generation_wait = time.time() - start_time
         max_generation_wait = max_wait
         
         while self._assistant_speaking and generation_wait < max_generation_wait:
@@ -2688,12 +2704,15 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 logger.debug(f"🔊 [{context}] Chamada encerrada durante geração")
                 return time.time() - start_time
             await asyncio.sleep(0.1)
-            generation_wait += 0.1
+            generation_wait = time.time() - start_time
         
-        if generation_wait > 0.1:
-            logger.debug(f"🔊 [{context}] Aguardou {generation_wait:.1f}s para OpenAI terminar de gerar")
+        if generation_wait > 0.5:
+            logger.debug(
+                f"🔊 [{context}] Aguardou {generation_wait:.1f}s para OpenAI terminar de gerar "
+                f"({self._pending_audio_bytes} bytes pendentes)"
+            )
         
-        # === FASE 2: Calcular tempo de reprodução restante ===
+        # === FASE 3: Calcular tempo de reprodução restante ===
         # PCM 16-bit mono = sample_rate * 2 bytes/segundo
         bytes_per_second = self.config.freeswitch_sample_rate * 2
         

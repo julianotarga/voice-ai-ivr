@@ -158,6 +158,106 @@ class ConferenceAnnouncementSession:
         self._pending_audio_bytes: int = 0  # Bytes de áudio na fila aguardando envio
         self._audio_playback_done = asyncio.Event()  # Sinaliza quando todo áudio foi enviado
         self._audio_playback_done.set()  # Inicialmente sem áudio pendente
+        self._response_audio_generating = False  # Indica se OpenAI está gerando áudio
+    
+    async def _wait_for_audio_complete(
+        self,
+        context: str = "audio",
+        max_wait: float = 8.0
+    ) -> float:
+        """
+        Aguarda o áudio terminar de ser GERADO e REPRODUZIDO.
+        
+        Lógica em 3 fases:
+        1. Esperar bytes chegarem (se ainda não chegaram)
+        2. Esperar OpenAI terminar de GERAR (_response_audio_generating = False)
+        3. Calcular tempo de reprodução restante baseado nos bytes reais
+        
+        Args:
+            context: Contexto para logging
+            max_wait: Tempo máximo de espera total
+        
+        Returns:
+            Tempo total aguardado em segundos
+        """
+        import time
+        start_time = time.time()
+        
+        # =========================================================
+        # FASE 1: Esperar bytes chegarem
+        # =========================================================
+        bytes_wait = 0.0
+        warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
+        total_pending = self._pending_audio_bytes + warmup_buffered
+        
+        while total_pending == 0 and bytes_wait < 2.0:
+            await asyncio.sleep(0.05)
+            bytes_wait += 0.05
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
+            total_pending = self._pending_audio_bytes + warmup_buffered
+        
+        if total_pending > 0 and bytes_wait > 0.1:
+            logger.debug(
+                f"⏳ [{context}] Bytes chegaram após {bytes_wait:.2f}s ({total_pending}b)"
+            )
+        
+        # =========================================================
+        # FASE 2: Esperar OpenAI terminar de GERAR
+        # =========================================================
+        generation_wait = time.time() - start_time
+        while self._response_audio_generating and generation_wait < max_wait:
+            await asyncio.sleep(0.1)
+            generation_wait = time.time() - start_time
+        
+        if generation_wait > 0.5:
+            warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
+            total_pending = self._pending_audio_bytes + warmup_buffered
+            logger.info(
+                f"⏳ [{context}] OpenAI terminou de gerar após {generation_wait:.1f}s "
+                f"({total_pending}b pendentes)"
+            )
+        
+        # =========================================================
+        # FASE 3: Calcular tempo de reprodução restante
+        # =========================================================
+        warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
+        total_pending = self._pending_audio_bytes + warmup_buffered
+        
+        if total_pending > 0:
+            # L16 @ 8kHz = 16 bytes/ms = 16000 bytes/s
+            audio_duration = total_pending / 16000.0
+            
+            # Margem de 500ms para latência de rede/buffer
+            MARGIN = 0.5
+            wait_playback = audio_duration + MARGIN
+            wait_playback = min(wait_playback, max_wait - generation_wait)
+            wait_playback = max(wait_playback, 0.3)
+            
+            logger.info(
+                f"⏳ [{context}] Aguardando reprodução: "
+                f"{total_pending}b = {audio_duration:.1f}s + margem, wait={wait_playback:.1f}s"
+            )
+            
+            # Esperar o evento de playback done OU o timeout
+            try:
+                await asyncio.wait_for(
+                    self._audio_playback_done.wait(),
+                    timeout=wait_playback
+                )
+                logger.debug(f"⏳ [{context}] Playback done sinalizado")
+            except asyncio.TimeoutError:
+                logger.debug(f"⏳ [{context}] Timeout aguardando playback")
+            
+            # Margem adicional pós-envio (buffer FreeSWITCH -> telefone)
+            await asyncio.sleep(0.3)
+        else:
+            # Sem bytes, margem mínima
+            await asyncio.sleep(0.3)
+        
+        total_wait = time.time() - start_time
+        logger.debug(f"⏳ [{context}] Total aguardado: {total_wait:.1f}s")
+        
+        return total_wait
     
     async def run(self, timeout: float = 15.0) -> ConferenceAnnouncementResult:
         """
@@ -740,26 +840,12 @@ class ConferenceAnnouncementSession:
             if waited >= max_wait:
                 logger.warning(f"⚠️ Courtesy response timeout after {max_wait}s")
             
-            # PASSO 5: Aguardar flush do áudio pendente + margem para reprodução
-            # IMPORTANTE: Mesmo se pending_audio_bytes for 0, há latência de rede
-            # e buffer do FreeSWITCH que precisamos respeitar
-            warmup_buffered = self._fs_audio_buffer.buffered_bytes if self._fs_audio_buffer else 0
-            total_pending = self._pending_audio_bytes + warmup_buffered
-            
-            if total_pending > 0:
-                pending_ms = total_pending / 16.0
-                # Adicionar 500ms de margem para latência de rede e buffer do FreeSWITCH
-                wait_time = (pending_ms / 1000.0) + 0.5
-                logger.debug(f"Waiting for {pending_ms:.0f}ms + 500ms margin of courtesy audio to play...")
-                await asyncio.sleep(min(wait_time, 3.0))
-            else:
-                # Se não recebemos áudio, aguardar um tempo mínimo de qualquer forma
-                if not audio_received:
-                    logger.debug("No audio pending, waiting 1.0s minimum for courtesy playback...")
-                    await asyncio.sleep(1.0)
-                else:
-                    logger.debug("Waiting 500ms minimum margin for audio flush...")
-                    await asyncio.sleep(0.5)
+            # PASSO 5: Aguardar áudio terminar de ser reproduzido
+            # Usa lógica robusta de 3 fases para garantir que a cortesia seja ouvida
+            await self._wait_for_audio_complete(
+                context="courtesy",
+                max_wait=5.0
+            )
             
         except Exception as e:
             logger.warning(f"Could not send courtesy response: {e}")
@@ -776,6 +862,7 @@ class ConferenceAnnouncementSession:
                 
                 # Marcar que há áudio sendo gerado
                 self._audio_playback_done.clear()
+                self._response_audio_generating = True
                 
                 if self._fs_ws:
                     # O tracking de bytes é feito em _enqueue_audio_to_freeswitch
@@ -822,6 +909,9 @@ class ConferenceAnnouncementSession:
         # IMPORTANTE: Isso significa que o OpenAI terminou de GERAR, mas ainda precisamos
         # enviar todo o áudio para o FreeSWITCH antes de processar decisões
         elif etype in ("response.audio.done", "response.output_audio.done"):
+            # Marcar que OpenAI terminou de GERAR
+            self._response_audio_generating = False
+            
             # Incluir bytes do warmup buffer que ainda não foram enfileirados
             warmup_buffered = self._fs_audio_buffer.buffered_bytes
             total_pending = self._pending_audio_bytes + warmup_buffered
@@ -909,50 +999,16 @@ class ConferenceAnnouncementSession:
             # A IA pode estar falando algo como "Ok, vou conectar vocês" junto com
             # o accept_transfer. Precisamos esperar ela terminar de falar antes de
             # sinalizar a decisão, caso contrário o áudio será cortado.
+            # 
+            # Usa lógica robusta de 3 fases:
+            # 1. Esperar bytes chegarem
+            # 2. Esperar OpenAI terminar de GERAR
+            # 3. Calcular tempo de reprodução restante
             # =========================================================================
-            
-            # Calcular TOTAL de bytes pendentes:
-            # 1. Bytes na fila aguardando envio (_pending_audio_bytes)
-            # 2. Bytes no warmup buffer que ainda não foram enfileirados
-            warmup_buffered = self._fs_audio_buffer.buffered_bytes
-            total_pending = self._pending_audio_bytes + warmup_buffered
-            
-            if total_pending > 0:
-                # Calcular duração estimada do áudio pendente
-                pending_duration_ms = total_pending / 16.0  # L16 @ 8kHz = 16 bytes/ms
-                logger.info(
-                    f"⏳ Waiting for audio playback to complete: "
-                    f"queue={self._pending_audio_bytes}b + warmup={warmup_buffered}b = "
-                    f"{total_pending}b (~{pending_duration_ms:.0f}ms)"
-                )
-                
-                # Aguardar com timeout baseado na duração do áudio + margem
-                # Timeout = duração estimada + 3 segundos de margem (aumentado de 2s)
-                timeout_seconds = (pending_duration_ms / 1000.0) + 3.0
-                
-                try:
-                    await asyncio.wait_for(
-                        self._audio_playback_done.wait(),
-                        timeout=timeout_seconds
-                    )
-                    logger.info("✅ Audio playback completed")
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"⚠️ Audio playback timeout after {timeout_seconds:.1f}s, "
-                        f"signaling decision anyway"
-                    )
-                
-                # MARGEM ADICIONAL PÓS-ENVIO
-                # Mesmo após _audio_playback_done, o áudio ainda está em trânsito:
-                # - Buffer do FreeSWITCH → telefone
-                # - Latência de rede
-                # Aguardar 500ms extras para garantir que o final da frase seja ouvido
-                logger.info("⏳ Waiting 500ms post-playback margin...")
-                await asyncio.sleep(0.5)
-            else:
-                # Mesmo sem áudio pendente, aguardar margem mínima
-                # para qualquer áudio residual em buffers
-                await asyncio.sleep(0.3)
+            await self._wait_for_audio_complete(
+                context="function_call",
+                max_wait=10.0
+            )
             
             logger.info("✅ Signaling decision after audio completed")
             # Sinalizar que decisão foi tomada (após áudio terminar + margem)
