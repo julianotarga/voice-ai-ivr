@@ -1747,8 +1747,22 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         # 
         # IMPORTANTE: Enviamos como instrução de sistema para que o
         # OpenAI fale EXATAMENTE o filler, sem elaborar ou adicionar texto.
+        #
+        # CUIDADO: Para request_handoff, NÃO enviar filler se caller_name
+        # for inválido, pois a função vai rejeitar e pedir o nome.
         # =========================================================
-        filler = self._get_filler_for_function(function_name)
+        should_send_filler = True
+        
+        # Para request_handoff, validar caller_name ANTES de enviar filler
+        if function_name == "request_handoff":
+            caller_name = function_args.get("caller_name", "")
+            if self._is_invalid_caller_name(caller_name):
+                should_send_filler = False
+                logger.debug(
+                    f"⚠️ [FILLER] Suprimindo filler para request_handoff - caller_name inválido: '{caller_name}'"
+                )
+        
+        filler = self._get_filler_for_function(function_name) if should_send_filler else None
         if filler:
             logger.debug(f"Sending filler for {function_name}: {filler[:30]}...")
             # Formatar como instrução clara para o OpenAI falar apenas o filler
