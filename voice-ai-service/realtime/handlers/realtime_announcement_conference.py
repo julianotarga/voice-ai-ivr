@@ -438,8 +438,8 @@ class ConferenceAnnouncementSession:
                         max_size=None,
                         # Sem restrição de origin para aceitar conexão do FreeSWITCH
                         origins=None,
-                        # Log de conexões no nível do servidor
-                        logger=logger,
+                        # Não passar logger para evitar spam de logs binários
+                        # Os logs de conexão são feitos em ws_handler_with_logging
                     )
                     break  # Sucesso
                 except OSError as e:
