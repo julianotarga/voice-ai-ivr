@@ -172,35 +172,68 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
 # ========================================
 
 FUNCTION_FILLERS = {
+    # ========================================
+    # REGRA: Fillers são a ÚNICA fonte de fala durante function calls
+    # Os results NÃO devem incluir instruções de fala (evita conflitos)
+    # ========================================
+    
     # Transferências - SEM FILLER
-    # O resultado do function call já inclui a mensagem personalizada
-    # "Um momento [nome], vou transferir para [destino]."
-    # Ter filler + result causa mensagens duplicadas/conflitantes
+    # A instrução de fala é enviada explicitamente via _send_text_to_provider
+    # com o nome do cliente e destino personalizados
     "request_handoff": [],
+    
     # Verificação de disponibilidade
     "check_availability": [
         "Consultando a disponibilidade...",
         "Verificando os horários disponíveis...",
     ],
+    "check_extension_available": [
+        "Verificando se o ramal está disponível...",
+        "Consultando o ramal...",
+    ],
+    
     # Criar ticket/protocolo
     "create_ticket": [
         "Vou criar um protocolo pra você...",
         "Registrando sua solicitação...",
     ],
+    
     # Anotar recado
     "take_message": [
         "Anotando o recado...",
         "Registrando sua mensagem...",
     ],
-    # Consultas genéricas
+    "leave_message": [
+        "Anotando sua mensagem...",
+    ],
+    
+    # Consultas
     "search": [
         "Deixa eu buscar isso...",
         "Consultando aqui...",
     ],
+    "get_business_info": [
+        "Deixa eu verificar...",
+    ],
+    "lookup_customer": [
+        "Consultando seus dados...",
+    ],
+    
+    # Hold/Unhold - SEM FILLER
+    # A IA já deve avisar ANTES de chamar hold_call
+    # (descrição da função diz: "Lembre-se de avisar o cliente antes")
+    "hold_call": [],
+    "unhold_call": [],
+    
+    # Callback - SEM FILLER (fluxo conversacional natural)
+    "accept_callback": [],
+    "provide_callback_number": [],
+    "confirm_callback_number": [],
+    "schedule_callback": [],
+    
     # Encerrar chamada - SEM FILLER (ação imediata)
     "end_call": [],
-    # Leave message - SEM FILLER (já está em contexto de recado)
-    "leave_message": [],
+    
     # Fallback para function calls desconhecidas
     "_default": [
         "Um momento só...",
@@ -1852,9 +1885,12 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             asyncio.create_task(self._delayed_stop(8.0, "take_message_done"))
             self._ending_call = True
             
+            # Result simples - sem instrução de fala
+            # O filler "Anotando o recado..." já foi dito
+            # O OpenAI vai responder naturalmente baseado no status
             return {
                 "status": "success",
-                "message": "Recado anotado. Diga: 'Anotado! Obrigado, bom dia!' e encerre."
+                "action": "message_saved"
             }
         
         elif name == "get_business_info":
@@ -1902,10 +1938,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         "destination_raw": destination,
                     }
                 )
-                return {
-                    "status": "already_in_progress",
-                    "message": "Transferência já está em andamento. Aguarde."
-                }
+                return {"status": "already_in_progress"}
             
             # Check 2: Handoff pendente (IA ainda está falando o aviso)
             if self._handoff_pending:
@@ -1917,8 +1950,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     }
                 )
                 return {
-                    "status": "already_in_progress",
-                    "message": "Já estou processando sua solicitação. Aguarde."
+                    "status": "already_in_progress"
                 }
             
             # Check 3: Lock ativo (evita race condition)
@@ -1931,8 +1963,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     }
                 )
                 return {
-                    "status": "already_in_progress",
-                    "message": "Transferência já está em andamento. Aguarde."
+                    "status": "already_in_progress"
                 }
             
             logger.info(
@@ -2013,10 +2044,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     "🔄 [HOLD_CALL] IGNORANDO - Transferência/handoff em andamento",
                     extra={"call_uuid": self.call_uuid}
                 )
-                return {
-                    "status": "already_in_progress",
-                    "message": "Transferência já em andamento. Aguarde."
-                }
+                return {"status": "already_in_progress"}
             
             # IMPORTANTE: Aguardar o áudio pendente terminar de ser reproduzido
             # antes de colocar em espera, evitando cortar a fala da IA
@@ -2028,21 +2056,22 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             
             success = await self.hold_call()
             if success:
-                return {"status": "on_hold", "message": "Cliente em espera"}
+                # Result simples - A IA já avisou antes de chamar hold_call
+                return {"status": "on_hold"}
             else:
-                return {"status": "error", "message": "Não foi possível colocar em espera"}
+                return {"status": "error", "reason": "hold_failed"}
         
         elif name == "unhold_call":
             success = await self.unhold_call()
             if success:
-                return {"status": "off_hold", "message": "Cliente retirado da espera"}
+                return {"status": "off_hold"}
             else:
-                return {"status": "error", "message": "Não foi possível retirar da espera"}
+                return {"status": "error", "reason": "unhold_failed"}
         
         elif name == "check_extension_available":
             extension = args.get("extension", "")
             if not extension:
-                return {"status": "error", "message": "Número do ramal não informado"}
+                return {"status": "error", "reason": "extension_not_provided"}
             
             result = await self.check_extension_available(extension)
             return result
@@ -2062,7 +2091,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             for_whom = args.get("for_whom", "")
             
             if not message:
-                return {"status": "error", "message": "Mensagem vazia"}
+                return {"status": "error", "reason": "empty_message"}
             
             # Criar recado via OmniPlay
             result = await self._create_message_ticket(message, for_whom)
@@ -2086,7 +2115,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                     }
                 )
                 # Ainda retornamos sucesso para o LLM continuar o fluxo
-                return {"status": "noted", "message": "Recado anotado internamente"}
+                return {"status": "noted", "action": "saved_locally"}
         
         elif name == "accept_callback":
             # Cliente aceitou callback - usar CallbackHandler se disponível
@@ -2100,9 +2129,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         self._callback_handler.set_reason(reason)
                         return {"status": "number_confirmed", "number": self.caller_id}
                     else:
-                        return {"status": "need_number", "message": "Número atual inválido, pergunte outro"}
+                        return {"status": "need_number", "reason": "current_invalid"}
                 else:
-                    return {"status": "need_number", "message": "Pergunte o número para callback"}
+                    return {"status": "need_number"}
             
             return {"status": "noted", "reason": reason}
         
@@ -2121,7 +2150,7 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                         formatted = PhoneNumberUtils.format_for_speech(normalized)
                         return {"status": "captured", "number": normalized, "formatted": formatted}
                 
-                return {"status": "invalid", "message": "Número inválido, peça para repetir"}
+                return {"status": "invalid", "reason": "invalid_phone_format"}
             
             return {"status": "noted", "number": phone_number}
         
@@ -2135,9 +2164,9 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
                 if result.get("success"):
                     return {"status": "callback_created", "ticket_id": result.get("ticket_id")}
                 else:
-                    return {"status": "noted", "message": "Callback registrado"}
+                    return {"status": "noted", "action": "callback_noted"}
             elif not confirmed:
-                return {"status": "need_correction", "message": "Pergunte o número correto"}
+                return {"status": "need_correction"}
             
             return {"status": "confirmed" if confirmed else "need_correction"}
         
