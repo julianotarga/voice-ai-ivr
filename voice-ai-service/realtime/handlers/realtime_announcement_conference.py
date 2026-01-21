@@ -489,9 +489,15 @@ class ConferenceAnnouncementSession:
             # Sem esse delay, o comando pode chegar antes do servidor estar pronto
             await asyncio.sleep(0.3)
             
+            # DEBUG: Log detalhado do estado do ESL
+            logger.info(f"🔌 [ESL DEBUG] ESL object type: {type(self.esl).__name__}")
+            logger.info(f"🔌 [ESL DEBUG] ESL object id: {id(self.esl)}")
+            
             # Verificar conexão ESL antes de executar comando
             # IMPORTANTE: O atributo correto é _connected (com underscore)
             is_connected = getattr(self.esl, '_connected', False) or getattr(self.esl, 'connected', False)
+            logger.info(f"🔌 [ESL DEBUG] is_connected: {is_connected}")
+            
             if not is_connected:
                 logger.warning("🔌 ESL disconnected, attempting reconnect...")
                 try:
@@ -501,30 +507,44 @@ class ConferenceAnnouncementSession:
                     logger.error(f"🔌 ESL reconnect failed: {e}")
             
             # DIAGNÓSTICO: Verificar estado do canal B-leg antes de iniciar stream
+            logger.info(f"🔍 [DIAG] Starting B-leg diagnostics for UUID: {self.b_leg_uuid}")
             try:
                 # Verificar se canal existe
+                logger.info(f"🔍 [DIAG] Calling uuid_exists...")
                 exists_response = await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_exists {self.b_leg_uuid}"),
                     timeout=3.0
                 )
-                logger.info(f"🔍 B-leg exists check: {exists_response}")
+                logger.info(f"🔍 [DIAG] B-leg exists check: '{exists_response}'")
                 
                 # Verificar estado do canal
+                logger.info(f"🔍 [DIAG] Calling uuid_getvar Channel-Call-State...")
                 state_response = await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Channel-Call-State"),
                     timeout=3.0
                 )
-                logger.info(f"🔍 B-leg Channel-Call-State: {state_response}")
+                logger.info(f"🔍 [DIAG] B-leg Channel-Call-State: '{state_response}'")
                 
                 # Verificar se está answered
+                logger.info(f"🔍 [DIAG] Calling uuid_getvar Caller-Channel-Answered-Time...")
                 answered_response = await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Caller-Channel-Answered-Time"),
                     timeout=3.0
                 )
-                logger.info(f"🔍 B-leg Answered-Time: {answered_response}")
+                logger.info(f"🔍 [DIAG] B-leg Answered-Time: '{answered_response}'")
                 
+                # Verificar answer state
+                logger.info(f"🔍 [DIAG] Calling uuid_getvar Answer-State...")
+                answer_state = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Answer-State"),
+                    timeout=3.0
+                )
+                logger.info(f"🔍 [DIAG] B-leg Answer-State: '{answer_state}'")
+                
+            except asyncio.TimeoutError as diag_e:
+                logger.error(f"🔍 [DIAG] Diagnóstico TIMEOUT: {diag_e}")
             except Exception as diag_e:
-                logger.warning(f"🔍 Diagnóstico falhou: {diag_e}")
+                logger.error(f"🔍 [DIAG] Diagnóstico falhou: {type(diag_e).__name__}: {diag_e}")
             
             # Iniciar mod_audio_stream no B-leg
             # IMPORTANTE: Tentar até 3 vezes com reconexão ESL entre tentativas
