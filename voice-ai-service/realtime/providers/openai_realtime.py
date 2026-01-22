@@ -857,10 +857,19 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         self,
         function_name: str,
         result: Dict[str, Any],
-        call_id: Optional[str] = None
+        call_id: Optional[str] = None,
+        request_response: bool = True
     ) -> None:
         """
         Envia resultado de function call.
+        
+        Args:
+            function_name: Nome da função executada
+            result: Resultado da função
+            call_id: ID do function call (para correlação)
+            request_response: Se True, solicita nova resposta da IA após enviar resultado.
+                              Usar False para funções que já geraram resposta manualmente
+                              (ex: request_handoff que usa _send_text_to_provider)
         
         Ref: conversation.item.create (type: function_call_output) (SDK oficial)
         """
@@ -877,15 +886,23 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         }))
         
         # Solicitar nova resposta após enviar resultado da função
-        if not self._response_active:
-            await self._ws.send(json.dumps({"type": "response.create"}))
-            self._pending_function_result = False
+        # APENAS se request_response=True (default)
+        if request_response:
+            if not self._response_active:
+                await self._ws.send(json.dumps({"type": "response.create"}))
+                self._pending_function_result = False
+            else:
+                # Marcar que há resultado pendente - será processado quando response.done chegar
+                self._pending_function_result = True
+                logger.debug("Response already active; marking pending function result", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "call_id": call_id,
+                })
         else:
-            # Marcar que há resultado pendente - será processado quando response.done chegar
-            self._pending_function_result = True
-            logger.debug("Response already active; marking pending function result", extra={
+            # Não solicitar resposta - a função já cuidou disso
+            self._pending_function_result = False
+            logger.debug(f"Function result sent (no response requested): {function_name}", extra={
                 "domain_uuid": self.config.domain_uuid,
-                "call_id": call_id,
             })
         
         logger.debug(f"Function result sent to OpenAI: {function_name}", extra={

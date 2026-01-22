@@ -2062,7 +2062,18 @@ Quando o cliente pedir para falar com humano/setor:
             self._set_call_state(CallState.LISTENING, "leave_message_done")
 
         if self._provider:
-            await self._provider.send_function_result(function_name, result, call_id)
+            # IMPORTANTE: request_handoff já envia instrução via _send_text_to_provider
+            # Não precisamos de resposta adicional (evita sobreposição de áudio)
+            # O mesmo para end_call que agenda _delayed_stop
+            skip_response_functions = {"request_handoff", "end_call"}
+            request_response = function_name not in skip_response_functions
+            
+            await self._provider.send_function_result(
+                function_name, 
+                result, 
+                call_id,
+                request_response=request_response
+            )
     
     async def _execute_function(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Executa função internamente."""
