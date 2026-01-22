@@ -4307,9 +4307,12 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 }
             )
             
-            # Tempo mínimo de espera (em segundos) para parecer natural
-            # 15 segundos é ideal para dar tempo de tocar e parecer uma transferência real
-            MIN_HOLD_TIME_SECONDS = 15.0
+            # NOTA: O hold mínimo foi REMOVIDO
+            # Motivo: Causava delays artificiais desnecessários
+            # - OFFLINE: Detectado em <1s, não precisa esperar
+            # - REJECTED: ~2-3s natural, não precisa esperar
+            # - NO_ANSWER: ~30s de timeout real, já demora naturalmente
+            # - BUSY: ~2-3s natural, não precisa esperar
             
             # 3. Executar transferência
             logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 3: transfer_announce_enabled={self.config.transfer_announce_enabled}")
@@ -4424,14 +4427,11 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # 4. Processar resultado
             # Se o cliente ainda estiver em hold e a transferência não foi sucesso, fazer unhold
             if client_on_hold and result.status != TransferStatus.SUCCESS:
-                # Garantir tempo mínimo de espera para parecer natural
                 elapsed = asyncio.get_event_loop().time() - hold_start_time
                 logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: Tempo em hold: {elapsed:.1f}s")
-                if elapsed < MIN_HOLD_TIME_SECONDS:
-                    remaining = MIN_HOLD_TIME_SECONDS - elapsed
-                    logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: Aguardando +{remaining:.1f}s para mínimo de hold")
-                    await asyncio.sleep(remaining)
                 
+                # Remover do hold imediatamente - sem delay artificial
+                # O tempo real da tentativa de transferência já é suficiente
                 logger.info("📞 [INTELLIGENT_HANDOFF] Step 4: Transferência não sucedida, removendo do HOLD...")
                 unhold_result = await self.unhold_call()
                 logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: unhold_call retornou: {unhold_result}")
