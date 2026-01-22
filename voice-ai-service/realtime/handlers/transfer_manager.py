@@ -15,12 +15,11 @@ total da chamada e podemos retomar se o destino não atender.
 
 Fluxo de attended transfer (ATUALIZADO):
 1. uuid_audio_stream PAUSE para parar captura de áudio ← CRÍTICO!
-2. uuid_break para parar playback do bot
-3. uuid_broadcast para tocar música de espera no A-leg
-4. originate para criar B-leg (chamada para destino)
-5. Monitorar eventos CHANNEL_ANSWER / CHANNEL_HANGUP no B-leg
-6. Se atendeu: uuid_audio_stream STOP + uuid_bridge (cliente fala com humano)
-7. Se não atendeu: uuid_break + uuid_audio_stream RESUME + retomar Voice AI
+2. Cliente fica em silêncio (MOH removido por problemas de sincronização)
+3. originate para criar B-leg (chamada para destino)
+4. Monitorar eventos CHANNEL_ANSWER / CHANNEL_HANGUP no B-leg
+5. Se atendeu: uuid_audio_stream STOP + uuid_bridge (cliente fala com humano)
+6. Se não atendeu: uuid_audio_stream RESUME + retomar Voice AI
 
 IMPORTANTE - Por que pausar o audio_stream:
 O mod_audio_stream com 'mono' captura apenas o áudio do caller, mas o FreeSWITCH
@@ -136,7 +135,7 @@ def get_busy_message(destination: str) -> str:
 # Configurações padrão (usadas se não houver config do banco)
 DEFAULT_TRANSFER_TIMEOUT = int(os.getenv("TRANSFER_DEFAULT_TIMEOUT", "30"))
 DEFAULT_TRANSFER_ANNOUNCE_ENABLED = os.getenv("TRANSFER_ANNOUNCE_ENABLED", "true").lower() == "true"
-DEFAULT_TRANSFER_MUSIC_ON_HOLD = os.getenv("TRANSFER_MUSIC_ON_HOLD", "local_stream://moh")
+# NOTA: MOH removido - cliente fica em silêncio durante transferência
 
 
 class TransferStatus(Enum):
@@ -376,9 +375,7 @@ class TransferManager:
         self._transfer_announce_enabled = self._domain_settings.get(
             'transfer_announce_enabled', DEFAULT_TRANSFER_ANNOUNCE_ENABLED
         )
-        self._transfer_music_on_hold = self._domain_settings.get(
-            'transfer_music_on_hold', DEFAULT_TRANSFER_MUSIC_ON_HOLD
-        )
+        # NOTA: MOH removido - cliente fica em silêncio durante transferência
         
         # Estado da transferência atual
         self._current_transfer: Optional[TransferResult] = None
@@ -645,7 +642,7 @@ class TransferManager:
                 
                 logger.info(f"B-leg answered (originate success): {b_leg_uuid}")
                 
-                # 7. Parar MOH antes do bridge (NÃO resumir stream - cliente vai p/ bridge)
+                # 7. Tirar do silêncio antes do bridge (NÃO resumir stream - cliente vai p/ bridge)
                 await self._stop_moh(resume_stream=False)
                 
                 # 8. IMPORTANTE: Definir hangup_after_bridge no A-leg ANTES do bridge
@@ -696,7 +693,7 @@ class TransferManager:
                     
                     return final_result
                 else:
-                    # Bridge falhou - parar MOH e matar B-leg
+                    # Bridge falhou - tirar da espera e matar B-leg
                     await self._stop_moh()
                     await self._esl.uuid_kill(b_leg_uuid)
                     
@@ -750,7 +747,7 @@ class TransferManager:
         Executa transferência COM ANÚNCIO para o humano.
         
         Fluxo:
-        1. MOH no A-leg (cliente)
+        1. Silêncio no A-leg (cliente fica em espera)
         2. Originate B-leg (humano)
         3. Quando humano atende, TTS do anúncio
         4. Aguardar resposta (modelo híbrido):
@@ -830,7 +827,7 @@ class TransferManager:
                     error="Cliente desligou",
                 )
             
-            # 3. Tocar música de espera no cliente
+            # 3. Colocar cliente em espera (modo silêncio)
             await self._start_moh()
             
             # 4. Subscrever eventos DTMF para o B-leg
@@ -895,9 +892,8 @@ class TransferManager:
             b_leg_uuid = originate_result.uuid
             self._b_leg_uuid = b_leg_uuid
             
-            # 6. Parar MOH temporariamente para o anúncio
+            # 6. Cliente permanece em silêncio enquanto falamos com o humano
             # (humano já atendeu - originate síncrono retornou +OK)
-            # NOTA: Mantemos o MOH no cliente, apenas falamos com o humano
             
             # Aguardar para garantir que eventos ESL do originate foram processados
             # Isso evita race condition no socket quando uuid_playback é chamado
@@ -1070,7 +1066,7 @@ class TransferManager:
         Executa transferência com anúncio usando conferência nativa do FreeSWITCH.
         
         Esta é a implementação ROBUSTA que usa mod_conference para:
-        - Manter A-leg (cliente) em espera com MOH
+        - Manter A-leg (cliente) em espera (modo silêncio)
         - Originar B-leg (atendente) para conferência
         - Tocar anúncio TTS para o atendente
         - Aguardar confirmação via DTMF ou timeout
@@ -1078,7 +1074,7 @@ class TransferManager:
         
         Fluxo:
         1. Criar conferência temporária única
-        2. Mover A-leg para conferência (mutado, ouve MOH)
+        2. Mover A-leg para conferência (mutado, em silêncio)
         3. Originar B-leg para conferência
         4. Tocar anúncio TTS para B-leg
         5. Aguardar DTMF 1 (aceita) ou 2 (recusa) ou timeout
@@ -1165,19 +1161,9 @@ class TransferManager:
             except (asyncio.TimeoutError, Exception):
                 pass  # Ignorar se não estava ativo ou timeout
             
-            # 5. Tocar MOH no A-leg (cliente) antes de mover para conferência
-            # Isso garante que o cliente ouça música enquanto esperamos o atendente
-            logger.info(f"Putting A-leg on hold with MOH: {self.call_uuid}")
-            
-            # Usar playback com loop para MOH (timeout curto)
-            moh_file = "local_stream://default"
-            try:
-                await asyncio.wait_for(
-                    self._esl.execute_api(f"uuid_broadcast {self.call_uuid} {moh_file} aleg"),
-                    timeout=3.0
-                )
-            except asyncio.TimeoutError:
-                logger.warning("MOH broadcast timeout, continuing anyway")
+            # 5. Cliente fica em silêncio durante a transferência
+            # NOTA: MOH removido - audio_stream já foi pausado
+            logger.info(f"Putting A-leg on hold (silent): {self.call_uuid}")
             
             # 6. Originar B-leg para o atendente
             dial_string = self._build_dial_string(destination)
@@ -1238,8 +1224,7 @@ class TransferManager:
                 # Atendente aceitou - fazer bridge A-leg <-> B-leg
                 logger.info("Transfer ACCEPTED by attendant")
                 
-                # Parar MOH no A-leg
-                await self._esl.execute_api(f"uuid_break {self.call_uuid}")
+                # NOTA: Cliente já estava em silêncio (sem MOH), não precisa de uuid_break
                 
                 # Definir hangup_after_bridge
                 await self._esl.execute_api(f"uuid_setvar {self.call_uuid} hangup_after_bridge true")
@@ -1538,14 +1523,9 @@ class TransferManager:
                 logger.info("A-leg no longer exists during cleanup")
                 return
             
-            # 3. Parar MOH/playback no A-leg
-            try:
-                await self._esl.execute_api(f"uuid_break {a_leg_uuid}")
-            except Exception:
-                pass
-            
-            # Aguardar um pouco
-            await asyncio.sleep(0.3)
+            # 3. NOTA: MOH removido - cliente já estava em silêncio
+            # Apenas um pequeno delay para estabilização
+            await asyncio.sleep(0.2)
             
             # 4. Retornar A-leg ao Voice AI
             if self._on_resume:
@@ -1698,96 +1678,54 @@ IMPORTANTE:
     
     async def _start_moh(self) -> None:
         """
-        Inicia música de espera no A-leg.
+        Coloca cliente em espera (modo silêncio).
         
-        IMPORTANTE: Pausa o audio_stream ANTES de iniciar MOH para evitar
-        que o MOH seja capturado e enviado para o provider AI, causando
-        respostas "picotadas" ou loops de feedback onde o agente responde
-        a si mesmo.
+        IMPORTANTE: Pausa o audio_stream para evitar que ruídos sejam
+        capturados e enviados para o provider AI durante a transferência.
+        
+        NOTA: MOH (Music on Hold) foi removido por problemas de sincronização.
+        Cliente fica em silêncio durante a transferência.
         """
         if not self._moh_active:
-            # 1. CRÍTICO: Pausar audio_stream ANTES de iniciar MOH
-            # Isso evita que o MOH seja capturado e enviado para OpenAI
+            # 1. CRÍTICO: Pausar audio_stream
+            # Isso evita que ruídos sejam capturados e enviados para OpenAI
             self._stream_paused = False
             try:
                 await self._esl.uuid_audio_stream(self.call_uuid, "pause")
                 self._stream_paused = True
-                logger.info(f"Audio stream paused before MOH for {self.call_uuid}")
+                logger.info(f"Audio stream paused for transfer on {self.call_uuid}")
             except Exception as e:
-                logger.warning(f"Failed to pause audio stream before MOH: {e}")
+                logger.warning(f"Failed to pause audio stream: {e}")
             
-            # 2. Interromper qualquer áudio em reprodução (uuid_break)
-            # Isso para o playback do agente que pode estar em andamento
-            try:
-                await self._esl.uuid_break(self.call_uuid)
-                logger.debug(f"Cleared playback before MOH for {self.call_uuid}")
-            except Exception as e:
-                logger.warning(f"Failed to clear playback before MOH: {e}")
+            # 2. Delay curto para estabilização
+            await asyncio.sleep(0.2)
             
-            # 3. Delay para serialização de comandos ESL
-            # Estamos simulando atendente humano - não precisa ser rápido
-            # Delay de 0.5s é imperceptível para o usuário e garante estabilidade
-            await asyncio.sleep(0.5)
-            
-            # 4. Iniciar MOH
-            success = await self._esl.uuid_broadcast(
-                self.call_uuid,
-                self._transfer_music_on_hold,
-                leg="aleg"
-            )
-            if success:
-                self._moh_active = True
-                logger.debug(f"MOH started for {self.call_uuid}")
-            else:
-                # MOH falhou - resumir stream imediatamente!
-                logger.warning(f"MOH failed to start for {self.call_uuid}, resuming audio stream")
-                if self._stream_paused:
-                    try:
-                        await self._esl.uuid_audio_stream(self.call_uuid, "resume")
-                        self._stream_paused = False
-                        logger.info(f"Audio stream resumed after MOH failure for {self.call_uuid}")
-                    except Exception as e:
-                        logger.error(f"Failed to resume audio stream after MOH failure: {e}")
+            # 3. Marcar como ativo (modo silêncio - sem playback)
+            self._moh_active = True
+            logger.info(f"Hold ativado (modo silêncio) for {self.call_uuid}")
     
     async def _stop_moh(self, resume_stream: bool = True) -> None:
         """
-        Para música de espera e gerencia o audio_stream.
+        Tira cliente da espera e gerencia o audio_stream.
         
-        Robusto: sempre executa o gerenciamento do stream, mesmo se MOH não iniciou.
-        Isso garante que o cliente não fique preso em espera/silêncio.
+        Robusto: sempre executa o gerenciamento do stream.
+        Isso garante que o cliente não fique preso em silêncio.
         
         Args:
-            resume_stream: Se True (default), resume o audio_stream após parar MOH.
+            resume_stream: Se True (default), resume o audio_stream.
                           Usar False quando a transferência foi bem-sucedida e o
                           cliente está em bridge com humano.
         
-        IMPORTANTE: Resume o audio_stream SEMPRE que _stream_paused=True e
-        resume_stream=True, mesmo que MOH não tenha iniciado corretamente.
+        NOTA: MOH foi removido - agora usamos modo silêncio.
+        Não precisa mais de uuid_break para parar música.
         """
-        # 1. Parar MOH se estava ativo
-        if self._moh_active:
-            try:
-                await self._esl.uuid_break(self.call_uuid)
-                logger.debug(f"MOH stopped for {self.call_uuid}")
-            except Exception as e:
-                logger.warning(f"Failed to stop MOH (uuid_break): {e}")
-                # Tentar reconectar e parar novamente
-                try:
-                    if not self._esl.is_connected:
-                        await self._esl.connect()
-                    await self._esl.uuid_break(self.call_uuid)
-                    logger.debug(f"MOH stopped for {self.call_uuid} (after reconnect)")
-                except Exception as e2:
-                    logger.error(f"Failed to stop MOH even after reconnect: {e2}")
-            finally:
-                self._moh_active = False
+        # 1. Desativar flag de hold
+        self._moh_active = False
         
-        # 2. Delay para garantir que FreeSWITCH processou
-        # Atendente humano não precisa de latência ultra-baixa
-        await asyncio.sleep(0.3)
+        # 2. Delay curto para estabilização
+        await asyncio.sleep(0.2)
         
         # 3. CRÍTICO: Gerenciar audio_stream baseado em _stream_paused
-        # Isso garante que o stream é retomado mesmo se MOH falhou ao iniciar
         stream_paused = getattr(self, '_stream_paused', False)
         
         if resume_stream:

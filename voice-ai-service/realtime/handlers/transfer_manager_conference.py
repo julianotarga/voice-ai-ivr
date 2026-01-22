@@ -53,7 +53,7 @@ class ConferenceTransferConfig:
     
     # Conferência
     conference_profile: str = "default"
-    moh_sound: str = "local_stream://default"
+    # NOTA: MOH removido - cliente fica em silêncio durante transferência
     
     # OpenAI
     openai_model: str = "gpt-realtime"
@@ -1500,10 +1500,8 @@ Atendente: "Não posso agora" / "Estou ocupado"
         
         Remove da conferência e retoma stream de áudio.
         
-        IMPORTANTE: 
-        1. Primeiro parar o MOH via uuid_break (SÍNCRONO via ESL Inbound)
-        2. Aguardar o MOH parar completamente
-        3. Só então retomar o uuid_audio_stream
+        NOTA: MOH foi removido - cliente fica em silêncio.
+        Apenas precisamos remover da conferência e retomar o stream.
         
         Usamos RESUME porque o stream foi PAUSADO (não parado)
         em _stop_voiceai_stream(). Isso mantém a conexão WebSocket ativa

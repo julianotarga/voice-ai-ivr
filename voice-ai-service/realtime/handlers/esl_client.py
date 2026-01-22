@@ -1025,8 +1025,8 @@ class AsyncESLClient:
             True se sucesso
         
         IMPORTANTE - Uso durante transferências:
-        1. PAUSE antes de iniciar MOH - evita que MOH seja capturado
-        2. RESUME após parar MOH (se falhou) - retoma captura do caller
+        1. PAUSE antes de colocar em espera - evita captura de ruídos
+        2. RESUME após transferência falhar - retoma captura do caller
         3. STOP após bridge sucesso - cliente agora fala com humano
         
         Isso evita loops de feedback onde o bot "ouve" a si mesmo.
