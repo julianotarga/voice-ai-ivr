@@ -94,6 +94,15 @@ class TimeoutManager:
         self.config = config or TimeoutConfig()
         
         self._active_timeouts: Dict[str, ActiveTimeout] = {}
+        
+        logger.info(
+            "⏱️ [TIMEOUT_MGR] Initialized",
+            extra={
+                "call_uuid": self.call_uuid,
+                "transfer_dial_timeout": self.config.transfer_dial_timeout,
+                "transfer_response_timeout": self.config.transfer_response_timeout,
+            }
+        )
     
     @asynccontextmanager
     async def timeout_scope(
@@ -134,6 +143,15 @@ class TimeoutManager:
         )
         self._active_timeouts[name] = timeout_info
         
+        logger.debug(
+            f"⏱️ [TIMEOUT_MGR] Started: {name} ({seconds}s)",
+            extra={
+                "call_uuid": self.call_uuid,
+                "timeout_name": name,
+                "timeout_seconds": seconds,
+            }
+        )
+        
         scope_result = {'cancelled_caught': False}
         
         try:
@@ -145,9 +163,14 @@ class TimeoutManager:
                 timeout_info.cancelled = True
                 
                 elapsed = time.time() - started_at
-                logger.info(
-                    f"Timeout '{name}' reached after {elapsed:.1f}s (limit: {seconds}s)",
-                    extra={"call_uuid": self.call_uuid}
+                logger.warning(
+                    f"⏱️ [TIMEOUT_MGR] EXPIRED: {name} after {elapsed:.1f}s (limit: {seconds}s)",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "timeout_name": name,
+                        "timeout_seconds": seconds,
+                        "elapsed_seconds": elapsed,
+                    }
                 )
                 
                 # Emitir evento se configurado

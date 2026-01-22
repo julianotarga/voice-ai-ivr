@@ -175,9 +175,12 @@ class HeartbeatMonitor:
         Útil durante transferência para não gerar falsos positivos.
         """
         self._paused = True
-        logger.debug(
-            "HeartbeatMonitor paused",
-            extra={"call_uuid": self.call_uuid}
+        logger.info(
+            "💓 [HEARTBEAT] Paused (transfer in progress)",
+            extra={
+                "call_uuid": self.call_uuid,
+                "chunks_received": self.health.audio_chunks_received,
+            }
         )
     
     def resume(self) -> None:
@@ -198,9 +201,12 @@ class HeartbeatMonitor:
         self._last_audio_silence_event = 0.0
         self._last_provider_timeout_event = 0.0
         
-        logger.debug(
-            "HeartbeatMonitor resumed",
-            extra={"call_uuid": self.call_uuid}
+        logger.info(
+            "💓 [HEARTBEAT] Resumed (transfer ended)",
+            extra={
+                "call_uuid": self.call_uuid,
+                "timestamps_reset": True,
+            }
         )
     
     # ========================================
@@ -223,11 +229,12 @@ class HeartbeatMonitor:
         self._task = asyncio.create_task(self._monitor_loop())
         
         logger.info(
-            "HeartbeatMonitor started",
+            "💓 [HEARTBEAT] Started",
             extra={
                 "call_uuid": self.call_uuid,
                 "check_interval": self.check_interval,
-                "audio_silence_threshold": self.audio_silence_threshold
+                "audio_silence_threshold": self.audio_silence_threshold,
+                "provider_timeout_threshold": self.provider_timeout_threshold,
             }
         )
     
@@ -243,10 +250,13 @@ class HeartbeatMonitor:
                 pass
         
         logger.info(
-            "HeartbeatMonitor stopped",
+            "💓 [HEARTBEAT] Stopped",
             extra={
                 "call_uuid": self.call_uuid,
-                "health_checks": self.health.health_checks
+                "health_checks": self.health.health_checks,
+                "chunks_received": self.health.audio_chunks_received,
+                "chunks_sent": self.health.audio_chunks_sent,
+                "final_health": self.health.is_healthy,
             }
         )
     

@@ -44,6 +44,11 @@ class EventBus:
         self._event_history: List[VoiceEvent] = []
         self._max_history = 100
         self._closed = False
+        
+        logger.info(
+            "📢 [EVENT_BUS] Initialized",
+            extra={"call_uuid": self.call_uuid}
+        )
     
     def on(self, event_type: VoiceEventType, handler: Callable) -> 'EventBus':
         """
@@ -137,11 +142,19 @@ class EventBus:
         if len(self._event_history) > self._max_history:
             self._event_history.pop(0)
         
-        logger.debug(
-            f"Emitting {event.type.value}",
+        # Log estruturado para monitoramento
+        handlers_count = len(self._handlers.get(event.type, []))
+        log_level = logging.INFO if event.type.value.startswith("transfer") else logging.DEBUG
+        
+        logger.log(
+            log_level,
+            f"📢 [EVENT_BUS] {event.type.value}",
             extra={
                 "call_uuid": self.call_uuid,
-                "event_data": str(event.data)[:100]
+                "event_type": event.type.value,
+                "event_source": event.source,
+                "handlers_count": handlers_count,
+                "event_data": str(event.data)[:200],
             }
         )
         
@@ -296,5 +309,14 @@ class EventBus:
         Novos eventos são ignorados após fechar.
         """
         self._closed = True
+        handlers_cleared = sum(len(h) for h in self._handlers.values())
         self._handlers.clear()
-        logger.debug(f"EventBus closed", extra={"call_uuid": self.call_uuid})
+        
+        logger.info(
+            "📢 [EVENT_BUS] Closed",
+            extra={
+                "call_uuid": self.call_uuid,
+                "events_processed": len(self._event_history),
+                "handlers_cleared": handlers_cleared,
+            }
+        )

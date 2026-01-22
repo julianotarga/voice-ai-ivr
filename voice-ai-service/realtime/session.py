@@ -752,6 +752,21 @@ class RealtimeSession:
         self.events.on(VoiceEventType.TRANSFER_TIMEOUT, self._on_transfer_timeout_event)
         self.events.on(VoiceEventType.TRANSFER_ANSWERED, self._on_transfer_answered_event)
         self.events.on(VoiceEventType.TRANSFER_ANNOUNCING, self._on_transfer_announcing_event)
+        
+        logger.info(
+            "🔧 [CORE] Internal event handlers registered",
+            extra={
+                "call_uuid": self.call_uuid,
+                "handlers": [
+                    "CONNECTION_DEGRADED",
+                    "PROVIDER_TIMEOUT", 
+                    "STATE_CHANGED",
+                    "TRANSFER_TIMEOUT",
+                    "TRANSFER_ANSWERED",
+                    "TRANSFER_ANNOUNCING",
+                ],
+            }
+        )
     
     async def _on_connection_degraded(self, event: VoiceEvent) -> None:
         """Handler para conexão degradada"""
@@ -759,8 +774,14 @@ class RealtimeSession:
         gap_seconds = event.data.get("gap_seconds", 0)
         
         logger.warning(
-            f"Connection degraded: {reason} (gap: {gap_seconds:.1f}s)",
-            extra={"call_uuid": self.call_uuid}
+            f"⚠️ [CORE] Connection degraded: {reason}",
+            extra={
+                "call_uuid": self.call_uuid,
+                "reason": reason,
+                "gap_seconds": gap_seconds,
+                "state": self.state_machine.state.value,
+                "transfer_in_progress": self._transfer_in_progress,
+            }
         )
         
         # Por enquanto, apenas log - no futuro pode tomar ações
@@ -771,8 +792,13 @@ class RealtimeSession:
         gap_seconds = event.data.get("gap_seconds", 0)
         
         logger.warning(
-            f"Provider timeout: {gap_seconds:.1f}s without response",
-            extra={"call_uuid": self.call_uuid}
+            f"⚠️ [CORE] Provider timeout: {gap_seconds:.1f}s without response",
+            extra={
+                "call_uuid": self.call_uuid,
+                "gap_seconds": gap_seconds,
+                "state": self.state_machine.state.value,
+                "provider": self.config.provider_name,
+            }
         )
         
         # Por enquanto, apenas log
@@ -802,11 +828,23 @@ class RealtimeSession:
     async def _on_transfer_answered_event(self, event: VoiceEvent) -> None:
         """Handler para atendente atendeu - sincroniza StateMachine"""
         current_state = self.state_machine.state.value
+        b_leg_uuid = event.data.get("b_leg_uuid")
+        destination = event.data.get("destination")
+        
+        logger.info(
+            f"📞 [CORE] Transfer answered - syncing state",
+            extra={
+                "call_uuid": self.call_uuid,
+                "current_state": current_state,
+                "b_leg_uuid": b_leg_uuid,
+                "destination": destination,
+            }
+        )
+        
         if current_state == "transferring_dialing":
-            b_leg_uuid = event.data.get("b_leg_uuid")
             await self.state_machine.trigger("attendant_answered", b_leg_uuid=b_leg_uuid)
-            logger.debug(
-                f"StateMachine sync: transferring_dialing -> transferring_announcing",
+            logger.info(
+                f"🔄 [CORE] State synced: transferring_dialing -> transferring_announcing",
                 extra={"call_uuid": self.call_uuid}
             )
     

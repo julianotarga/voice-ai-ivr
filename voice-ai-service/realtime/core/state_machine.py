@@ -196,6 +196,15 @@ class CallStateMachine:
         
         # Registrar guards padrão
         self._register_default_guards()
+        
+        logger.info(
+            f"🔄 [STATE_MACHINE] Initialized",
+            extra={
+                "call_uuid": self.call_uuid,
+                "initial_state": self._state.value,
+                "total_transitions": len(self.TRANSITIONS),
+            }
+        )
     
     @property
     def state(self) -> CallState:
@@ -363,8 +372,15 @@ class CallStateMachine:
         self._history.append(transition)
         
         logger.info(
-            f"State: {old_state.value} --[{trigger_name}]--> {target_state.value}",
-            extra={"call_uuid": self.call_uuid}
+            f"🔄 [STATE_MACHINE] {old_state.value} --[{trigger_name}]--> {target_state.value}",
+            extra={
+                "call_uuid": self.call_uuid,
+                "old_state": old_state.value,
+                "new_state": target_state.value,
+                "trigger": trigger_name,
+                "is_transferring": target_state.value.startswith("transferring"),
+                "transition_data": str(data)[:100] if data else None,
+            }
         )
         
         # Emitir evento
