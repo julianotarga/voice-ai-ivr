@@ -158,6 +158,11 @@ class ConferenceTransferManager:
         self._hangup_monitor_task: Optional[asyncio.Task] = None
         self._transfer_active = False
         self._hangup_handler_id: Optional[str] = None
+        
+        # UUID pendente do B-leg durante originate (antes de ser confirmado)
+        # Permite detectar rejeição de chamada mesmo antes de b_leg_uuid ser atribuído
+        self._pending_b_leg_uuid: Optional[str] = None
+        self._b_leg_hangup_cause: Optional[str] = None
     
     async def _ensure_esl_connected(self, context: str = "") -> bool:
         """
@@ -434,23 +439,44 @@ class ConferenceTransferManager:
                         error="Cliente desligou durante transferência"
                     )
                 
-                logger.warning(f"{elapsed()} STEP 4: ❌ Ramal não atendeu")
+                # Determinar motivo da falha baseado no hangup_cause
+                cause = self._b_leg_hangup_cause or "NO_ANSWER"
+                cause_upper = cause.upper()
+                
+                if "BUSY" in cause_upper or "CONGESTION" in cause_upper:
+                    reason = "busy"
+                    error_msg = "Ramal ocupado. Você pode deixar um recado."
+                    logger.warning(f"{elapsed()} STEP 4: ❌ Ramal OCUPADO ({cause})")
+                elif "REJECTED" in cause_upper or "DECLINE" in cause_upper:
+                    reason = "rejected"
+                    error_msg = "Chamada não foi aceita. Você pode deixar um recado."
+                    logger.warning(f"{elapsed()} STEP 4: ❌ Chamada REJEITADA ({cause})")
+                elif "NOT_REGISTERED" in cause_upper or "ABSENT" in cause_upper or "UNALLOCATED" in cause_upper:
+                    reason = "offline"
+                    error_msg = "Ramal não está disponível. Você pode deixar um recado."
+                    logger.warning(f"{elapsed()} STEP 4: ❌ Ramal OFFLINE ({cause})")
+                else:
+                    reason = "no_answer"
+                    error_msg = "Ramal não atendeu. Você pode deixar um recado."
+                    logger.warning(f"{elapsed()} STEP 4: ❌ Ramal NÃO ATENDEU ({cause})")
+                
                 # Tirar cliente da espera e dar feedback
-                await self._cleanup_and_return(reason="Ramal não atendeu")
+                await self._cleanup_and_return(reason=error_msg.split('.')[0])
                 await self._stop_hangup_monitor()
                 
-                # Emitir evento TRANSFER_TIMEOUT - ramal não atendeu
+                # Emitir evento com o motivo correto
                 await self._emit_event(
                     VoiceEventType.TRANSFER_TIMEOUT,
-                    reason="no_answer",
+                    reason=reason,
                     destination=destination,
+                    hangup_cause=cause,
                 )
                 
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,
                     conference_name=self.conference_name,
-                    error="Ramal não atendeu. Você pode deixar um recado.",
+                    error=error_msg,
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
             logger.info(f"{elapsed()} STEP 4: ✅ Ramal atendeu: {self.b_leg_uuid}")
@@ -618,8 +644,11 @@ class ConferenceTransferManager:
             if uuid == self.a_leg_uuid:
                 logger.warning(f"🚨 [HANGUP_MONITOR] A-leg hangup detected: {hangup_cause}")
                 self._a_leg_hangup_event.set()
-            elif uuid == self.b_leg_uuid:
-                logger.info(f"📞 [HANGUP_MONITOR] B-leg hangup detected: {hangup_cause}")
+            elif uuid == self.b_leg_uuid or uuid == self._pending_b_leg_uuid:
+                # Detecta hangup do B-leg confirmado OU do B-leg pendente (durante originate)
+                # Isso captura rejeição de chamada antes mesmo do B-leg ser confirmado
+                logger.info(f"📞 [HANGUP_MONITOR] B-leg hangup detected: {hangup_cause} (uuid={uuid[:8]}...)")
+                self._b_leg_hangup_cause = hangup_cause
                 self._b_leg_hangup_event.set()
         
         # Registrar handler no ESL client
@@ -921,6 +950,11 @@ class ConferenceTransferManager:
         logger.info(f"_originate_b_leg: App: {app}")
         
         try:
+            # Registrar UUID pendente para detecção de rejeição via hangup_monitor
+            self._pending_b_leg_uuid = candidate_uuid
+            self._b_leg_hangup_cause = None
+            self._b_leg_hangup_event.clear()
+            
             # Executar originate via bgapi (assíncrono)
             # bgapi retorna Job-UUID, não o resultado imediato
             logger.info("_originate_b_leg: Sending bgapi originate...")
@@ -932,6 +966,7 @@ class ConferenceTransferManager:
                 logger.info(f"_originate_b_leg: bgapi result: {result}")
             except asyncio.TimeoutError:
                 logger.error("_originate_b_leg: ❌ bgapi TIMEOUT after 5s")
+                self._pending_b_leg_uuid = None
                 return False
             
             # Polling para verificar se B-leg foi criado
@@ -940,13 +975,21 @@ class ConferenceTransferManager:
             logger.info(f"_originate_b_leg: Starting polling (max {max_attempts} attempts)...")
             
             for attempt in range(int(max_attempts)):
-                await asyncio.sleep(1.0)
+                # Verificar PRIMEIRO se B-leg foi rejeitado (via evento, mais rápido)
+                if self._b_leg_hangup_event.is_set():
+                    cause = self._b_leg_hangup_cause or "UNKNOWN"
+                    logger.warning(f"_originate_b_leg: ❌ B-leg REJECTED/HANGUP: {cause}")
+                    self._pending_b_leg_uuid = None
+                    return False
+                
+                # Sleep curto (0.3s) para resposta mais rápida
+                await asyncio.sleep(0.3)
                 
                 # Verificar se B-leg existe (timeout curto)
                 try:
                     b_exists = await asyncio.wait_for(
                         self.esl.uuid_exists(candidate_uuid),
-                        timeout=3.0
+                        timeout=1.0
                     )
                     logger.debug(f"_originate_b_leg: Attempt {attempt + 1}: B-leg exists = {b_exists}")
                 except asyncio.TimeoutError:
@@ -956,34 +999,29 @@ class ConferenceTransferManager:
                 if b_exists:
                     # SUCESSO: Agora podemos atribuir o UUID ao estado da classe
                     self.b_leg_uuid = candidate_uuid
-                    logger.info(f"_originate_b_leg: ✅ B-leg {self.b_leg_uuid} answered after {attempt + 1}s")
+                    self._pending_b_leg_uuid = None
+                    logger.info(f"_originate_b_leg: ✅ B-leg {self.b_leg_uuid} answered after {(attempt + 1) * 0.3:.1f}s")
                     return True
                 
                 # Verificar se A-leg ainda existe (timeout curto)
-                try:
-                    a_exists = await asyncio.wait_for(
-                        self.esl.uuid_exists(self.a_leg_uuid),
-                        timeout=3.0
-                    )
-                except asyncio.TimeoutError:
-                    logger.debug(f"_originate_b_leg: Attempt {attempt + 1}: A-leg check timeout, assuming exists")
-                    a_exists = True  # Assumir que existe
-                
-                if not a_exists:
-                    logger.warning(f"_originate_b_leg: ❌ A-leg gone during originate wait (attempt {attempt + 1})")
-                    # NÃO atribuir b_leg_uuid - nunca existiu
+                if self._check_a_leg_hangup():
+                    logger.warning(f"_originate_b_leg: ❌ A-leg hangup detected (attempt {attempt + 1})")
+                    self._pending_b_leg_uuid = None
                     return False
                 
-                # Log a cada 5 segundos
-                if (attempt + 1) % 5 == 0:
-                    logger.info(f"_originate_b_leg: Still waiting for B-leg... ({attempt + 1}s)")
+                # Log a cada ~5 segundos (15 * 0.3 = 4.5s)
+                if (attempt + 1) % 15 == 0:
+                    elapsed = (attempt + 1) * 0.3
+                    logger.info(f"_originate_b_leg: Still waiting for B-leg... ({elapsed:.1f}s)")
             
-            logger.warning(f"_originate_b_leg: ❌ B-leg {candidate_uuid} not answered after {max_attempts}s")
+            logger.warning(f"_originate_b_leg: ❌ B-leg {candidate_uuid} not answered after {max_attempts * 0.3:.1f}s")
+            self._pending_b_leg_uuid = None
             # NÃO atribuir b_leg_uuid - originate falhou
             return False
             
         except Exception as e:
             logger.error(f"Failed to originate B-leg: {e}")
+            self._pending_b_leg_uuid = None
             # NÃO atribuir b_leg_uuid - exceção ocorreu
             return False
     
