@@ -704,7 +704,7 @@ class ConferenceTransferManager:
         # FLAGS IMPORTANTES:
         # - mute: Cliente não pode falar na conferência
         # - deaf: Cliente não pode OUVIR a conferência (evita ouvir IA conversando com atendente)
-        # O cliente continua ouvindo MOH via uuid_hold separadamente
+        # O cliente fica em silêncio durante a transferência (MOH removido)
         transfer_cmd = (
             f"uuid_transfer {self.a_leg_uuid} "
             f"'conference:{self.conference_name}@{profile}+flags{{mute|deaf}}' inline"
@@ -1538,51 +1538,20 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 logger.debug(f"Could not kick A-leg from conference: {e}")
             
             # =================================================================
-            # STEP 2: Parar MOH via uuid_break (SÍNCRONO via ESL Inbound)
-            # 
-            # CRÍTICO: Usar ESL Inbound diretamente para garantir execução
-            # síncrona. O ESL Outbound enfileira comandos, causando race
-            # condition onde o audio_stream resume antes do MOH parar.
-            # =================================================================
-            try:
-                logger.info("🔇 Parando MOH via uuid_break (ESL Inbound)...")
-                
-                # Usar ESL Inbound diretamente para execução síncrona
-                result = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_break {self.a_leg_uuid} all"),
-                    timeout=2.0
-                )
-                
-                if result and "+OK" in str(result):
-                    logger.info("✅ MOH parado com sucesso")
-                else:
-                    logger.warning(f"⚠️ uuid_break resultado: {result}")
-                    
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"Não foi possível parar MOH: {e}")
-            
-            # =================================================================
-            # STEP 3: Aguardar MOH parar completamente
+            # STEP 2: Pequeno delay para estabilização
             #
-            # NOTA: Não usamos uuid_hold off aqui porque:
-            # 1. O cliente foi transferido para a conferência (não está em uuid_hold)
-            # 2. O uuid_break já parou qualquer áudio em reprodução
-            # 3. O uuid_hold off falha com "Operation failed" em conferências
+            # NOTA: MOH foi removido - agora usamos modo silêncio.
+            # Não precisa mais de uuid_break ou uuid_hold off.
+            # Apenas um pequeno delay para o canal estabilizar.
             # =================================================================
-            # 
-            # Tempo suficiente para:
-            # - FreeSWITCH processar o uuid_break e uuid_hold off
-            # - Buffer de áudio do MOH esvaziar
-            # - Canal estabilizar
-            # =================================================================
-            logger.info("⏳ Aguardando 500ms para MOH parar completamente...")
-            await asyncio.sleep(0.5)
+            logger.info("⏳ Aguardando 200ms para canal estabilizar...")
+            await asyncio.sleep(0.2)
             
             # =================================================================
-            # STEP 5: Retomar uuid_audio_stream
+            # STEP 3: Retomar uuid_audio_stream
             # 
             # O stream foi PAUSADO (não parado) em _stop_voiceai_stream().
-            # Agora que o MOH parou, podemos retomar com segurança.
+            # Podemos retomar com segurança (não há mais MOH para parar).
             #
             # RESUME mantém a sessão RealtimeSession intacta com:
             # - Histórico da conversa

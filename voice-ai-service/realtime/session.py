@@ -673,7 +673,7 @@ class RealtimeSession:
             self._set_call_state(CallState.LISTENING, reason or "transfer_end")
 
     async def _notify_transfer_start(self) -> None:
-        """Notifica camada de transporte para limpar playback antes do MOH."""
+        """Notifica camada de transporte para limpar playback antes da transferência."""
         if self._on_transfer:
             try:
                 await self._on_transfer(self.call_uuid)
@@ -1180,8 +1180,8 @@ Quando o cliente pedir para falar com humano/setor:
         # Se detectamos L16, não converter - já é L16
 
         # Durante transferência, não encaminhar áudio do FreeSWITCH para o provider.
-        # Motivo: o MOH (uuid_broadcast/local_stream://moh) pode "vazar" no stream
-        # e ser interpretado como fala, fazendo o agente gerar respostas sozinho.
+        # Motivo: mesmo em modo silêncio, pode haver ruído ou eco que seria
+        # interpretado como fala, fazendo o agente gerar respostas sozinho.
         if self._transfer_in_progress:
             return
         
@@ -1392,10 +1392,10 @@ Quando o cliente pedir para falar com humano/setor:
                 })
         
         # Durante warmup, resample_output retorna b""
-        # Durante transfer, não enviar áudio (MOH está tocando)
+        # Durante transfer, não enviar áudio (cliente em silêncio)
         if audio_bytes and self._on_audio_output:
             if self._transfer_in_progress:
-                # Áudio mutado durante transferência - MOH está tocando
+                # Áudio mutado durante transferência - cliente em silêncio
                 logger.debug("Audio muted - transfer in progress")
                 return
             
@@ -3938,7 +3938,7 @@ Quando o cliente pedir para falar com humano/setor:
             await asyncio.sleep(0.2)
             
             # 3.5. PROTEÇÃO CONTRA INTERRUPÇÕES
-            # Após unhold, pode haver ruído residual (clique, MOH) que o VAD detecta como fala.
+            # Após retomar do silêncio, pode haver ruído residual (clique) que o VAD detecta como fala.
             # Proteger por 3 segundos para garantir que a mensagem seja dita completamente.
             # O OpenAI precisa de tempo para:
             # - Receber a instrução

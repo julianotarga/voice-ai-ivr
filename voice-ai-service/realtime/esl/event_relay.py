@@ -720,51 +720,38 @@ class DualModeEventRelay:
         
         try:
             if on:
-                # Tocar MOH em background (não bloqueante)
-                # 
-                # FusionPBX tem música de espera configurada em local_stream://default
-                # Usar isso como primeira opção, com tone_stream como fallback
+                # =========================================================
+                # MODO SILÊNCIO (sem MOH)
+                # =========================================================
+                # Removemos o MOH do FreeSWITCH por problemas de sincronização:
+                # - uuid_break não funcionava consistentemente
+                # - Música continuava tocando após unhold
+                # - Sincronização de timing era complexa
                 #
-                moh_sources = [
-                    # 1. MOH do FusionPBX (configurado via UI)
-                    "local_stream://default",
-                    # 2. MOH alternativo
-                    "local_stream://moh",
-                    # 3. Arquivo de música direto (8kHz para compatibilidade)
-                    "$${sounds_dir}/music/8000/ponce-preludio-in-e-major.wav",
-                    # 4. Tom de ringback brasileiro como último fallback
-                    "tone_stream://%(1000,4000,425);loops=-1",
-                ]
-                
-                for moh_source in moh_sources:
-                    try:
-                        logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] Tentando playback: {moh_source}")
-                        self.session.playback(moh_source, block=False)
-                        self._outbound_moh_active = True
-                        self._current_moh_source = moh_source
-                        logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] ✅ MOH iniciado com sucesso: {moh_source}")
-                        return True
-                    except Exception as e:
-                        logger.warning(f"⏸️ [EXECUTE_OUTBOUND_HOLD] Falha com {moh_source}: {e}")
-                        continue
-                
-                # Se nenhum funcionou, marcar como ativo mesmo assim
+                # Agora: cliente fica em silêncio durante transferência.
+                # Vantagens:
+                # - 100% controle pelo nosso código
+                # - Sem dependência de arquivos de áudio do FreeSWITCH
+                # - Sem problemas de uuid_break
+                # - Mais simples e previsível
+                # =========================================================
                 self._outbound_moh_active = True
-                logger.warning(f"⏸️ [EXECUTE_OUTBOUND_HOLD] ⚠️ Nenhum MOH disponível, continuando sem música")
+                self._current_moh_source = "silence"
+                logger.info(
+                    f"⏸️ [EXECUTE_OUTBOUND_HOLD] ✅ HOLD ativado (modo silêncio)",
+                    extra={"uuid": self._uuid}
+                )
                 return True
             else:
-                # Parar MOH (uuid_break é API global e requer permissão full)
-                if self._outbound_moh_active:
-                    logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] Parando MOH via uuid_break...")
-                    try:
-                        self.session.uuid_break()
-                    except Exception as e:
-                        logger.warning(f"⏸️ [EXECUTE_OUTBOUND_HOLD] uuid_break falhou: {e}")
-                    self._outbound_moh_active = False
-                    logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] ✅ MOH parado")
-                else:
-                    logger.info(f"⏸️ [EXECUTE_OUTBOUND_HOLD] MOH não estava ativo, nada a fazer")
-            return True
+                # Desativar hold - apenas resetar flag
+                # Não precisa de uuid_break pois não há playback ativo
+                self._outbound_moh_active = False
+                self._current_moh_source = None
+                logger.info(
+                    f"⏸️ [EXECUTE_OUTBOUND_HOLD] ✅ UNHOLD - silêncio desativado",
+                    extra={"uuid": self._uuid}
+                )
+                return True
         except Exception as e:
             logger.warning(f"⏸️ [EXECUTE_OUTBOUND_HOLD] ❌ ERRO: {e}", exc_info=True)
             return False
