@@ -151,8 +151,8 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
         "Anota um recado do cliente para retorno posterior. "
         "OBRIGATÓRIO usar quando o cliente quiser deixar uma mensagem ou recado. "
         "Após chamar esta função, a chamada será encerrada automaticamente. "
-        "Colete: nome do cliente, mensagem e urgência. "
-        "NÃO pergunte o telefone - o número do cliente já está disponível automaticamente."
+        "Colete APENAS: nome do cliente, mensagem e urgência. "
+        "O telefone de retorno é AUTOMATICAMENTE o número desta ligação - NUNCA pergunte."
     ),
     "parameters": {
         "type": "object",
@@ -160,13 +160,6 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
             "caller_name": {
                 "type": "string",
                 "description": "Nome de quem está ligando"
-            },
-            "phone": {
-                "type": "string",
-                "description": (
-                    "Telefone para retorno. OPCIONAL - deixe vazio para usar o número da ligação atual. "
-                    "Só preencha se o cliente EXPLICITAMENTE fornecer um número DIFERENTE."
-                )
             },
             "message": {
                 "type": "string",
@@ -2065,26 +2058,21 @@ Quando o cliente pedir para falar com humano/setor:
             # Função do prompt do FusionPBX para anotar recados
             # Mapear para o webhook OmniPlay (create_ticket)
             caller_name = args.get("caller_name", "Não informado")
-            phone = args.get("phone", "Não informado")
             message = args.get("message", "")
             urgency = args.get("urgency", "normal")
+            
+            # Telefone de retorno é SEMPRE o caller_id da chamada
+            caller_phone = self.config.caller_id
             
             logger.info(
                 "📝 [TAKE_MESSAGE] Anotando recado",
                 extra={
                     "call_uuid": self.call_uuid,
                     "caller_name": caller_name,
-                    "phone": phone,
+                    "caller_phone": caller_phone,
                     "urgency": urgency,
                 }
             )
-            
-            # Enviar via webhook OmniPlay se configurado
-            # O phone pode vir do LLM ou usar o caller_id da chamada
-            # Usar caller_id se phone estiver vazio, None, ou "Não informado"
-            caller_phone = self.config.caller_id
-            if phone and phone.strip() and phone != "Não informado":
-                caller_phone = phone.strip()
             
             if self.config.omniplay_webhook_url:
                 try:
