@@ -748,8 +748,10 @@ class RealtimeSession:
         # Reagir a mudanças de estado
         self.events.on(VoiceEventType.STATE_CHANGED, self._on_state_changed)
         
-        # Reagir a eventos de transferência
+        # Reagir a eventos de transferência - sincronizar com StateMachine
         self.events.on(VoiceEventType.TRANSFER_TIMEOUT, self._on_transfer_timeout_event)
+        self.events.on(VoiceEventType.TRANSFER_ANSWERED, self._on_transfer_answered_event)
+        self.events.on(VoiceEventType.TRANSFER_ANNOUNCING, self._on_transfer_announcing_event)
     
     async def _on_connection_degraded(self, event: VoiceEvent) -> None:
         """Handler para conexão degradada"""
@@ -794,6 +796,26 @@ class RealtimeSession:
         
         logger.info(
             f"Transfer timeout event: {timeout_name} after {timeout_seconds}s",
+            extra={"call_uuid": self.call_uuid}
+        )
+    
+    async def _on_transfer_answered_event(self, event: VoiceEvent) -> None:
+        """Handler para atendente atendeu - sincroniza StateMachine"""
+        current_state = self.state_machine.state.value
+        if current_state == "transferring_dialing":
+            b_leg_uuid = event.data.get("b_leg_uuid")
+            await self.state_machine.trigger("attendant_answered", b_leg_uuid=b_leg_uuid)
+            logger.debug(
+                f"StateMachine sync: transferring_dialing -> transferring_announcing",
+                extra={"call_uuid": self.call_uuid}
+            )
+    
+    async def _on_transfer_announcing_event(self, event: VoiceEvent) -> None:
+        """Handler para anúncio iniciado - apenas log (estado já transicionado)"""
+        # O evento TRANSFER_ANNOUNCING é emitido durante o anúncio
+        # A transição attendant_answered já foi feita quando o atendente atendeu
+        logger.debug(
+            f"Transfer announcing in progress",
             extra={"call_uuid": self.call_uuid}
         )
 
@@ -3899,11 +3921,24 @@ Quando o cliente pedir para falar com humano/setor:
             # Transição de estado: request_transfer -> transferring_validating
             # Extrair caller_name para o guard da StateMachine
             caller_name = self._extract_caller_name()
-            await self.state_machine.request_transfer(
+            transfer_allowed = await self.state_machine.request_transfer(
                 destination=destination.name,
                 reason=reason,
                 caller_name=caller_name
             )
+            
+            if not transfer_allowed:
+                # Guard bloqueou a transferência - estado não mudou
+                logger.warning(
+                    "📞 [INTELLIGENT_HANDOFF] Transferência bloqueada pelo guard da StateMachine",
+                    extra={"call_uuid": self.call_uuid, "destination": destination.name}
+                )
+                self._set_transfer_in_progress(False, "state_machine_blocked")
+                await self._send_text_to_provider(
+                    "Não foi possível iniciar a transferência neste momento. "
+                    "Como posso ajudar?"
+                )
+                return
             
             # Transição: destination_validated -> transferring_dialing
             # O destino foi encontrado e validado, agora vamos discar
