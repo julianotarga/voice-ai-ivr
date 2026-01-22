@@ -714,20 +714,31 @@ class ConferenceAnnouncementSession:
             logger.error(f"Audio stream init failed: {e}")
     
     async def _send_initial_message(self) -> None:
-        """Envia mensagem inicial de anúncio."""
+        """
+        Envia mensagem inicial de anúncio.
+        
+        IMPORTANTE: Usa response.create com instructions específicas para
+        garantir que a IA fale EXATAMENTE a mensagem, sem elaborar.
+        Isso evita problemas de:
+        1. IA inventando texto adicional
+        2. Respostas muito longas
+        3. Interrupção por barge-in durante elaboração
+        """
         if not self._ws:
             return
         
+        # Usar response.create com instructions específicas
+        # Isso faz a IA falar EXATAMENTE a mensagem, sem elaborar
         await self._ws.send(json.dumps({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": self.initial_message}]
+            "type": "response.create",
+            "response": {
+                "instructions": (
+                    f"Diga EXATAMENTE esta frase, de forma clara e natural: "
+                    f"\"{self.initial_message}\". "
+                    f"Não adicione nada antes ou depois."
+                )
             }
         }))
-        
-        await self._ws.send(json.dumps({"type": "response.create"}))
         
         logger.info(f"Initial message sent: {self.initial_message[:50]}...")
     
