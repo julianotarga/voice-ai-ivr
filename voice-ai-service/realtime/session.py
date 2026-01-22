@@ -151,7 +151,8 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
         "Anota um recado do cliente para retorno posterior. "
         "OBRIGATÓRIO usar quando o cliente quiser deixar uma mensagem ou recado. "
         "Após chamar esta função, a chamada será encerrada automaticamente. "
-        "Colete: nome do cliente, telefone para retorno, mensagem e urgência."
+        "Colete: nome do cliente, mensagem e urgência. "
+        "NÃO pergunte o telefone - o número do cliente já está disponível automaticamente."
     ),
     "parameters": {
         "type": "object",
@@ -162,7 +163,10 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
             },
             "phone": {
                 "type": "string",
-                "description": "Telefone para retorno (ex: '11987654321')"
+                "description": (
+                    "Telefone para retorno. OPCIONAL - deixe vazio para usar o número da ligação atual. "
+                    "Só preencha se o cliente EXPLICITAMENTE fornecer um número DIFERENTE."
+                )
             },
             "message": {
                 "type": "string",
@@ -174,7 +178,7 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
                 "description": "Nível de urgência do recado"
             }
         },
-        "required": ["caller_name", "phone", "message"]
+        "required": ["caller_name", "message"]
     }
 }
 
@@ -2077,7 +2081,10 @@ Quando o cliente pedir para falar com humano/setor:
             
             # Enviar via webhook OmniPlay se configurado
             # O phone pode vir do LLM ou usar o caller_id da chamada
-            caller_phone = phone if phone != "Não informado" else self.config.caller_id
+            # Usar caller_id se phone estiver vazio, None, ou "Não informado"
+            caller_phone = self.config.caller_id
+            if phone and phone.strip() and phone != "Não informado":
+                caller_phone = phone.strip()
             
             if self.config.omniplay_webhook_url:
                 try:
