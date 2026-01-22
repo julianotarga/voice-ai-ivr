@@ -796,25 +796,42 @@ class ConferenceTransferManager:
         - mute: Cliente não pode falar (ainda, será desmutado após aceitação)
         - deaf: Cliente não pode ouvir a conversa entre IA e atendente
         
-        IMPORTANTE: NÃO setamos hangup_after_conference aqui!
-        Isso é feito em _handle_accepted APENAS quando a transferência for aceita.
-        Se o atendente desligar/recusar, o cliente fica na linha para deixar recado.
+        IMPORTANTE: Setamos hangup_after_conference=false ANTES de entrar!
+        O DEFAULT do FreeSWITCH é TRUE - se não setarmos, quando fizermos
+        'conference kick', o canal será DESLIGADO automaticamente.
         
-        A conferência será criada automaticamente.
+        Depois, em _handle_accepted, setamos hangup_after_conference=true
+        para que quando a chamada terminar normalmente, o canal seja desligado.
         
-        Ref: Context7 /signalwire/freeswitch-docs - conference, endconf
+        Ref: Context7 /signalwire/freeswitch-docs - hangup_after_conference
         """
         logger.info(f"_move_a_leg_to_conference: START - A-leg={self.a_leg_uuid}")
         
         profile = self.config.conference_profile
         
-        # IMPORTANTE: NÃO setar hangup_after_conference aqui!
-        # Isso será setado APENAS quando a transferência for ACEITA (em _handle_accepted).
-        # Se setar antes, e o atendente desligar/recusar, o cliente também desliga
-        # automaticamente, perdendo a chance de deixar recado.
-        # Ref: Bug fix - cliente desligava junto com atendente que recusava
+        # =================================================================
+        # CRÍTICO: Setar hangup_after_conference=false ANTES de entrar!
+        #
+        # O DEFAULT do FreeSWITCH é TRUE. Se não setarmos FALSE, quando
+        # fizermos 'conference kick' (após rejeição/timeout), o FreeSWITCH
+        # vai DESLIGAR o A-leg automaticamente!
+        #
+        # Só setamos TRUE em _handle_accepted quando a transferência for
+        # aceita e queremos que o canal desligue quando a conferência terminar.
+        #
+        # Ref: Context7 - "If true (default) the dialplan will stop processing
+        #      and the A leg will be terminated"
+        # =================================================================
+        try:
+            await asyncio.wait_for(
+                self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_conference false"),
+                timeout=2.0
+            )
+            logger.info("✅ hangup_after_conference=false set on A-leg")
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"⚠️ Could not set hangup_after_conference=false: {e}")
         
-        # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...}' inline
+        # Comando: uuid_transfer UUID 'conference:NAME@PROFILE+flags{...},park:' inline
         # Nota: FreeSWITCH 1.10+ aceita essa sintaxe
         # NOTA: As chaves {mute|deaf} são interpretadas pelo FreeSWITCH
         # Python f-string requer {{ }} para escapar, resultando em { } no output
@@ -823,9 +840,15 @@ class ConferenceTransferManager:
         # - mute: Cliente não pode falar na conferência
         # - deaf: Cliente não pode OUVIR a conferência (evita ouvir IA conversando com atendente)
         # O cliente fica em silêncio durante a transferência (MOH removido)
+        #
+        # IMPORTANTE: Adicionamos 'park:' após conference!
+        # Quando a conferência terminar (por kick ou hangup_after_conference=false),
+        # o canal vai para PARK e podemos executar comandos nele via ESL.
+        # Sem isso, o canal ficaria em estado indefinido após sair da conferência.
+        # Ref: Context7 - inline dialplan executa aplicações em sequência
         transfer_cmd = (
             f"uuid_transfer {self.a_leg_uuid} "
-            f"'conference:{self.conference_name}@{profile}+flags{{mute|deaf}}' inline"
+            f"'conference:{self.conference_name}@{profile}+flags{{mute|deaf}},park:' inline"
         )
         
         logger.info(f"_move_a_leg_to_conference: Sending command: {transfer_cmd}")
