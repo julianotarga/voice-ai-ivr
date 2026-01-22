@@ -297,12 +297,10 @@ class RealtimeServer:
             async for message in websocket:
                 message_count += 1
                 
-                # Log a cada 100 mensagens para não poluir muito
-                if message_count <= 5 or message_count % 100 == 0:
-                    logger.info(f"Message #{message_count} received", extra={
+                # Log apenas no início e a cada 500 mensagens (reduzir ruído)
+                if message_count == 1 or message_count % 500 == 0:
+                    logger.debug(f"📥 [WS] Messages received: {message_count}", extra={
                         "call_uuid": call_uuid,
-                        "message_type": "bytes" if isinstance(message, bytes) else "str",
-                        "message_size": len(message) if message else 0,
                     })
                 
                 # Processar mensagens

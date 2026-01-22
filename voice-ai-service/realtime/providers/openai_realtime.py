@@ -263,6 +263,12 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         self._session_start_time: Optional[float] = None
         self._max_session_duration_seconds: int = 55 * 60  # 55 min (5 min de margem)
         self._response_active: bool = False
+        
+        # Contadores para agregação de logs de áudio (reduzir ruído)
+        self._audio_chunks_sent: int = 0
+        self._audio_bytes_sent: int = 0
+        self._last_audio_log_time: float = 0.0
+        self._AUDIO_LOG_INTERVAL: float = 5.0  # Logar a cada 5 segundos
     
     @property
     def name(self) -> str:
@@ -669,9 +675,24 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             "audio": audio_b64
         }))
         
-        logger.debug(f"Audio chunk sent to OpenAI: {len(audio_bytes)} bytes", extra={
-            "domain_uuid": self.config.domain_uuid,
-        })
+        # Agregação de logs - logar resumo a cada N segundos em vez de cada chunk
+        import time
+        self._audio_chunks_sent += 1
+        self._audio_bytes_sent += len(audio_bytes)
+        
+        now = time.time()
+        if now - self._last_audio_log_time >= self._AUDIO_LOG_INTERVAL:
+            logger.debug(
+                f"📤 [OPENAI] Audio sent: {self._audio_chunks_sent} chunks, {self._audio_bytes_sent} bytes in last {self._AUDIO_LOG_INTERVAL}s",
+                extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "chunks_sent": self._audio_chunks_sent,
+                    "bytes_sent": self._audio_bytes_sent,
+                }
+            )
+            self._audio_chunks_sent = 0
+            self._audio_bytes_sent = 0
+            self._last_audio_log_time = now
 
     async def commit_audio_buffer(self) -> None:
         """Commit manual do buffer de áudio (necessário quando VAD está desabilitado)."""

@@ -166,14 +166,11 @@ class EchoCancellerWrapper:
             self.speaker_buffer.append(delayed_frame)
             frames_moved += 1
         
-        # Log nas primeiras chamadas e periodicamente
-        if self._speaker_calls <= 5 or self._speaker_calls % 50 == 0:
+        # Log apenas nas primeiras 2 chamadas e a cada 100 (reduzir ruído)
+        if self._speaker_calls <= 2 or self._speaker_calls % 100 == 0:
             logger.info(
-                f"🔊 [AEC] speaker call #{self._speaker_calls}: "
-                f"+{frames_added} frames, moved={frames_moved}, "
-                f"delay_buf={len(self.delay_buffer)}, "
-                f"speaker_buf={len(self.speaker_buffer)}, "
-                f"input={len(audio_bytes)}B"
+                f"🔊 [AEC] speaker #{self._speaker_calls}: "
+                f"+{frames_added} frames, buf={len(self.speaker_buffer)}"
             )
     
     def process(self, mic_audio: bytes) -> bytes:
@@ -229,11 +226,10 @@ class EchoCancellerWrapper:
                 f"sample_rate={self.sample_rate}Hz"
             )
         
-        # Log inicial para debug
-        if self.frames_processed <= 5:
+        # Log apenas no primeiro frame para confirmar funcionamento
+        if self.frames_processed == 1:
             logger.info(
-                f"🔇 [AEC] frame #{self.frames_processed}: "
-                f"mic={len(mic_audio)}B, with_ref={frames_with_reference}, no_ref={frames_without_reference}"
+                f"🔇 [AEC] Processing started: mic={len(mic_audio)}B, sample_rate={self.sample_rate}Hz"
             )
         
         # Processar resto parcial

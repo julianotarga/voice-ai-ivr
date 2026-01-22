@@ -805,15 +805,9 @@ class RealtimeSession:
     
     async def _on_state_changed(self, event: VoiceEvent) -> None:
         """Handler para mudança de estado da máquina de estados"""
-        old_state = event.data.get("old_state", "unknown")
-        new_state = event.data.get("new_state", "unknown")
-        trigger = event.data.get("trigger", "unknown")
-        
-        # Log em debug (já logado pela StateMachine, mas útil aqui também)
-        logger.debug(
-            f"State machine: {old_state} -> {new_state} (trigger: {trigger})",
-            extra={"call_uuid": self.call_uuid}
-        )
+        # Nota: Log já feito pela StateMachine com mais detalhes
+        # Este handler existe para reagir a mudanças se necessário
+        pass
     
     async def _on_transfer_timeout_event(self, event: VoiceEvent) -> None:
         """Handler para timeout de transferência (do TimeoutManager)"""
@@ -3263,13 +3257,24 @@ Quando o cliente pedir para falar com humano/setor:
                 "call_uuid": self.call_uuid
             })
         
-        logger.info("Realtime session stopped", extra={
-            "call_uuid": self.call_uuid,
-            "domain_uuid": self.domain_uuid,
-            "reason": reason,
-            "hangup_sent": should_hangup,
-            "hangup_success": hangup_success,
-        })
+        # Calcular duração da chamada
+        from datetime import datetime
+        duration_seconds = 0.0
+        if hasattr(self, '_started_at') and self._started_at:
+            duration_seconds = (datetime.now() - self._started_at).total_seconds()
+        
+        logger.info(
+            f"📞 [SESSION] Stopped after {duration_seconds:.1f}s - reason: {reason}",
+            extra={
+                "call_uuid": self.call_uuid,
+                "domain_uuid": self.domain_uuid,
+                "reason": reason,
+                "duration_seconds": duration_seconds,
+                "hangup_sent": should_hangup,
+                "hangup_success": hangup_success,
+                "final_state": self.state_machine.state.value if self.state_machine else "unknown",
+            }
+        )
     
     # =========================================================================
     # MODO DUAL: ESL Event Handlers
