@@ -3809,6 +3809,14 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         """
         Retira o cliente da espera.
         
+        IMPORTANTE: Quando a transferência usa conferência (mod_conference),
+        o uuid_transfer FECHA a conexão WebSocket. Nesse caso, 'resume' não
+        funciona e precisamos fazer 'start' novamente.
+        
+        O ConferenceTransferManager._return_a_leg_to_voiceai() já faz isso
+        antes de chamar on_resume (que é _resume_voice_ai). Então aqui só
+        precisamos atualizar o estado - o stream já foi reconectado.
+        
         Args:
             timeout: Timeout em segundos (default 5s para não travar o fluxo)
         
@@ -3822,23 +3830,39 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             from .esl import get_esl_adapter
             adapter = get_esl_adapter(self.call_uuid)
             
-            # Usar timeout para não travar o fluxo se ESL não responder
+            # Tentar resume primeiro (funciona se stream estava apenas pausado)
             try:
                 result = await asyncio.wait_for(
                     adapter.execute_api(f"uuid_audio_stream {self.call_uuid} resume"),
                     timeout=timeout
                 )
-                success = result and "+OK" in str(result)
+                result_str = str(result).strip() if result else ""
+                
+                if "+OK" in result_str:
+                    self._on_hold = False
+                    logger.info("Call taken off hold (resume)", extra={"call_uuid": self.call_uuid})
+                    return True
+                elif "-ERR" in result_str:
+                    # Resume falhou - provavelmente porque a conexão foi fechada
+                    # O ConferenceTransferManager._return_a_leg_to_voiceai() já deve
+                    # ter feito o 'start' antes de chamar on_resume. Apenas atualizar estado.
+                    logger.info(
+                        f"unhold_call: resume falhou ({result_str}) - stream provavelmente já reconectado",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                    self._on_hold = False
+                    return True
+                else:
+                    # Resposta ambígua - assumir sucesso
+                    self._on_hold = False
+                    logger.info(f"Call taken off hold (result: {result_str})", extra={"call_uuid": self.call_uuid})
+                    return True
+                    
             except asyncio.TimeoutError:
                 logger.warning(f"unhold_call timeout after {timeout}s - continuing anyway")
                 # Marcar como não em hold mesmo se timeout (evitar estado inconsistente)
                 self._on_hold = False
                 return True
-            
-            if success:
-                self._on_hold = False
-                logger.info("Call taken off hold", extra={"call_uuid": self.call_uuid})
-            return success
             
         except Exception as e:
             logger.error(f"Error taking call off hold: {e}")
