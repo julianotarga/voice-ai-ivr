@@ -2962,10 +2962,11 @@ Quando o cliente pedir para falar com humano/setor:
         
         # === FASE 1: Esperar bytes chegarem ===
         # Se _pending_audio_bytes == 0, pode ser que o áudio ainda não começou a chegar
+        # NOTA: Não verificar _ending_call aqui - estamos JUSTAMENTE esperando o áudio de despedida
         bytes_wait = 0.0
         while self._pending_audio_bytes == 0 and bytes_wait < 2.0:
-            if self._ended or self._ending_call:
-                logger.debug(f"🔊 [{context}] Chamada encerrada durante espera por bytes")
+            if self._ended:
+                logger.debug(f"🔊 [{context}] Chamada já encerrada durante espera por bytes")
                 return time.time() - start_time
             await asyncio.sleep(0.05)
             bytes_wait += 0.05
@@ -2977,12 +2978,13 @@ Quando o cliente pedir para falar com humano/setor:
             )
         
         # === FASE 2: Esperar OpenAI terminar de GERAR ===
+        # NOTA: Não verificar _ending_call aqui - estamos esperando a IA terminar de falar a despedida
         generation_wait = time.time() - start_time
         max_generation_wait = max_wait
         
         while self._assistant_speaking and generation_wait < max_generation_wait:
-            if self._ended or self._ending_call:
-                logger.debug(f"🔊 [{context}] Chamada encerrada durante geração")
+            if self._ended:
+                logger.debug(f"🔊 [{context}] Chamada já encerrada durante geração")
                 return time.time() - start_time
             await asyncio.sleep(0.1)
             generation_wait = time.time() - start_time
@@ -3014,21 +3016,21 @@ Quando o cliente pedir para falar com humano/setor:
             
             if remaining_time > 0:
                 # =========================================================
-                # MARGEM DE SEGURANÇA: tempo restante + 500ms FIXO
+                # MARGEM DE SEGURANÇA: tempo restante + 1s FIXO
                 # 
                 # O cálculo é simples:
                 # - remaining_time = tempo que falta reproduzir
-                # - 500ms = margem fixa para latência de rede
+                # - 1s = margem fixa para latência de rede + buffer FreeSWITCH
                 #
                 # Para frase de 5s com 2s reproduzidos:
-                #   remaining = 3s, wait = 3.5s
+                #   remaining = 3s, wait = 4s
                 #
                 # Para frase de 1s com 0.5s reproduzidos:
-                #   remaining = 0.5s, wait = 1.0s
+                #   remaining = 0.5s, wait = 1.5s
                 #
                 # A margem é FIXA, não percentual, evitando silêncio excessivo.
                 # =========================================================
-                NETWORK_LATENCY_MARGIN = 0.5  # 500ms margem fixa
+                NETWORK_LATENCY_MARGIN = 1.0  # 1s margem fixa (rede + buffer FS)
                 
                 wait_playback = remaining_time + NETWORK_LATENCY_MARGIN
                 
@@ -3038,7 +3040,7 @@ Quando o cliente pedir para falar com humano/setor:
                 logger.info(
                     f"🔊 [{context}] Audio: {audio_duration:.1f}s total, "
                     f"{audio_elapsed:.1f}s elapsed, remaining={remaining_time:.1f}s, "
-                    f"aguardando {wait_playback:.1f}s (margem fixa {NETWORK_LATENCY_MARGIN}s)",
+                    f"aguardando {wait_playback:.1f}s (margem {NETWORK_LATENCY_MARGIN}s)",
                     extra={
                         "call_uuid": self.call_uuid,
                         "pending_audio_bytes": self._pending_audio_bytes,
