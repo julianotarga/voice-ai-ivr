@@ -34,6 +34,21 @@ from .utils.audio_codec import G711Codec, ulaw_to_pcm, pcm_to_ulaw
 from .utils.pacing import ConversationPacing, PacingConfig
 from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 
+# ========================================
+# Core - Infraestrutura de controle interno
+# Ref: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
+# ========================================
+from .core import (
+    EventBus,
+    CallStateMachine,
+    CallState as CoreCallState,
+    HeartbeatMonitor,
+    TimeoutManager,
+    TimeoutConfig,
+    VoiceEvent,
+    VoiceEventType,
+)
+
 # FASE 1: Handoff Inteligente
 # Ref: voice-ai-ivr/openspec/changes/intelligent-voice-handoff/
 from .handlers.transfer_manager import (
@@ -628,6 +643,42 @@ class RealtimeSession:
             enabled=True,   # Habilitado por padrão
         ))
         self._pacing_applied_this_turn = False  # Evita aplicar delay múltiplas vezes
+        
+        # ========================================
+        # Core - Sistema de controle interno
+        # Ref: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
+        # ========================================
+        # EventBus para comunicação desacoplada
+        self.events = EventBus(config.call_uuid)
+        
+        # StateMachine para estados explícitos (coexiste com CallState existente)
+        self.state_machine = CallStateMachine(
+            call_uuid=config.call_uuid,
+            event_bus=self.events,
+            session=self
+        )
+        
+        # HeartbeatMonitor para detectar problemas de conexão
+        self.heartbeat = HeartbeatMonitor(
+            call_uuid=config.call_uuid,
+            event_bus=self.events,
+            check_interval=1.0,
+            audio_silence_threshold=15.0,  # 15s sem áudio = alerta
+            provider_timeout_threshold=30.0,  # 30s sem resposta = alerta
+        )
+        
+        # TimeoutManager para timeouts internos
+        self.timeouts = TimeoutManager(
+            call_uuid=config.call_uuid,
+            event_bus=self.events,
+            config=TimeoutConfig(
+                transfer_dial_timeout=30.0,
+                transfer_response_timeout=60.0,
+            )
+        )
+        
+        # Registrar handlers internos
+        self._register_internal_event_handlers()
     
     @property
     def call_uuid(self) -> str:
@@ -669,8 +720,12 @@ class RealtimeSession:
         self._transfer_in_progress = in_progress
         if in_progress:
             self._set_call_state(CallState.TRANSFERRING, reason or "transfer_start")
+            # Pausar HeartbeatMonitor durante transferência para evitar falsos positivos
+            self.heartbeat.pause()
         else:
             self._set_call_state(CallState.LISTENING, reason or "transfer_end")
+            # Retomar HeartbeatMonitor após transferência
+            self.heartbeat.resume()
 
     async def _notify_transfer_start(self) -> None:
         """Notifica camada de transporte para limpar playback antes da transferência."""
@@ -679,6 +734,69 @@ class RealtimeSession:
                 await self._on_transfer(self.call_uuid)
             except Exception:
                 pass
+
+    def _register_internal_event_handlers(self) -> None:
+        """
+        Registra handlers para eventos internos do EventBus.
+        
+        Estes handlers permitem que a lógica de negócio reaja a eventos
+        de forma desacoplada, sem precisar conhecer a origem dos eventos.
+        """
+        # Reagir a problemas de conexão
+        self.events.on(VoiceEventType.CONNECTION_DEGRADED, self._on_connection_degraded)
+        self.events.on(VoiceEventType.PROVIDER_TIMEOUT, self._on_provider_timeout)
+        
+        # Reagir a mudanças de estado
+        self.events.on(VoiceEventType.STATE_CHANGED, self._on_state_changed)
+        
+        # Reagir a eventos de transferência
+        self.events.on(VoiceEventType.TRANSFER_TIMEOUT, self._on_transfer_timeout_event)
+    
+    async def _on_connection_degraded(self, event: VoiceEvent) -> None:
+        """Handler para conexão degradada"""
+        reason = event.data.get("reason", "unknown")
+        gap_seconds = event.data.get("gap_seconds", 0)
+        
+        logger.warning(
+            f"Connection degraded: {reason} (gap: {gap_seconds:.1f}s)",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
+        # Por enquanto, apenas log - no futuro pode tomar ações
+        # como encerrar chamada ou tentar reconectar
+    
+    async def _on_provider_timeout(self, event: VoiceEvent) -> None:
+        """Handler para timeout do provider"""
+        gap_seconds = event.data.get("gap_seconds", 0)
+        
+        logger.warning(
+            f"Provider timeout: {gap_seconds:.1f}s without response",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
+        # Por enquanto, apenas log
+    
+    async def _on_state_changed(self, event: VoiceEvent) -> None:
+        """Handler para mudança de estado da máquina de estados"""
+        old_state = event.data.get("old_state", "unknown")
+        new_state = event.data.get("new_state", "unknown")
+        trigger = event.data.get("trigger", "unknown")
+        
+        # Log em debug (já logado pela StateMachine, mas útil aqui também)
+        logger.debug(
+            f"State machine: {old_state} -> {new_state} (trigger: {trigger})",
+            extra={"call_uuid": self.call_uuid}
+        )
+    
+    async def _on_transfer_timeout_event(self, event: VoiceEvent) -> None:
+        """Handler para timeout de transferência (do TimeoutManager)"""
+        timeout_name = event.data.get("timeout_name", "unknown")
+        timeout_seconds = event.data.get("timeout_seconds", 0)
+        
+        logger.info(
+            f"Transfer timeout event: {timeout_name} after {timeout_seconds}s",
+            extra={"call_uuid": self.call_uuid}
+        )
 
     def _cancel_handoff_fallback(self) -> None:
         if self._handoff_fallback_task and not self._handoff_fallback_task.done():
@@ -786,6 +904,15 @@ class RealtimeSession:
                 self._metrics.record_call_state(self.call_uuid, "init", self._call_state.value)
             except Exception:
                 pass
+        
+        # ========================================
+        # Core - Iniciar componentes de controle interno
+        # ========================================
+        # Transição da máquina de estados: idle -> connecting
+        await self.state_machine.connect()
+        
+        # Iniciar HeartbeatMonitor em background
+        await self.heartbeat.start()
         
         self._metrics.session_started(
             domain_uuid=self.domain_uuid,
@@ -1019,6 +1146,10 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         
         await self._provider.connect()
         await self._provider.configure()
+        
+        # Transição de estado: connecting -> connected -> listening
+        await self.state_machine.connected()
+        await self.state_machine.start_listening()
     
     def _build_system_prompt_with_guardrails(self) -> str:
         """
@@ -1119,6 +1250,9 @@ Quando o cliente pedir para falar com humano/setor:
         """Processa áudio do FreeSWITCH."""
         if not self.is_active or not self._provider:
             return
+        
+        # Atualizar HeartbeatMonitor com áudio recebido
+        self.heartbeat.audio_received(len(audio_bytes))
         
         # SISTEMA DINÂMICO - Sem silenciamento por tempo fixo
         # O AEC (Echo Canceller) remove eco da resposta da IA
@@ -1421,6 +1555,11 @@ Quando o cliente pedir para falar com humano/setor:
                 })
             
             self._pending_audio_bytes += len(audio_bytes)
+            
+            # Atualizar HeartbeatMonitor com áudio enviado
+            self.heartbeat.audio_sent(len(audio_bytes))
+            self.heartbeat.update_buffer(self._pending_audio_bytes)
+            
             await self._on_audio_output(audio_bytes)
     
     async def _handle_audio_output_direct(self, audio_bytes: bytes) -> None:
@@ -1433,6 +1572,11 @@ Quando o cliente pedir para falar com humano/setor:
                 # Áudio mutado durante transferência
                 return
             self._pending_audio_bytes += len(audio_bytes)
+            
+            # Atualizar HeartbeatMonitor
+            self.heartbeat.audio_sent(len(audio_bytes))
+            self.heartbeat.update_buffer(self._pending_audio_bytes)
+            
             await self._on_audio_output(audio_bytes)
     
     async def interrupt(self) -> None:
@@ -1500,8 +1644,17 @@ Quando o cliente pedir para falar com humano/setor:
             })
         
         elif event.type == ProviderEventType.AUDIO_DELTA:
+            was_speaking = self._assistant_speaking
             self._assistant_speaking = True
             self._last_audio_delta_ts = time.time()
+            
+            # Atualizar HeartbeatMonitor com resposta do provider
+            self.heartbeat.provider_responded()
+            
+            # Transição de estado: listening -> speaking (só na primeira vez)
+            if not was_speaking and not self._transfer_in_progress:
+                await self.state_machine.ai_start_speaking()
+            
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.SPEAKING, "audio_delta")
             
@@ -1540,6 +1693,8 @@ Quando o cliente pedir para falar com humano/setor:
             self._assistant_speaking = False
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "audio_done")
+                # Transição de estado: speaking -> listening
+                await self.state_machine.ai_stop_speaking()
             
             # Flush buffer restante ao final do áudio
             if self._resampler:
@@ -3015,6 +3170,21 @@ Quando o cliente pedir para falar com humano/setor:
         
         if self._on_session_end:
             await self._on_session_end(reason)
+        
+        # ========================================
+        # Core - Parar componentes de controle interno
+        # ========================================
+        # Parar HeartbeatMonitor
+        await self.heartbeat.stop()
+        
+        # Cancelar timeouts ativos
+        self.timeouts.cancel_all()
+        
+        # Transição final da máquina de estados
+        await self.state_machine.force_end(reason=reason)
+        
+        # Fechar EventBus
+        self.events.close()
         
         logger.info("Realtime session stopped", extra={
             "call_uuid": self.call_uuid,
