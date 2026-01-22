@@ -307,6 +307,71 @@ class BridgeTransferManager:
             logger.warning(f"{self._elapsed()} Could not verify {name}: {e}")
             return False
     
+    async def _verify_channel_answered(self, uuid: str, name: str = "channel") -> bool:
+        """
+        Verifica se um canal está ANSWERED.
+        
+        IMPORTANTE: uuid_audio_stream só funciona em canal ANSWERED!
+        Um canal em RINGING ainda não pode receber audio stream.
+        
+        Estados válidos para audio stream:
+        - CS_EXECUTE (canal executando dialplan)
+        - CS_ACTIVE (canal com mídia ativa)
+        - CS_PARK (canal em park)
+        
+        Estados NÃO válidos:
+        - CS_NEW, CS_INIT, CS_ROUTING, CS_CONSUME_MEDIA (ainda não answered)
+        - CS_HANGUP, CS_DESTROY (canal terminando)
+        """
+        try:
+            # Usar uuid_getvar para obter o estado do canal
+            response = await asyncio.wait_for(
+                self.esl.execute_api(f"uuid_getvar {uuid} state"),
+                timeout=self.config.esl_command_timeout
+            )
+            
+            state_str = str(response).strip().lower() if response else ""
+            
+            # Log detalhado para debug
+            logger.debug(f"{self._elapsed()} {name} state: '{state_str}'")
+            
+            # Verificar erros
+            if "-err" in state_str or "no such channel" in state_str:
+                logger.debug(f"{self._elapsed()} {name} não existe ou erro: {state_str}")
+                return False
+            
+            # Estados que indicam canal ANSWERED e pronto para audio stream
+            answered_states = [
+                "cs_execute",    # Executando dialplan
+                "cs_park",       # Em park (nosso caso com &park())
+                "cs_exchange_media",  # Trocando mídia
+                "cs_soft_execute",    # Executando app soft
+            ]
+            
+            # Verificar se está em estado answered
+            for valid_state in answered_states:
+                if valid_state in state_str:
+                    logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (state={state_str})")
+                    return True
+            
+            # Estados que indicam ainda não answered
+            not_ready_states = ["cs_new", "cs_init", "cs_routing", "cs_consume_media"]
+            for state in not_ready_states:
+                if state in state_str:
+                    logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (state={state_str})")
+                    return False
+            
+            # Estado desconhecido - logar para investigação
+            logger.warning(f"{self._elapsed()} ⚠️ {name} estado desconhecido: {state_str}")
+            return False
+            
+        except asyncio.TimeoutError:
+            logger.debug(f"{self._elapsed()} {name} state check timeout")
+            return False
+        except Exception as e:
+            logger.warning(f"{self._elapsed()} Could not verify {name} state: {e}")
+            return False
+    
     # =========================================================================
     # OPERAÇÕES DE ÁUDIO (COM LOCK PARA EVITAR RACE CONDITIONS)
     # =========================================================================
@@ -476,8 +541,12 @@ class BridgeTransferManager:
             return None
         
         # Polling para aguardar atendimento
+        # IMPORTANTE: Precisamos esperar o canal estar ANSWERED, não apenas existir!
+        # Um canal em RINGING já existe mas ainda não pode receber uuid_audio_stream.
         logger.info(f"{self._elapsed()} ⏳ Aguardando B-leg atender (max {self.config.originate_timeout}s)...")
         max_attempts = int(self.config.originate_timeout / self.config.originate_poll_interval)
+        
+        channel_exists = False  # Flag para saber se já detectamos que o canal existe
         
         for attempt in range(max_attempts):
             # CLEANUP: Verificar hangup do A-leg
@@ -486,16 +555,25 @@ class BridgeTransferManager:
                 await self._kill_b_leg_safe()
                 return None
             
-            # Verificar se B-leg existe (atendeu)
-            if await self._verify_channel_exists(b_leg_uuid, "B-leg"):
-                logger.info(f"{self._elapsed()} ✅ B-leg {b_leg_uuid[:8]}... atendeu!")
-                self._log_state_change(TransferState.B_LEG_ANSWERED)
-                return b_leg_uuid
-            
-            # Verificar hangup do B-leg (rejeitou)
+            # Verificar hangup do B-leg (rejeitou antes de atender)
             if self._b_leg_hangup_event.is_set():
                 logger.warning(f"{self._elapsed()} 🔴 B-leg rejeitou/não atendeu")
                 return None
+            
+            # PRIMEIRO: Verificar se canal existe (indica que está tocando)
+            if not channel_exists:
+                channel_exists = await self._verify_channel_exists(b_leg_uuid, "B-leg")
+                if channel_exists:
+                    logger.info(f"{self._elapsed()} 📞 B-leg {b_leg_uuid[:8]}... está TOCANDO (channel criado)")
+            
+            # SEGUNDO: Se canal existe, verificar se está ANSWERED
+            if channel_exists:
+                if await self._verify_channel_answered(b_leg_uuid, "B-leg"):
+                    logger.info(f"{self._elapsed()} ✅ B-leg {b_leg_uuid[:8]}... ATENDEU! (channel answered)")
+                    self._log_state_change(TransferState.B_LEG_ANSWERED)
+                    # Pequeno delay para estabilização após answer
+                    await asyncio.sleep(0.2)
+                    return b_leg_uuid
             
             await asyncio.sleep(self.config.originate_poll_interval)
         
