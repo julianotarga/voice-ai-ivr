@@ -121,6 +121,7 @@ class ConferenceAnnouncementSession:
         self._running = False
         self._transcript = ""
         self._last_human_transcript = ""  # Último transcript do atendente para verificação de segurança
+        self._all_human_transcripts: list = []  # TODOS os transcripts do atendente
         self._accepted = False
         self._rejected = False
         self._rejection_message: Optional[str] = None
@@ -912,6 +913,7 @@ class ConferenceAnnouncementSession:
             logger.info(f"Attendant said: {human_transcript}")
             # Armazenar para verificação de segurança em accept_transfer
             self._last_human_transcript = human_transcript
+            self._all_human_transcripts.append(human_transcript)
             # Usar lock para proteger contra race condition com function calls
             await self._check_human_decision_safe(human_transcript)
         
@@ -988,40 +990,57 @@ class ConferenceAnnouncementSession:
             # Processar decisão
             if function_name == "accept_transfer":
                 # =========================================================================
-                # VERIFICAÇÃO DE SEGURANÇA: Checar se o último transcript contém negação
+                # VERIFICAÇÃO DE SEGURANÇA: Checar TODOS os transcripts por negação
                 # Isso previne erros da IA que chama accept_transfer quando deveria rejeitar
                 # =========================================================================
-                last_transcript = getattr(self, '_last_human_transcript', '').lower().strip()
+                all_transcripts = getattr(self, '_all_human_transcripts', [])
+                last_transcript = getattr(self, '_last_human_transcript', '')
+                
+                # Combinar todos os transcripts para verificação
+                combined_transcript = ' '.join(all_transcripts).lower().strip()
+                
+                logger.info(f"🔍 Safety check: all transcripts = {all_transcripts}")
+                logger.info(f"🔍 Safety check: combined = '{combined_transcript}'")
+                
                 rejection_indicators = [
                     'não', 'nao', 'agora não', 'não posso', 'ocupado',
-                    'depois', 'mais tarde', 'não dá', 'não quero'
+                    'depois', 'mais tarde', 'não dá', 'não quero',
+                    'não vou', 'não tenho', 'não vai dar'
                 ]
                 
-                # Verificar se começa com "não" ou contém indicadores de recusa
+                # Verificar se contém indicadores de recusa
                 is_rejection = False
-                if last_transcript:
-                    words = last_transcript.split()
-                    first_word = words[0].rstrip(".,!?") if words else ""
-                    if first_word in ['não', 'nao']:
-                        is_rejection = True
-                        logger.warning(f"⚠️ Safety check: 'não' detected in transcript, overriding to REJECT")
-                    else:
-                        for indicator in rejection_indicators:
-                            if indicator in last_transcript:
+                matched_indicator = None
+                
+                if combined_transcript:
+                    # Verificar cada indicador
+                    for indicator in rejection_indicators:
+                        if indicator in combined_transcript:
+                            is_rejection = True
+                            matched_indicator = indicator
+                            logger.warning(f"⚠️ Safety check: '{indicator}' found in transcripts")
+                            break
+                    
+                    # Verificar "não" como palavra isolada no início de qualquer transcript
+                    if not is_rejection:
+                        for transcript in all_transcripts:
+                            words = transcript.lower().strip().split()
+                            if words and words[0].rstrip(".,!?") in ['não', 'nao']:
                                 is_rejection = True
-                                logger.warning(f"⚠️ Safety check: '{indicator}' detected, overriding to REJECT")
+                                matched_indicator = f"'{words[0]}' as first word"
+                                logger.warning(f"⚠️ Safety check: 'não' as first word in '{transcript}'")
                                 break
                 
                 if is_rejection:
                     # Converter accept_transfer para reject_transfer
-                    self._rejection_message = "Atendente disse não"
-                    logger.info(f"🔄 Function call OVERRIDDEN: accept→reject (last transcript: '{last_transcript}')")
+                    self._rejection_message = f"Atendente disse não ({matched_indicator})"
+                    logger.info(f"🔄 Function call OVERRIDDEN: accept→reject (matched: {matched_indicator})")
                     
                     await self._send_courtesy_response()
                     self._rejected = True
                 else:
                     self._accepted = True
-                    logger.info("✅ Function call: ACCEPTED")
+                    logger.info(f"✅ Function call: ACCEPTED (no rejection indicators in '{combined_transcript}')")
                 
             elif function_name == "reject_transfer":
                 # Extrair motivo se fornecido
