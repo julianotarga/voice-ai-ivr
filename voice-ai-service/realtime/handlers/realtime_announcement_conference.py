@@ -629,10 +629,22 @@ class ConferenceAnnouncementSession:
             
             async def ws_handler_with_logging(websocket):
                 try:
-                    logger.info(f"🔌 WS HANDLER CALLED - new connection incoming")
+                    # DEBUG detalhado da conexão
+                    remote = getattr(websocket, 'remote_address', 'unknown')
+                    local = getattr(websocket, 'local_address', 'unknown')
+                    path = getattr(websocket, 'path', 'unknown')
+                    logger.info(f"🔌 [WS HANDLER] ======================================")
+                    logger.info(f"🔌 [WS HANDLER] NEW CONNECTION INCOMING!")
+                    logger.info(f"🔌 [WS HANDLER] Remote: {remote}")
+                    logger.info(f"🔌 [WS HANDLER] Local: {local}")
+                    logger.info(f"🔌 [WS HANDLER] Path: {path}")
+                    logger.info(f"🔌 [WS HANDLER] WebSocket state: {websocket.state if hasattr(websocket, 'state') else 'N/A'}")
+                    logger.info(f"🔌 [WS HANDLER] ======================================")
                     await self._handle_fs_ws(websocket)
                 except Exception as e:
-                    logger.error(f"🔌 WS HANDLER ERROR: {type(e).__name__}: {e}")
+                    logger.error(f"🔌 [WS HANDLER] ERROR: {type(e).__name__}: {e}")
+                    import traceback
+                    logger.error(f"🔌 [WS HANDLER] Traceback: {traceback.format_exc()}")
                     raise
             
             for port in ports_to_try:
@@ -661,9 +673,31 @@ class ConferenceAnnouncementSession:
             self._audio_ws_port = self._audio_ws_server.sockets[0].getsockname()[1]
             ws_url = f"ws://{connect_host}:{self._audio_ws_port}/bleg/{self.b_leg_uuid}"
             
+            # DEBUG: Verificar estado do socket
+            for sock in self._audio_ws_server.sockets:
+                sock_info = sock.getsockname()
+                logger.info(f"🔌 [WS DEBUG] Socket bound to: {sock_info}")
+                logger.info(f"🔌 [WS DEBUG] Socket fileno: {sock.fileno()}")
+                logger.info(f"🔌 [WS DEBUG] Socket family: {sock.family}")
+            
             logger.info(f"🔊 Audio WS ready: {ws_url}")
             logger.info(f"🔊 WS Server listening on {bind_host}:{self._audio_ws_port}")
             logger.info(f"🔊 FreeSWITCH (on HOST) will connect to: {ws_url}")
+            
+            # DEBUG: Tentar conectar ao próprio servidor para verificar se está funcionando
+            import socket
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock.settimeout(1.0)
+            try:
+                test_result = test_sock.connect_ex(('127.0.0.1', self._audio_ws_port))
+                if test_result == 0:
+                    logger.info(f"🔌 [WS DEBUG] ✅ Self-test: Port {self._audio_ws_port} is OPEN and accepting connections")
+                else:
+                    logger.warning(f"🔌 [WS DEBUG] ❌ Self-test: Port {self._audio_ws_port} returned error {test_result}")
+            except Exception as e:
+                logger.warning(f"🔌 [WS DEBUG] Self-test failed: {e}")
+            finally:
+                test_sock.close()
             
             # Aguardar servidor estabilizar
             await asyncio.sleep(0.3)
@@ -711,7 +745,10 @@ class ConferenceAnnouncementSession:
             # - Parar e reiniciar stream entre tentativas
             # =================================================================
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
-            logger.info(f"🔊 Executing: {cmd}")
+            logger.info(f"🔊 [CMD DEBUG] Full command: {cmd}")
+            logger.info(f"🔊 [CMD DEBUG] B-leg UUID: {self.b_leg_uuid}")
+            logger.info(f"🔊 [CMD DEBUG] WebSocket URL: {ws_url}")
+            logger.info(f"🔊 [CMD DEBUG] Sample rate: 16k mono")
             
             stream_connected = False
             max_attempts = 3
@@ -744,18 +781,28 @@ class ConferenceAnnouncementSession:
                             pass
                     
                     # Enviar comando uuid_audio_stream
+                    logger.info(f"🔊 [Attempt {attempt+1}] Sending ESL command...")
                     response = await asyncio.wait_for(
                         self.esl.execute_api(cmd),
                         timeout=3.0
                     )
                     
                     response_str = str(response).strip() if response else ""
+                    logger.info(f"🔊 [Attempt {attempt+1}] ESL response type: {type(response).__name__}")
+                    logger.info(f"🔊 [Attempt {attempt+1}] ESL response raw: '{response_str}'")
+                    
                     if "-ERR" in response_str:
                         logger.error(f"❌ [Attempt {attempt+1}] FreeSWITCH error: {response_str}")
+                        # DEBUG: Verificar se mod_audio_stream está carregado
+                        try:
+                            mod_check = await self.esl.execute_api("module_exists mod_audio_stream")
+                            logger.info(f"🔊 [Attempt {attempt+1}] mod_audio_stream exists: {mod_check}")
+                        except Exception as e:
+                            logger.debug(f"🔊 [Attempt {attempt+1}] mod_audio_stream check failed: {e}")
                         await asyncio.sleep(0.5)
                         continue
                     
-                    logger.info(f"🔊 [Attempt {attempt+1}] Audio stream command sent: {response_str[:100] if response_str else 'OK'}")
+                    logger.info(f"🔊 [Attempt {attempt+1}] Audio stream command sent successfully")
                     
                     # Aguardar conexão do FreeSWITCH com timeout curto
                     connection_timeout = 2.0 if attempt < max_attempts - 1 else 3.0
