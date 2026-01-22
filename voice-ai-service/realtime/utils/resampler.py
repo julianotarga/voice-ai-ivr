@@ -139,12 +139,14 @@ class AudioBuffer:
             bytes_per_sample: Bytes por sample (2 para PCM16)
         """
         self.warmup_ms = warmup_ms
+        self._original_warmup_ms = warmup_ms  # Guardar valor original para reset
         self.sample_rate = sample_rate
         self.bytes_per_sample = bytes_per_sample
         
         # Calcular tamanho do buffer de warmup
         samples_per_ms = sample_rate / 1000
         self.warmup_bytes = int(warmup_ms * samples_per_ms * bytes_per_sample)
+        self._original_warmup_bytes = self.warmup_bytes  # Guardar valor original
         
         self._buffer = bytearray()
         self._warmup_complete = False
@@ -200,16 +202,22 @@ class AudioBuffer:
         Args:
             extended_warmup_ms: Se fornecido, usa este valor como warmup
                                (útil após resume de transferência onde há mais jitter)
+                               Se None, volta ao valor original (100ms)
         """
         self._buffer.clear()
         self._warmup_complete = False
         self._total_buffered = 0
         
         if extended_warmup_ms is not None:
+            # Warmup estendido temporário
             samples_per_ms = self.sample_rate / 1000
             self.warmup_bytes = int(extended_warmup_ms * samples_per_ms * self.bytes_per_sample)
             self.warmup_ms = extended_warmup_ms
             logger.debug(f"AudioBuffer: reset with extended warmup={extended_warmup_ms}ms, {self.warmup_bytes} bytes")
+        else:
+            # Restaurar valores originais
+            self.warmup_bytes = self._original_warmup_bytes
+            self.warmup_ms = self._original_warmup_ms
     
     @property
     def is_warming_up(self) -> bool:
