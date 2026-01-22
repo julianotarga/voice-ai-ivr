@@ -971,10 +971,10 @@ class ConferenceTransferManager:
         # - Para múltiplas: usar inline dialplan 'app1:arg1,app2:arg2' inline
         # - Ref: https://github.com/signalwire/freeswitch-docs - Inline-Dialplan
         #
-        # Formato: 'answer:,park:' inline
-        # - answer: faz answer do canal (estado ACTIVE)
-        # - park: coloca em espera aguardando comandos
-        app = "'answer:,park:' inline"
+        # Usar &park() - forma mais simples e documentada
+        # O canal será automaticamente answered quando atender e ficará em park
+        # Ref: FreeSWITCH docs - "originate sofia/example/300%pbx.internal &park()"
+        app = "&park()"
         
         logger.info(f"_originate_b_leg: Dial string: {dial_string}")
         logger.info(f"_originate_b_leg: App: {app}")

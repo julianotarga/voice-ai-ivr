@@ -464,7 +464,9 @@ class BridgeTransferManager:
                 f"sip_invite_params=user={destination}"
             )
         
-        cmd = f"bgapi originate {{{originate_vars}}}{dial_string} 'answer:,park:' inline"
+        # Usar &park() - forma mais simples e direta
+        # O canal será automaticamente answered quando atender e ficará em park aguardando comandos
+        cmd = f"bgapi originate {{{originate_vars}}}{dial_string} &park()"
         
         logger.info(f"{self._elapsed()} 📞 Dial: {dial_string}")
         
