@@ -482,7 +482,10 @@ class RealtimeSessionConfig:
     call_state_metrics_enabled: bool = True
 
     # Silence Fallback (state machine)
-    silence_fallback_enabled: bool = False
+    # IMPORTANTE: Habilitado por padrão para evitar chamadas infinitas
+    # Se ninguém falar por 10s, pergunta "Você ainda está aí?"
+    # Após 2 tentativas sem resposta, encerra a chamada
+    silence_fallback_enabled: bool = True
     silence_fallback_seconds: int = 10
     silence_fallback_action: str = "reprompt"  # reprompt | hangup
     silence_fallback_prompt: Optional[str] = None
@@ -1436,9 +1439,11 @@ Quando o cliente pedir para falar com humano/setor:
         if self._echo_canceller and audio_bytes:
             audio_bytes = self._echo_canceller.process(audio_bytes)
         
-        self._last_activity = time.time()
-        # Resetar fallback de silêncio ao receber áudio do usuário
-        self._silence_fallback_count = 0
+        # IMPORTANTE: NÃO atualizar _last_activity aqui!
+        # O FreeSWITCH envia frames continuamente (incluindo silêncio).
+        # Se atualizarmos aqui, o idle_timeout NUNCA dispara.
+        # A atualização é feita em SPEECH_STARTED/SPEECH_STOPPED quando
+        # o VAD do OpenAI detecta fala REAL do usuário.
         
         # Bufferizar e enviar em frames fixos (ex: 20ms)
         frame_bytes = int(self.config.freeswitch_sample_rate * 0.02 * 2)  # 20ms PCM16
@@ -1682,7 +1687,19 @@ Quando o cliente pedir para falar com humano/setor:
     
     async def _handle_event(self, event: ProviderEvent) -> str:
         """Processa evento do provider."""
-        self._last_activity = time.time()
+        # IMPORTANTE: Só atualizar _last_activity para eventos de INTERAÇÃO REAL
+        # Não atualizar para eventos de sessão, heartbeat, rate limits, etc.
+        # Isso garante que idle_timeout funcione quando não há fala/resposta
+        interaction_events = {
+            ProviderEventType.SPEECH_STARTED,   # Usuário começou a falar
+            ProviderEventType.SPEECH_STOPPED,   # Usuário parou de falar
+            ProviderEventType.TRANSCRIPT,       # Transcrição recebida
+            ProviderEventType.AUDIO_DELTA,      # IA está respondendo
+            ProviderEventType.FUNCTION_CALL,    # IA chamou função
+            ProviderEventType.RESPONSE_STARTED, # IA iniciou resposta
+        }
+        if event.type in interaction_events:
+            self._last_activity = time.time()
         
         if event.type == ProviderEventType.RESPONSE_STARTED:
             # Reset buffer e contador para nova resposta
@@ -1882,6 +1899,8 @@ Quando o cliente pedir para falar com humano/setor:
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
             self._speech_start_time = time.time()
+            # Resetar fallback de silêncio quando usuário começa a falar (VAD real)
+            self._silence_fallback_count = 0
             # Marcar início da fala para pacing (usado para detectar falas longas)
             self._pacing.mark_user_speech_started()
             
@@ -2794,6 +2813,10 @@ Quando o cliente pedir para falar com humano/setor:
                 and idle_time > self.config.silence_fallback_seconds
             ):
                 if self._silence_fallback_count >= self.config.silence_fallback_max_retries:
+                    logger.info(
+                        f"⏰ [SILENCE_FALLBACK] Encerrando após {self._silence_fallback_count} tentativas sem resposta",
+                        extra={"call_uuid": self.call_uuid}
+                    )
                     await self.stop("silence_fallback_max_retries")
                     return
 
@@ -2802,11 +2825,19 @@ Quando o cliente pedir para falar com humano/setor:
 
                 action = (self.config.silence_fallback_action or "reprompt").lower()
                 if action == "hangup":
+                    logger.info(
+                        f"⏰ [SILENCE_FALLBACK] Encerrando por silêncio (action=hangup)",
+                        extra={"call_uuid": self.call_uuid}
+                    )
                     await self.stop("silence_fallback_hangup")
                     return
 
-                # Default: reprompt
+                # Default: reprompt - perguntar se o usuário ainda está aí
                 prompt = self.config.silence_fallback_prompt or "Você ainda está aí?"
+                logger.info(
+                    f"⏰ [SILENCE_FALLBACK] Silêncio detectado ({idle_time:.1f}s), tentativa {self._silence_fallback_count}/{self.config.silence_fallback_max_retries}: '{prompt}'",
+                    extra={"call_uuid": self.call_uuid}
+                )
                 await self._send_text_to_provider(prompt)
                 # Evitar disparos consecutivos imediatos
                 self._last_activity = time.time()
@@ -2814,12 +2845,20 @@ Quando o cliente pedir para falar com humano/setor:
             # IMPORTANTE: Não encerrar por idle_timeout durante transferência
             # Durante conferência, o stream de áudio está pausado e não há atividade
             if idle_time > self.config.idle_timeout_seconds and not self._transfer_in_progress:
+                logger.info(
+                    f"⏰ [IDLE_TIMEOUT] Encerrando por inatividade: {idle_time:.1f}s > {self.config.idle_timeout_seconds}s",
+                    extra={"call_uuid": self.call_uuid}
+                )
                 await self.stop("idle_timeout")
                 return
             
             if self._started_at and not self._transfer_in_progress:
                 duration = (datetime.now() - self._started_at).total_seconds()
                 if duration > self.config.max_duration_seconds:
+                    logger.info(
+                        f"⏰ [MAX_DURATION] Encerrando por duração máxima: {duration:.1f}s > {self.config.max_duration_seconds}s",
+                        extra={"call_uuid": self.call_uuid}
+                    )
                     await self.stop("max_duration")
                     return
 
