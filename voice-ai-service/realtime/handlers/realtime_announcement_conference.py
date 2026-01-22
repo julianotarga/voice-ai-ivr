@@ -1061,13 +1061,18 @@ class ConferenceAnnouncementSession:
                 all_transcripts = getattr(self, '_all_human_transcripts', [])
                 combined_transcript = ' '.join(all_transcripts).lower().strip()
                 
+                # IMPORTANTE: Normalizar removendo pontuação para comparação
+                # "Bom dia." deve ser tratado igual a "bom dia"
+                import re
+                combined_clean = re.sub(r'[.!?,;:\'"]+', '', combined_transcript).strip()
+                
                 # Lista de saudações/cumprimentos GENUÍNOS que NÃO são rejeição
                 greeting_patterns = [
                     "alô", "alo", "oi", "olá", "ola", "fala", "pois não", "pois nao",
                     "bom dia", "boa tarde", "boa noite", "tudo bem", "como vai",
                     "fala aí", "fala ai", "e aí", "e ai", "opa", "beleza",
                     "pode falar", "estou ouvindo", "ouvindo", "presente",
-                    "sim", "sim?", "diga", "fale", "pronto", "quem", "quem?"
+                    "sim", "diga", "fale", "pronto", "quem"
                 ]
                 
                 # Expressões ambíguas no Brasil (irônicas/sarcásticas) - NÃO são recusa explícita
@@ -1081,21 +1086,26 @@ class ConferenceAnnouncementSession:
                 # Isso tem prioridade porque "oi meu querido" ainda é ambíguo
                 is_ambiguous = False
                 for pattern in ambiguous_patterns:
-                    if pattern in combined_transcript:
+                    if pattern in combined_clean:
                         is_ambiguous = True
                         logger.warning(f"⚠️ Safety check: reject_transfer called but transcript is ambiguous/ironic: '{combined_transcript}'")
                         break
                 
                 # Verificar se é APENAS saudação genuína (sem expressão ambígua)
+                # Usar combined_clean (sem pontuação) para comparação
                 is_only_greeting = False
                 if not is_ambiguous:
                     for pattern in greeting_patterns:
-                        if combined_transcript == pattern or combined_transcript.startswith(pattern + " ") or combined_transcript.endswith(" " + pattern):
+                        # Verificar match exato ou como parte de frase
+                        if (combined_clean == pattern or 
+                            combined_clean.startswith(pattern + " ") or 
+                            combined_clean.endswith(" " + pattern) or
+                            f" {pattern} " in f" {combined_clean} "):
                             is_only_greeting = True
-                            logger.warning(f"⚠️ Safety check: reject_transfer called but transcript looks like greeting: '{combined_transcript}'")
+                            logger.warning(f"⚠️ Safety check: reject_transfer called but transcript looks like greeting: '{combined_transcript}' (clean: '{combined_clean}')")
                             break
                 
-                logger.info(f"🔍 Safety check (reject): combined = '{combined_transcript}', is_greeting = {is_only_greeting}, is_ambiguous = {is_ambiguous}")
+                logger.info(f"🔍 Safety check (reject): raw='{combined_transcript}', clean='{combined_clean}', is_greeting={is_only_greeting}, is_ambiguous={is_ambiguous}")
                 
                 if is_only_greeting or is_ambiguous:
                     # NÃO rejeitar - foi saudação ou expressão ambígua

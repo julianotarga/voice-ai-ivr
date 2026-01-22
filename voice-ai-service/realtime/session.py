@@ -2836,10 +2836,15 @@ Quando o cliente pedir para falar com humano/setor:
                     )
             
             # Fallback de silêncio (state machine)
+            # IMPORTANTE: Não disparar durante período de proteção (após retorno de transferência)
+            now_sf = time.time()
+            in_protection_sf = now_sf < getattr(self, '_interrupt_protected_until', 0)
+            
             if (
                 self.config.silence_fallback_enabled
                 and not self._transfer_in_progress
                 and not self._ending_call
+                and not in_protection_sf  # Não disparar durante proteção
                 and self._call_state == CallState.LISTENING
                 and idle_time > self.config.silence_fallback_seconds
             ):
@@ -2909,7 +2914,12 @@ Quando o cliente pedir para falar com humano/setor:
 
             # IMPORTANTE: Não encerrar por idle_timeout durante transferência
             # Durante conferência, o stream de áudio está pausado e não há atividade
-            if idle_time > self.config.idle_timeout_seconds and not self._transfer_in_progress:
+            # TAMBÉM: Não encerrar durante período de proteção contra interrupções
+            # (logo após retorno de transferência, a IA precisa falar a mensagem)
+            now = time.time()
+            in_protection_period = now < getattr(self, '_interrupt_protected_until', 0)
+            
+            if idle_time > self.config.idle_timeout_seconds and not self._transfer_in_progress and not in_protection_period:
                 logger.info(
                     f"⏰ [IDLE_TIMEOUT] Encerrando por inatividade: {idle_time:.1f}s > {self.config.idle_timeout_seconds}s",
                     extra={"call_uuid": self.call_uuid}
@@ -2924,6 +2934,12 @@ Quando o cliente pedir para falar com humano/setor:
                     )
                 await self.stop("idle_timeout")
                 return
+            elif in_protection_period and idle_time > self.config.idle_timeout_seconds:
+                # Apenas logar que estamos bloqueando
+                logger.debug(
+                    f"⏰ [IDLE_TIMEOUT] Bloqueado: em período de proteção ({self._interrupt_protected_until - now:.1f}s restantes)",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             # Proteção contra IA "presa" em SPEAKING - resposta muito longa (>60s)
             # Isso pode acontecer se o provider não enviar AUDIO_DONE
@@ -4518,6 +4534,13 @@ Quando o cliente pedir para falar com humano/setor:
             # 4. Habilitar áudio novamente ANTES de enviar mensagem
             logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 4: Habilitando áudio (transfer_in_progress=False)...")
             self._set_transfer_in_progress(False, "transfer_not_completed")
+            
+            # CRÍTICO: Resetar timestamp de última atividade
+            # Durante a transferência, o cliente estava em hold e não houve interação.
+            # Se não resetarmos, o idle_timeout vai disparar imediatamente após retornar.
+            # Ref: Bug onde idle_timeout=30.1s após 26s de hold
+            self._last_activity = time.time()
+            logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 4.1: _last_activity resetado")
             
             # 5. Verificar e reconectar provider se necessário
             # Durante transferências longas (>20s), o OpenAI pode desconectar por timeout
