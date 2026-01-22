@@ -314,55 +314,80 @@ class BridgeTransferManager:
         IMPORTANTE: uuid_audio_stream só funciona em canal ANSWERED!
         Um canal em RINGING ainda não pode receber audio stream.
         
-        Estados válidos para audio stream:
-        - CS_EXECUTE (canal executando dialplan)
-        - CS_ACTIVE (canal com mídia ativa)
-        - CS_PARK (canal em park)
+        Usamos 'channel_callstate' que retorna valores como:
+        - RINGING, EARLY = ainda não atendeu
+        - ACTIVE = atendeu e está ativo
+        - HANGUP = desligando
         
-        Estados NÃO válidos:
-        - CS_NEW, CS_INIT, CS_ROUTING, CS_CONSUME_MEDIA (ainda não answered)
-        - CS_HANGUP, CS_DESTROY (canal terminando)
+        OU 'answer_state' que retorna:
+        - ringing = ainda não atendeu
+        - answered = atendeu
+        - early = early media
         """
         try:
-            # Usar uuid_getvar para obter o estado do canal
+            # Método 1: Usar channel_callstate (mais confiável)
             response = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_getvar {uuid} state"),
+                self.esl.execute_api(f"uuid_getvar {uuid} channel_callstate"),
                 timeout=self.config.esl_command_timeout
             )
             
-            state_str = str(response).strip().lower() if response else ""
-            
-            # Log detalhado para debug
-            logger.debug(f"{self._elapsed()} {name} state: '{state_str}'")
+            callstate = str(response).strip().upper() if response else ""
             
             # Verificar erros
-            if "-err" in state_str or "no such channel" in state_str:
-                logger.debug(f"{self._elapsed()} {name} não existe ou erro: {state_str}")
+            if "-ERR" in callstate or "no such channel" in callstate.lower():
+                logger.debug(f"{self._elapsed()} {name} não existe ou erro: {callstate}")
                 return False
             
-            # Estados que indicam canal ANSWERED e pronto para audio stream
-            answered_states = [
-                "cs_execute",    # Executando dialplan
-                "cs_park",       # Em park (nosso caso com &park())
-                "cs_exchange_media",  # Trocando mídia
-                "cs_soft_execute",    # Executando app soft
-            ]
-            
-            # Verificar se está em estado answered
-            for valid_state in answered_states:
-                if valid_state in state_str:
-                    logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (state={state_str})")
+            # _undef_ significa variável não definida - tentar answer_state
+            if "_undef_" in callstate.lower() or not callstate:
+                # Método 2: Tentar answer_state
+                response2 = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_getvar {uuid} answer_state"),
+                    timeout=self.config.esl_command_timeout
+                )
+                answer_state = str(response2).strip().lower() if response2 else ""
+                
+                if "answered" in answer_state:
+                    logger.debug(f"{self._elapsed()} ✅ {name} ANSWERED (answer_state={answer_state})")
                     return True
-            
-            # Estados que indicam ainda não answered
-            not_ready_states = ["cs_new", "cs_init", "cs_routing", "cs_consume_media"]
-            for state in not_ready_states:
-                if state in state_str:
-                    logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (state={state_str})")
+                elif "ringing" in answer_state or "early" in answer_state:
+                    logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (answer_state={answer_state})")
+                    return False
+                else:
+                    # Método 3: Verificar se o canal está em park (executando app)
+                    response3 = await asyncio.wait_for(
+                        self.esl.execute_api(f"uuid_getvar {uuid} current_application"),
+                        timeout=self.config.esl_command_timeout
+                    )
+                    current_app = str(response3).strip().lower() if response3 else ""
+                    
+                    if "park" in current_app:
+                        logger.debug(f"{self._elapsed()} ✅ {name} ANSWERED (current_app=park)")
+                        return True
+                    
+                    logger.debug(f"{self._elapsed()} ⏳ {name} state unknown: callstate={callstate}, answer={answer_state}, app={current_app}")
                     return False
             
-            # Estado desconhecido - logar para investigação
-            logger.warning(f"{self._elapsed()} ⚠️ {name} estado desconhecido: {state_str}")
+            # Log do estado
+            logger.debug(f"{self._elapsed()} {name} callstate: '{callstate}'")
+            
+            # ACTIVE = canal atendeu e está ativo
+            if callstate == "ACTIVE":
+                logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (callstate=ACTIVE)")
+                return True
+            
+            # RINGING, EARLY, DOWN = ainda não atendeu
+            if callstate in ("RINGING", "EARLY", "DOWN"):
+                logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (callstate={callstate})")
+                return False
+            
+            # HANGUP = desligando
+            if callstate == "HANGUP":
+                logger.debug(f"{self._elapsed()} 🔴 {name} está desligando (callstate=HANGUP)")
+                return False
+            
+            # Estado desconhecido
+            logger.warning(f"{self._elapsed()} ⚠️ {name} callstate desconhecido: {callstate}")
             return False
             
         except asyncio.TimeoutError:
