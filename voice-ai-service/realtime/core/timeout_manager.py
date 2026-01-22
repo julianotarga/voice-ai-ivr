@@ -315,18 +315,25 @@ class TimeoutManager:
     
     def cancel(self, name: str) -> bool:
         """
-        Cancela um timeout específico.
+        Marca um timeout como cancelado.
+        
+        NOTA: Este método apenas marca o timeout como cancelado para fins de
+        tracking. O asyncio.timeout() dentro do timeout_scope() não pode ser
+        cancelado externamente - a task precisa completar ou o timeout expirar.
+        
+        Use este método para evitar que o callback on_timeout seja executado
+        ou para indicar que o resultado do timeout deve ser ignorado.
         
         Args:
             name: Nome do timeout
             
         Returns:
-            True se cancelou, False se não existia
+            True se marcou como cancelado, False se não existia
         """
         if name in self._active_timeouts:
             self._active_timeouts[name].cancelled = True
             logger.debug(
-                f"Timeout '{name}' cancelled",
+                f"Timeout '{name}' marked as cancelled",
                 extra={"call_uuid": self.call_uuid}
             )
             return True

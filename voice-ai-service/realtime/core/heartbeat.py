@@ -98,6 +98,11 @@ class HeartbeatMonitor:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._paused = False
+        
+        # Debounce: evitar emitir eventos repetidos
+        self._last_audio_silence_event: float = 0.0
+        self._last_provider_timeout_event: float = 0.0
+        self._debounce_interval: float = 10.0  # Segundos entre eventos do mesmo tipo
     
     # ========================================
     # ATUALIZAÇÕES - Chamados pelos componentes
@@ -189,6 +194,10 @@ class HeartbeatMonitor:
         self.health.last_provider_response = now
         self.health.last_websocket_activity = now
         
+        # Resetar debounce
+        self._last_audio_silence_event = 0.0
+        self._last_provider_timeout_event = 0.0
+        
         logger.debug(
             "HeartbeatMonitor resumed",
             extra={"call_uuid": self.call_uuid}
@@ -277,22 +286,26 @@ class HeartbeatMonitor:
                 issue = f"no_audio_for_{audio_gap:.1f}s"
                 issues.append(issue)
                 
-                await self.events.emit(VoiceEvent(
-                    type=VoiceEventType.CONNECTION_DEGRADED,
-                    call_uuid=self.call_uuid,
-                    data={
-                        "reason": "audio_silence",
-                        "gap_seconds": audio_gap,
-                        "threshold": self.audio_silence_threshold,
-                        "source": "heartbeat"
-                    },
-                    source="heartbeat"
-                ))
-                
-                logger.warning(
-                    f"Audio silence detected: {audio_gap:.1f}s",
-                    extra={"call_uuid": self.call_uuid}
-                )
+                # Debounce: só emitir evento se passou tempo suficiente
+                if now - self._last_audio_silence_event > self._debounce_interval:
+                    self._last_audio_silence_event = now
+                    
+                    await self.events.emit(VoiceEvent(
+                        type=VoiceEventType.CONNECTION_DEGRADED,
+                        call_uuid=self.call_uuid,
+                        data={
+                            "reason": "audio_silence",
+                            "gap_seconds": audio_gap,
+                            "threshold": self.audio_silence_threshold,
+                            "source": "heartbeat"
+                        },
+                        source="heartbeat"
+                    ))
+                    
+                    logger.warning(
+                        f"Audio silence detected: {audio_gap:.1f}s",
+                        extra={"call_uuid": self.call_uuid}
+                    )
         
         # 2. Verificar resposta do provider
         if self.health.last_provider_response > 0:
@@ -302,21 +315,25 @@ class HeartbeatMonitor:
                 issue = f"provider_silent_{provider_gap:.1f}s"
                 issues.append(issue)
                 
-                await self.events.emit(VoiceEvent(
-                    type=VoiceEventType.PROVIDER_TIMEOUT,
-                    call_uuid=self.call_uuid,
-                    data={
-                        "gap_seconds": provider_gap,
-                        "threshold": self.provider_timeout_threshold,
-                        "source": "heartbeat"
-                    },
-                    source="heartbeat"
-                ))
-                
-                logger.warning(
-                    f"Provider timeout: {provider_gap:.1f}s",
-                    extra={"call_uuid": self.call_uuid}
-                )
+                # Debounce: só emitir evento se passou tempo suficiente
+                if now - self._last_provider_timeout_event > self._debounce_interval:
+                    self._last_provider_timeout_event = now
+                    
+                    await self.events.emit(VoiceEvent(
+                        type=VoiceEventType.PROVIDER_TIMEOUT,
+                        call_uuid=self.call_uuid,
+                        data={
+                            "gap_seconds": provider_gap,
+                            "threshold": self.provider_timeout_threshold,
+                            "source": "heartbeat"
+                        },
+                        source="heartbeat"
+                    ))
+                    
+                    logger.warning(
+                        f"Provider timeout: {provider_gap:.1f}s",
+                        extra={"call_uuid": self.call_uuid}
+                    )
         
         # 3. Verificar buffer de áudio baixo
         # Só verificar se estava falando (pending > 0 recentemente)

@@ -9,9 +9,7 @@ Referência: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
 
 import asyncio
 import logging
-from typing import Callable, Dict, List, Optional, Set, Any
-from weakref import WeakSet
-import time
+from typing import Callable, Dict, List, Optional, Any
 
 from .events import VoiceEvent, VoiceEventType
 

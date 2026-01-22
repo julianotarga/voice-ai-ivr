@@ -4,7 +4,7 @@ CallStateMachine - Máquina de estados para chamadas.
 Gerencia o ciclo de vida de uma chamada com estados explícitos,
 transições validadas (guards) e callbacks automáticos.
 
-Usa a biblioteca 'transitions' para implementação robusta.
+Implementação async nativa sem dependências externas.
 
 Referência: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
 """
@@ -103,14 +103,16 @@ class CallStateMachine:
         (CallState.PROCESSING, "ai_start_speaking"): CallState.SPEAKING,
         (CallState.PROCESSING, "done_processing"): CallState.LISTENING,
         
-        # Hold
+        # Hold (de qualquer estado ativo)
         (CallState.LISTENING, "hold"): CallState.ON_HOLD,
         (CallState.SPEAKING, "hold"): CallState.ON_HOLD,
+        (CallState.PROCESSING, "hold"): CallState.ON_HOLD,
         (CallState.ON_HOLD, "unhold"): CallState.LISTENING,
         
-        # Transferência
+        # Transferência (de qualquer estado ativo)
         (CallState.LISTENING, "request_transfer"): CallState.TRANSFERRING_VALIDATING,
         (CallState.SPEAKING, "request_transfer"): CallState.TRANSFERRING_VALIDATING,
+        (CallState.PROCESSING, "request_transfer"): CallState.TRANSFERRING_VALIDATING,
         (CallState.TRANSFERRING_VALIDATING, "destination_validated"): CallState.TRANSFERRING_DIALING,
         (CallState.TRANSFERRING_VALIDATING, "validation_failed"): CallState.LISTENING,
         (CallState.TRANSFERRING_DIALING, "attendant_answered"): CallState.TRANSFERRING_ANNOUNCING,
@@ -132,8 +134,15 @@ class CallStateMachine:
         # Fim da chamada (de qualquer estado)
         (CallState.LISTENING, "end_call"): CallState.ENDING,
         (CallState.SPEAKING, "end_call"): CallState.ENDING,
+        (CallState.PROCESSING, "end_call"): CallState.ENDING,
         (CallState.ON_HOLD, "end_call"): CallState.ENDING,
         (CallState.CONNECTED, "end_call"): CallState.ENDING,
+        (CallState.BRIDGED, "end_call"): CallState.ENDING,
+        (CallState.TRANSFERRING_VALIDATING, "end_call"): CallState.ENDING,
+        (CallState.TRANSFERRING_DIALING, "end_call"): CallState.ENDING,
+        (CallState.TRANSFERRING_ANNOUNCING, "end_call"): CallState.ENDING,
+        (CallState.TRANSFERRING_WAITING, "end_call"): CallState.ENDING,
+        (CallState.TRANSFERRING_BRIDGING, "end_call"): CallState.ENDING,
         (CallState.ENDING, "call_ended"): CallState.ENDED,
         
         # Fim forçado (de qualquer estado)
