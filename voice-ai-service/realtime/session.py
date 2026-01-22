@@ -1691,12 +1691,13 @@ Quando o cliente pedir para falar com humano/setor:
         # Não atualizar para eventos de sessão, heartbeat, rate limits, etc.
         # Isso garante que idle_timeout funcione quando não há fala/resposta
         interaction_events = {
-            ProviderEventType.SPEECH_STARTED,   # Usuário começou a falar
-            ProviderEventType.SPEECH_STOPPED,   # Usuário parou de falar
-            ProviderEventType.TRANSCRIPT,       # Transcrição recebida
-            ProviderEventType.AUDIO_DELTA,      # IA está respondendo
-            ProviderEventType.FUNCTION_CALL,    # IA chamou função
-            ProviderEventType.RESPONSE_STARTED, # IA iniciou resposta
+            ProviderEventType.SPEECH_STARTED,    # Usuário começou a falar
+            ProviderEventType.SPEECH_STOPPED,    # Usuário parou de falar
+            ProviderEventType.USER_TRANSCRIPT,   # Transcrição do usuário recebida
+            ProviderEventType.TRANSCRIPT_DONE,   # Transcrição da IA completa
+            ProviderEventType.AUDIO_DELTA,       # IA está respondendo
+            ProviderEventType.FUNCTION_CALL,     # IA chamou função
+            ProviderEventType.RESPONSE_STARTED,  # IA iniciou resposta
         }
         if event.type in interaction_events:
             self._last_activity = time.time()
