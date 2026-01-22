@@ -73,11 +73,10 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para atendente, departamento ou pessoa. "
-        "Use quando o cliente solicitar falar com alguém específico ou um departamento. "
-        "O nome do cliente é OPCIONAL - se souber, informe; se não souber, transfira assim mesmo. "
-        "NÃO exija o nome se o cliente não informou espontaneamente. "
-        "Ao chamar, diga: 'Um momento, vou transferir você.' "
-        "Se cliente disser nome próprio + departamento, use o DEPARTAMENTO como destino."
+        "ANTES de chamar, você DEVE ter coletado o nome do cliente e entendido o assunto. "
+        "O telefone do cliente já está no sistema (não precisa perguntar). "
+        "Esses dados são usados para anunciar ao atendente quem está na linha. "
+        "Se a transferência falhar, use os dados para oferecer deixar recado."
     ),
     "parameters": {
         "type": "object",
@@ -91,14 +90,14 @@ HANDOFF_FUNCTION_DEFINITION = {
             },
             "reason": {
                 "type": "string",
-                "description": "Motivo pelo qual o cliente quer falar com alguém"
+                "description": "Assunto/motivo do cliente (extraído da conversa)"
             },
             "caller_name": {
                 "type": "string",
-                "description": "Nome do cliente (OPCIONAL - só informe se o cliente disse espontaneamente)"
+                "description": "Nome do cliente (você DEVE ter perguntado antes)"
             }
         },
-        "required": ["destination", "reason"]
+        "required": ["destination", "reason", "caller_name"]
     }
 }
 
@@ -1038,11 +1037,25 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             base_prompt += """
 
 ## TRANSFERÊNCIA (OBRIGATÓRIA)
-- Se o cliente pedir para falar com humano/setor, **sempre** chame a função `request_handoff`.
-- **NÃO pergunte o nome do cliente** - transfira imediatamente. O nome é opcional.
-- **Não** continue respondendo com texto quando iniciar transferência.
-- Se houver ambiguidade sobre o SETOR, peça o setor/ramal antes de transferir.
-- Após chamar `request_handoff`, diga apenas: "Um momento, vou transferir."
+Quando o cliente pedir para falar com humano/setor:
+
+1. **ANTES de transferir, colete:**
+   - Nome do cliente (pergunte: "Posso saber seu nome?")
+   - Assunto/motivo (pergunte: "Qual o assunto?" ou use o contexto da conversa)
+   - O telefone você JÁ TEM no sistema (não precisa perguntar)
+
+2. **Após coletar, chame `request_handoff`** com:
+   - destination: setor/pessoa (ex: "suporte", "financeiro")
+   - reason: assunto do cliente
+   - caller_name: nome do cliente
+
+3. **Se a transferência falhar** (atendente ocupado, não atendeu):
+   - Você já tem nome + telefone + assunto
+   - Ofereça: "Posso anotar um recado para retorno?"
+   - Se sim: use `take_message` e encerre
+   - Se não: agradeça e use `end_call`
+
+**IMPORTANTE:** Só transfira DEPOIS de saber nome e assunto. Isso melhora o atendimento.
 """
         
         if not self.config.guardrails_enabled:
@@ -1916,14 +1929,24 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             reason = args.get("reason", "solicitação do cliente")
             caller_name = args.get("caller_name", "")
 
-            # caller_name é OPCIONAL - se não informado, transfere assim mesmo
-            # O nome melhora a qualidade do anúncio mas não é obrigatório
-            if caller_name and not self._is_invalid_caller_name(caller_name):
-                self._caller_name_from_handoff = caller_name
-                logger.info(f"🔄 [HANDOFF] Nome do cliente informado: {caller_name}")
-            else:
-                # Nome não informado ou inválido - prosseguir sem nome
-                logger.info("🔄 [HANDOFF] Nome do cliente não informado - prosseguindo sem nome")
+            # caller_name é OBRIGATÓRIO - a IA deve ter perguntado antes
+            # Isso melhora o anúncio ao atendente e permite deixar recado se falhar
+            if not caller_name or self._is_invalid_caller_name(caller_name):
+                logger.warning(
+                    "🔄 [HANDOFF] Nome do cliente não foi coletado - solicitando",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "caller_name_received": caller_name,
+                    }
+                )
+                return {
+                    "status": "need_caller_name",
+                    "instruction": "Pergunte o nome do cliente antes de transferir"
+                }
+            
+            # Nome válido - armazenar
+            self._caller_name_from_handoff = caller_name
+            logger.info(f"🔄 [HANDOFF] Nome do cliente: {caller_name}")
             
             # CRÍTICO: Evitar múltiplas transferências simultâneas
             # Isso evita bug onde IA chama request_handoff duas vezes
