@@ -120,6 +120,7 @@ class ConferenceAnnouncementSession:
         self._ws: Optional[ClientConnection] = None
         self._running = False
         self._transcript = ""
+        self._last_human_transcript = ""  # Último transcript do atendente para verificação de segurança
         self._accepted = False
         self._rejected = False
         self._rejection_message: Optional[str] = None
@@ -909,6 +910,8 @@ class ConferenceAnnouncementSession:
         elif etype == "conversation.item.input_audio_transcription.completed":
             human_transcript = event.get("transcript", "")
             logger.info(f"Attendant said: {human_transcript}")
+            # Armazenar para verificação de segurança em accept_transfer
+            self._last_human_transcript = human_transcript
             # Usar lock para proteger contra race condition com function calls
             await self._check_human_decision_safe(human_transcript)
         
@@ -984,8 +987,41 @@ class ConferenceAnnouncementSession:
             
             # Processar decisão
             if function_name == "accept_transfer":
-                self._accepted = True
-                logger.info("✅ Function call: ACCEPTED")
+                # =========================================================================
+                # VERIFICAÇÃO DE SEGURANÇA: Checar se o último transcript contém negação
+                # Isso previne erros da IA que chama accept_transfer quando deveria rejeitar
+                # =========================================================================
+                last_transcript = getattr(self, '_last_human_transcript', '').lower().strip()
+                rejection_indicators = [
+                    'não', 'nao', 'agora não', 'não posso', 'ocupado',
+                    'depois', 'mais tarde', 'não dá', 'não quero'
+                ]
+                
+                # Verificar se começa com "não" ou contém indicadores de recusa
+                is_rejection = False
+                if last_transcript:
+                    words = last_transcript.split()
+                    first_word = words[0].rstrip(".,!?") if words else ""
+                    if first_word in ['não', 'nao']:
+                        is_rejection = True
+                        logger.warning(f"⚠️ Safety check: 'não' detected in transcript, overriding to REJECT")
+                    else:
+                        for indicator in rejection_indicators:
+                            if indicator in last_transcript:
+                                is_rejection = True
+                                logger.warning(f"⚠️ Safety check: '{indicator}' detected, overriding to REJECT")
+                                break
+                
+                if is_rejection:
+                    # Converter accept_transfer para reject_transfer
+                    self._rejection_message = "Atendente disse não"
+                    logger.info(f"🔄 Function call OVERRIDDEN: accept→reject (last transcript: '{last_transcript}')")
+                    
+                    await self._send_courtesy_response()
+                    self._rejected = True
+                else:
+                    self._accepted = True
+                    logger.info("✅ Function call: ACCEPTED")
                 
             elif function_name == "reject_transfer":
                 # Extrair motivo se fornecido
@@ -1072,14 +1108,18 @@ class ConferenceAnnouncementSession:
             accept_generic = ["sim", "ok", "pode"]
             
             # Patterns de RECUSA - ordenados por especificidade
-            # BUG FIX: Removido "não" isolado pois é muito genérico
-            # "não" deve estar acompanhado de contexto
+            # IMPORTANTE: "não" isolado AGORA é considerado recusa
+            # Se o atendente diz apenas "não", é recusa clara
             reject_patterns = [
                 "não posso", "não dá", "não quero", "não tenho tempo",
                 "estou ocupado", "ocupado", "em reunião",
                 "depois", "mais tarde", "agora não",
                 "recuso", "não aceito", "não vou atender",
+                "não vai dar", "não tenho como", "não tem como",
             ]
+            
+            # "não" isolado ou como primeira palavra = recusa
+            reject_generic = ["não", "nao"]
             
             # Verificar patterns específicos de aceite
             for pattern in accept_patterns:
@@ -1107,6 +1147,20 @@ class ConferenceAnnouncementSession:
                     
                     # Enviar resposta de cortesia ANTES de marcar como rejeitado
                     # Isso permite a IA falar "OK, obrigado" antes de desconectar
+                    await self._send_courtesy_response()
+                    
+                    self._rejected = True
+                    self._decision_event.set()
+                    return
+            
+            # Verificar "não" como primeira palavra ou isolado = recusa
+            if words:
+                first_word = words[0].rstrip(".,!?")
+                # "não" ou "nao" como primeira palavra é recusa clara
+                if first_word in reject_generic:
+                    self._rejection_message = human_text
+                    logger.info(f"Human REJECTED: 'não' detected as first word")
+                    
                     await self._send_courtesy_response()
                     
                     self._rejected = True

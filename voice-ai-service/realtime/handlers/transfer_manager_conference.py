@@ -1181,14 +1181,20 @@ CONTEXTO DA LIGAÇÃO: {context}
 
 ## accept_transfer()
 Usar SOMENTE quando ouvir CLARAMENTE:
-- "Pode passar" / "Pode conectar" / "Manda" / "Ok, pode" / "Sim"
+- "Pode passar" / "Pode conectar" / "Manda" / "Ok, pode"
+- "Sim, pode" / "Sim, manda" / "Tá bom, pode passar"
 - Confirmação EXPLÍCITA de que pode atender
+- ATENÇÃO: "Sim" sozinho após saudação NÃO é aceitação!
 
 ## reject_transfer(reason)
-Usar quando ouvir:
+Usar quando ouvir QUALQUER palavra de negação:
+- "NÃO" (qualquer uso de "não" é recusa!)
 - "Não posso agora" / "Estou ocupado" / "Liga depois" / "Não quero"
+- "Agora não" / "Não dá" / "Não vai dar" / "Depois"
 - Qualquer negativa clara
 Parâmetro reason: resumo do motivo (ex: "em reunião", "ocupado")
+
+IMPORTANTE: Se ouvir "NÃO" em qualquer contexto, chame reject_transfer()!
 
 # Conversation Flow
 
