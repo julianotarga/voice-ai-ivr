@@ -2838,7 +2838,21 @@ Quando o cliente pedir para falar com humano/setor:
             # Fallback de silêncio (state machine)
             # IMPORTANTE: Não disparar durante período de proteção (após retorno de transferência)
             now_sf = time.time()
-            in_protection_sf = now_sf < getattr(self, '_interrupt_protected_until', 0)
+            protection_until = getattr(self, '_interrupt_protected_until', 0)
+            in_protection_sf = now_sf < protection_until
+            
+            # Log quando bloqueado por proteção (para diagnóstico)
+            if (
+                self.config.silence_fallback_enabled
+                and idle_time > self.config.silence_fallback_seconds
+                and (self._transfer_in_progress or in_protection_sf)
+            ):
+                remaining_protection = max(0, protection_until - now_sf)
+                logger.debug(
+                    f"⏰ [SILENCE_FALLBACK] Bloqueado: transfer={self._transfer_in_progress}, "
+                    f"protection={in_protection_sf} ({remaining_protection:.1f}s restantes)",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             if (
                 self.config.silence_fallback_enabled
@@ -4519,15 +4533,20 @@ Quando o cliente pedir para falar com humano/setor:
             
             # 3.5. PROTEÇÃO CONTRA INTERRUPÇÕES
             # Após retomar do silêncio, pode haver ruído residual (clique) que o VAD detecta como fala.
-            # Proteger por 3 segundos para garantir que a mensagem seja dita completamente.
+            # Proteger por 5 segundos para garantir que a mensagem seja dita completamente.
             # O OpenAI precisa de tempo para:
             # - Receber a instrução
             # - Processar e gerar áudio
             # - Começar a falar (latência de rede)
-            protection_duration = 3.0  # segundos
-            self._interrupt_protected_until = time.time() + protection_duration
+            # - Falar a mensagem completa (~3-4s típico)
+            # NOTA: _on_transfer_resume já setou proteção inicial, aqui estendemos
+            protection_duration = 5.0  # segundos (estendido para cobrir mensagem)
+            new_protection_until = time.time() + protection_duration
+            current_protection = getattr(self, '_interrupt_protected_until', 0)
+            # Usar o maior valor (estender, não encurtar)
+            self._interrupt_protected_until = max(new_protection_until, current_protection)
             logger.info(
-                f"📋 [HANDLE_TRANSFER_RESULT] Step 3.5: Proteção contra interrupções ativada ({protection_duration}s)",
+                f"📋 [HANDLE_TRANSFER_RESULT] Step 3.5: Proteção estendida ({protection_duration}s)",
                 extra={"call_uuid": self.call_uuid}
             )
             
@@ -4583,6 +4602,19 @@ Quando o cliente pedir para falar com humano/setor:
                 extra={"instruction": openai_instruction}
             )
             
+            # 6.1. CANCELAR qualquer resposta em andamento
+            # Se silence_fallback disparou antes da proteção (race condition),
+            # o OpenAI pode estar respondendo "Você ainda está aí?"
+            # Precisamos cancelar essa resposta para enviar a mensagem correta.
+            if self._provider and hasattr(self._provider, 'interrupt'):
+                try:
+                    await self._provider.interrupt()
+                    # Pequeno delay para o cancel ser processado
+                    await asyncio.sleep(0.15)
+                    logger.info("📋 [HANDLE_TRANSFER_RESULT] Step 6.1: Resposta anterior cancelada")
+                except Exception as e:
+                    logger.debug(f"📋 [HANDLE_TRANSFER_RESULT] Step 6.1: Erro ao cancelar: {e}")
+            
             # Enviar e solicitar resposta (o OpenAI vai FALAR)
             # IMPORTANTE: Não enviar mais mensagens até o OpenAI terminar!
             # A instrução já inclui "pergunte se deseja deixar recado", então
@@ -4622,7 +4654,16 @@ Quando o cliente pedir para falar com humano/setor:
         
         Chamado pelo TransferManager quando música de espera para
         e precisamos retomar a conversa.
+        
+        IMPORTANTE: NÃO setamos transfer_in_progress = False aqui!
+        Isso será feito em _handle_transfer_result para evitar race conditions
+        com silence_fallback e idle_timeout.
         """
+        # CRÍTICO: Ativar proteção IMEDIATAMENTE antes de qualquer processamento
+        # Isso evita que silence_fallback dispare durante o processamento
+        protection_duration = 5.0  # segundos - tempo suficiente para processar e falar
+        self._interrupt_protected_until = time.time() + protection_duration
+        
         # Limpar buffers antes de retomar para evitar vazamento de áudio
         self._input_audio_buffer.clear()
         if self._resampler:
@@ -4635,7 +4676,9 @@ Quando o cliente pedir para falar com humano/setor:
             except Exception:
                 pass
         
-        self._set_transfer_in_progress(False, "transfer_resume")
+        # NÃO setar transfer_in_progress = False aqui!
+        # Será setado em _handle_transfer_result após enviar a mensagem
+        # self._set_transfer_in_progress(False, "transfer_resume")
         
         logger.info(
             "Resuming Voice AI after transfer",
