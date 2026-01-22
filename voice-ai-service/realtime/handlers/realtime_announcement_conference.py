@@ -791,18 +791,31 @@ class ConferenceAnnouncementSession:
             # receber o response.done da resposta anterior
             try:
                 await self._ws.send(json.dumps({"type": "response.cancel"}))
-                # Aguardar um pouco para o cancel ser processado
-                await asyncio.sleep(0.1)
-                # Consumir eventos pendentes (incluindo response.done anterior)
+                # Aguardar mais tempo para o cancel ser processado
+                # O OpenAI pode levar até 500ms para processar o cancel
+                await asyncio.sleep(0.3)
+                
+                # Consumir eventos pendentes até encontrar um timeout
+                # Usar timeout maior (100ms) para garantir que não há mais eventos
                 drain_count = 0
-                while drain_count < 10:
+                while drain_count < 20:  # Aumentar limite
                     try:
-                        msg = await asyncio.wait_for(self._ws.recv(), timeout=0.05)
+                        msg = await asyncio.wait_for(self._ws.recv(), timeout=0.1)
                         drain_count += 1
+                        # Log do tipo de evento drenado para diagnóstico
+                        try:
+                            event = json.loads(msg)
+                            etype = event.get("type", "unknown")
+                            logger.debug(f"Drained event: {etype}")
+                        except Exception:
+                            pass
                     except asyncio.TimeoutError:
-                        break
+                        break  # Sem mais eventos pendentes
                 if drain_count > 0:
                     logger.debug(f"Drained {drain_count} pending events before courtesy")
+                
+                # Aguardar um pouco mais para garantir que o canal está limpo
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.debug(f"Could not cancel previous response: {e}")
             
@@ -821,11 +834,15 @@ class ConferenceAnnouncementSession:
             
             # PASSO 4: Aguardar a IA gerar e reproduzir o áudio de cortesia
             # Timeout mais longo para garantir que a IA tenha tempo
-            max_wait = 5.0  # segundos
+            max_wait = 6.0  # segundos (aumentado)
             wait_interval = 0.1
             waited = 0.0
             audio_received = False
             response_started = False
+            response_done_received = False
+            audio_bytes_total = 0
+            
+            logger.debug("⏳ [COURTESY] Starting to wait for audio...")
             
             while waited < max_wait:
                 try:
@@ -836,34 +853,64 @@ class ConferenceAnnouncementSession:
                     # Marcar quando resposta começa
                     if etype == "response.created":
                         response_started = True
-                        logger.debug("Courtesy response started")
+                        logger.debug("⏳ [COURTESY] Response created")
                     
                     # Processar áudio de resposta
                     if etype in ("response.audio.delta", "response.output_audio.delta"):
                         audio_b64 = event.get("delta", "")
                         if audio_b64:
                             audio_bytes = base64.b64decode(audio_b64)
+                            audio_bytes_total += len(audio_bytes)
                             # Usar o método correto para enfileirar áudio
                             await self._enqueue_audio_to_freeswitch(audio_bytes)
                             audio_received = True
                     
-                    # Se resposta terminou E recebemos áudio, sair do loop
+                    # Se resposta terminou
                     if etype == "response.done":
+                        response_done_received = True
                         if audio_received:
-                            logger.info("✅ Courtesy response completed (with audio)")
+                            logger.info(f"✅ Courtesy response completed (with audio: {audio_bytes_total}b)")
                         else:
-                            logger.warning("⚠️ Courtesy response completed but NO AUDIO received")
+                            # Se não recebeu áudio mas resposta terminou,
+                            # pode ser um problema de timing - verificar se há erro
+                            response_data = event.get("response", {})
+                            status = response_data.get("status", "unknown")
+                            logger.warning(f"⚠️ Courtesy response.done but NO AUDIO (status={status})")
+                            
+                            # Tentar reenviar a cortesia
+                            if not audio_received and response_started:
+                                logger.info("🔄 [COURTESY] Tentando reenviar cortesia...")
+                                try:
+                                    await self._ws.send(json.dumps({
+                                        "type": "response.create",
+                                        "response": {
+                                            "instructions": "Diga apenas: 'OK, obrigado. Até logo.'"
+                                        }
+                                    }))
+                                    # Continuar o loop para receber o áudio
+                                    response_done_received = False
+                                    continue
+                                except Exception:
+                                    pass
                         break
+                    
+                    # Tratar erros
+                    if etype == "error":
+                        error = event.get("error", {})
+                        logger.warning(f"⚠️ [COURTESY] OpenAI error: {error}")
                     
                 except asyncio.TimeoutError:
                     waited += wait_interval
+                    # Se já recebemos áudio e não veio mais por 500ms, considerar completo
+                    if audio_received and waited > 0.5:
+                        logger.debug(f"⏳ [COURTESY] Audio timeout after {audio_bytes_total}b")
                     continue
                 except Exception as e:
                     logger.debug(f"Error receiving courtesy event: {e}")
                     break
             
             if waited >= max_wait:
-                logger.warning(f"⚠️ Courtesy response timeout after {max_wait}s")
+                logger.warning(f"⚠️ Courtesy response timeout after {max_wait}s (audio_received={audio_received})")
             
             # PASSO 5: Aguardar áudio terminar de ser reproduzido
             # Usa lógica robusta de 3 fases para garantir que a cortesia seja ouvida
