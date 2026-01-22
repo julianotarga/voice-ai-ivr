@@ -355,6 +355,10 @@ class ConferenceTransferManager:
                     destination=destination,
                 )
                 
+                # NOTA: Cliente ainda NÃO está na conferência neste ponto (STEP 2 < STEP 3)
+                # O _execute_intelligent_handoff fará unhold_call() + _handle_transfer_result
+                # que aplicará a proteção anti-corte
+                
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,
