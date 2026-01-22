@@ -3097,6 +3097,10 @@ Quando o cliente pedir para falar com humano/setor:
         """
         Espera o áudio de despedida terminar e encerra a sessão.
         
+        Funciona em dois modos:
+        1. _ending_call já setado (end_call): espera _farewell_response_started
+        2. _ending_call não setado (take_message): espera áudio começar, depois seta
+        
         Args:
             delay: Delay mínimo/fallback em segundos
             reason: Motivo do encerramento
@@ -3104,33 +3108,111 @@ Quando o cliente pedir para falar com humano/setor:
         if self._ended:
             return
         
-        # 1. Dar tempo para a IA começar a gerar a resposta
-        # Isso é importante para take_message, onde a IA precisa confirmar
-        logger.debug(f"🔊 [delayed_stop] Aguardando resposta iniciar (reason={reason})")
-        await self._wait_for_farewell_response(max_wait=5.0)
+        logger.debug(f"🔊 [delayed_stop] Iniciando (reason={reason}, ending_call={self._ending_call})")
+        
+        if self._ending_call:
+            # Modo 1: _ending_call já setado (ex: end_call)
+            # Esperar o flag _farewell_response_started ser setado pelo handler de áudio
+            await self._wait_for_farewell_response(max_wait=5.0)
+        else:
+            # Modo 2: _ending_call ainda não setado (ex: take_message)
+            # Esperar o áudio da resposta de confirmação COMEÇAR a chegar
+            # Não podemos usar _farewell_response_started porque ele depende de _ending_call
+            await self._wait_for_response_audio_start(max_wait=5.0)
+            
+            if self._ended:
+                return
+            
+            # Agora que o áudio começou, marcar que estamos encerrando
+            self._ending_call = True
+            self._farewell_response_started = True  # Já começou!
+            # Resetar contador para medir apenas o áudio de despedida a partir de agora
+            self._pending_audio_bytes = 0
+            self._response_audio_start_time = time.time()
+            logger.debug(f"🔊 [delayed_stop] Resposta iniciada, marcando encerramento (reason={reason})")
         
         if self._ended:
             return
         
-        # 2. Agora que a resposta começou, marcar que estamos encerrando
-        # Isso faz com que o próximo áudio seja tratado como despedida
-        if not self._ending_call:
-            self._ending_call = True
-            self._farewell_response_started = False
-            self._pending_audio_bytes = 0
-            self._response_audio_start_time = time.time()
-            logger.debug(f"🔊 [delayed_stop] Marcando encerramento (reason={reason})")
-        
-        # 3. Esperar áudio terminar de reproduzir
+        # Esperar áudio terminar de reproduzir
         await self._wait_for_audio_playback(
             min_wait=delay / 2,
             max_wait=15.0,
             context="end_call"
         )
         
-        # 4. Encerrar chamada
+        # Encerrar chamada
         if not self._ended:
             await self.stop(reason)
+    
+    async def _wait_for_response_audio_start(self, max_wait: float = 5.0) -> float:
+        """
+        Espera o áudio de resposta de confirmação começar (para take_message).
+        
+        Esta função espera uma NOVA resposta iniciar após o resultado da função.
+        Se já há áudio em andamento (IA falou junto com function call), esperamos
+        ele terminar e a PRÓXIMA resposta começar.
+        
+        Args:
+            max_wait: Tempo máximo de espera em segundos
+        
+        Returns:
+            Tempo aguardado em segundos
+        """
+        wait_time = 0.0
+        
+        # Se a IA já está falando (texto antes da function call), esperar terminar
+        if self._assistant_speaking:
+            logger.debug(
+                f"🔊 [response_start] IA já está falando, aguardando terminar..."
+            )
+            while self._assistant_speaking and wait_time < max_wait:
+                if self._ended:
+                    return wait_time
+                await asyncio.sleep(0.1)
+                wait_time += 0.1
+            
+            if wait_time >= max_wait:
+                logger.warning(f"🔊 [response_start] Timeout esperando IA terminar de falar")
+                return wait_time
+            
+            logger.debug(f"🔊 [response_start] IA terminou após {wait_time:.1f}s, aguardando próxima resposta...")
+        
+        # Agora esperar a PRÓXIMA resposta começar (confirmação do take_message)
+        # Resetar contadores para detectar nova resposta
+        initial_bytes = self._pending_audio_bytes
+        
+        while wait_time < max_wait:
+            if self._ended:
+                return wait_time
+            
+            # Detectar nova resposta:
+            # - _assistant_speaking volta a ser True (nova resposta iniciou), OU
+            # - _pending_audio_bytes aumentou significativamente (novos bytes)
+            new_audio_detected = (
+                self._assistant_speaking or 
+                self._pending_audio_bytes > initial_bytes + 1000  # Pelo menos 1KB novo
+            )
+            
+            if new_audio_detected:
+                logger.debug(
+                    f"🔊 [response_start] Nova resposta detectada após {wait_time:.1f}s "
+                    f"(speaking={self._assistant_speaking}, bytes={self._pending_audio_bytes}, initial={initial_bytes})"
+                )
+                return wait_time
+            
+            await asyncio.sleep(0.1)
+            wait_time += 0.1
+        
+        # Timeout - mas ainda podemos ter áudio pendente da resposta anterior
+        if self._pending_audio_bytes > 0:
+            logger.debug(
+                f"🔊 [response_start] Timeout, mas há {self._pending_audio_bytes} bytes pendentes"
+            )
+        else:
+            logger.warning(f"🔊 [response_start] Timeout {max_wait}s esperando nova resposta")
+        
+        return wait_time
     
     async def stop(self, reason: str = "normal") -> None:
         """Encerra a sessão."""
