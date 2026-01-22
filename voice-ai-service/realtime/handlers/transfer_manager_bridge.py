@@ -349,62 +349,102 @@ class BridgeTransferManager:
                 return False
             
             # Parsear o estado do canal
-            # Formato: uuid,direction,created,created_epoch,name,state,cid_name,cid_num,...
-            # O estado fica na coluna 'state' que mostra CS_xxx
+            # Formato CSV: uuid,direction,created,created_epoch,name,state,...,callstate,...
+            # Header: uuid,direction,created,...
+            # Data:   f9dd849c-...,inbound,...,CS_EXECUTE,...,ACTIVE,...
             
             lines = output.split('\n')
+            header = None
+            state = None
+            callstate = None
+            
             for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Pular linha de header (começa com "uuid,")
+                if line.startswith('uuid,'):
+                    header = line.split(',')
+                    continue
+                
+                # Pular linha de total (ex: "1 total.")
+                if 'total' in line.lower():
+                    continue
+                
+                # Verificar se esta linha contém o UUID
                 if uuid in line:
-                    # Encontrou a linha do canal
                     parts = line.split(',')
                     
-                    # Procurar por CS_xxx no output
-                    state = None
-                    callstate = None
+                    # Se temos header, usar índices
+                    if header:
+                        try:
+                            state_idx = header.index('state')
+                            if len(parts) > state_idx:
+                                state = parts[state_idx].strip()
+                        except (ValueError, IndexError):
+                            pass
+                        
+                        try:
+                            callstate_idx = header.index('callstate')
+                            if len(parts) > callstate_idx:
+                                callstate = parts[callstate_idx].strip()
+                        except (ValueError, IndexError):
+                            pass
                     
-                    for part in parts:
-                        part_clean = part.strip()
-                        if part_clean.startswith('CS_'):
-                            state = part_clean
-                        # Também pode ter o callstate (RINGING, ACTIVE, etc)
-                        if part_clean in ('RINGING', 'EARLY', 'ACTIVE', 'HANGUP', 'DOWN'):
-                            callstate = part_clean
+                    # Fallback: buscar padrões conhecidos
+                    if not state:
+                        for part in parts:
+                            part_clean = part.strip()
+                            if part_clean.startswith('CS_'):
+                                state = part_clean
+                                break
                     
-                    logger.debug(f"{self._elapsed()} {name} parsed: state={state}, callstate={callstate}")
+                    if not callstate:
+                        for part in parts:
+                            part_clean = part.strip()
+                            if part_clean in ('RINGING', 'EARLY', 'ACTIVE', 'HANGUP', 'DOWN'):
+                                callstate = part_clean
+                                break
                     
-                    # Estados que indicam ANSWERED
-                    answered_states = ['CS_EXECUTE', 'CS_PARK', 'CS_EXCHANGE_MEDIA', 'CS_SOFT_EXECUTE']
-                    if state in answered_states:
-                        logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (state={state})")
-                        return True
-                    
-                    # Callstate ACTIVE também indica answered
-                    if callstate == 'ACTIVE':
-                        logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (callstate=ACTIVE)")
-                        return True
-                    
-                    # Estados que indicam RINGING
-                    ringing_states = ['CS_CONSUME_MEDIA', 'CS_ROUTING', 'CS_INIT', 'CS_NEW']
-                    if state in ringing_states:
-                        logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (state={state})")
-                        return False
-                    
-                    # Callstate RINGING ou EARLY
-                    if callstate in ('RINGING', 'EARLY', 'DOWN'):
-                        logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (callstate={callstate})")
-                        return False
-                    
-                    # Estados que indicam problema
-                    if state in ('CS_HANGUP', 'CS_REPORTING', 'CS_DESTROY'):
-                        logger.debug(f"{self._elapsed()} 🔴 {name} está terminando (state={state})")
-                        return False
-                    
-                    # Estado desconhecido - logar toda a linha para debug
-                    logger.warning(f"{self._elapsed()} ⚠️ {name} estado desconhecido. Line: {line[:100]}")
-                    return False
+                    break  # Encontrou o canal, sair do loop
             
-            # Canal não encontrado no output
-            logger.debug(f"{self._elapsed()} {name} não encontrado no output")
+            # Se não encontrou dados
+            if state is None and callstate is None:
+                logger.debug(f"{self._elapsed()} {name} não encontrado ou sem estado")
+                return False
+            
+            logger.debug(f"{self._elapsed()} {name} parsed: state={state}, callstate={callstate}")
+            
+            # Estados que indicam ANSWERED
+            answered_states = ['CS_EXECUTE', 'CS_PARK', 'CS_EXCHANGE_MEDIA', 'CS_SOFT_EXECUTE']
+            if state in answered_states:
+                logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (state={state})")
+                return True
+            
+            # Callstate ACTIVE também indica answered
+            if callstate == 'ACTIVE':
+                logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (callstate=ACTIVE)")
+                return True
+            
+            # Estados que indicam RINGING
+            ringing_states = ['CS_CONSUME_MEDIA', 'CS_ROUTING', 'CS_INIT', 'CS_NEW']
+            if state in ringing_states:
+                logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (state={state})")
+                return False
+            
+            # Callstate RINGING ou EARLY
+            if callstate in ('RINGING', 'EARLY', 'DOWN'):
+                logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (callstate={callstate})")
+                return False
+            
+            # Estados que indicam problema
+            if state in ('CS_HANGUP', 'CS_REPORTING', 'CS_DESTROY'):
+                logger.debug(f"{self._elapsed()} 🔴 {name} está terminando (state={state})")
+                return False
+            
+            # Estado desconhecido
+            logger.warning(f"{self._elapsed()} ⚠️ {name} estado desconhecido: state={state}, callstate={callstate}")
             return False
             
         except asyncio.TimeoutError:
