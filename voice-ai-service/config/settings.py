@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     # ============================================
     TRANSFER_DEFAULT_TIMEOUT: int = 30
     TRANSFER_ANNOUNCE_ENABLED: bool = True
-    TRANSFER_MUSIC_ON_HOLD: str = "local_stream://moh"
+    # NOTA: MOH removido - cliente fica em silêncio durante transferência
     TRANSFER_CACHE_TTL_SECONDS: int = 300
     
     # ============================================

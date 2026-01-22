@@ -296,7 +296,7 @@ class DatabaseService:
             # Transfer Settings
             'transfer_default_timeout': 30,
             'transfer_announce_enabled': True,
-            'transfer_music_on_hold': 'local_stream://moh',
+            # NOTA: MOH removido - cliente fica em silêncio durante transferência
             'transfer_cache_ttl_seconds': 300,
             
             # Callback Settings
