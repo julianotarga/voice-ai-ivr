@@ -3183,7 +3183,7 @@ Quando o cliente pedir para falar com humano/setor:
         )
         
         # Quando em hold, pausar processamento de áudio
-        # (música de espera está tocando para o cliente)
+        # (cliente está em silêncio - MOH removido)
         if on_hold and self._provider:
             try:
                 await self._provider.interrupt()
@@ -3193,7 +3193,10 @@ Quando o cliente pedir para falar com humano/setor:
     
     async def hold_call(self) -> bool:
         """
-        Coloca o cliente em espera.
+        Coloca o cliente em espera (modo silêncio).
+        
+        NOTA: MOH foi removido - cliente fica em silêncio.
+        Usamos uuid_audio_stream pause para parar captura de áudio.
         
         Returns:
             True se sucesso
@@ -3205,10 +3208,12 @@ Quando o cliente pedir para falar com humano/setor:
             from .esl import get_esl_adapter
             adapter = get_esl_adapter(self.call_uuid)
             
-            success = await adapter.uuid_hold(self.call_uuid, on=True)
+            # Pausar audio_stream (modo silêncio - sem MOH)
+            result = await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} pause")
+            success = result and "+OK" in str(result)
             if success:
                 self._on_hold = True
-                logger.info("Call placed on hold", extra={"call_uuid": self.call_uuid})
+                logger.info("Call placed on hold (silent mode)", extra={"call_uuid": self.call_uuid})
             return success
             
         except Exception as e:
@@ -3234,10 +3239,11 @@ Quando o cliente pedir para falar com humano/setor:
             
             # Usar timeout para não travar o fluxo se ESL não responder
             try:
-                success = await asyncio.wait_for(
-                    adapter.uuid_hold(self.call_uuid, on=False),
+                result = await asyncio.wait_for(
+                    adapter.execute_api(f"uuid_audio_stream {self.call_uuid} resume"),
                     timeout=timeout
                 )
+                success = result and "+OK" in str(result)
             except asyncio.TimeoutError:
                 logger.warning(f"unhold_call timeout after {timeout}s - continuing anyway")
                 # Marcar como não em hold mesmo se timeout (evitar estado inconsistente)
