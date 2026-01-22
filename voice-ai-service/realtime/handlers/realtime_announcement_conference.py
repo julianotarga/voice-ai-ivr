@@ -581,33 +581,52 @@ class ConferenceAnnouncementSession:
           - Se ambos em Docker: usar nome do container ou IP interno
           - Se mesmo host: usar 127.0.0.1
         
-        Para Docker for Mac/Windows com FreeSWITCH no host:
-        - O container precisa expor a porta
-        - FreeSWITCH precisa conectar ao IP do container (não 127.0.0.1)
-        - Use: REALTIME_BLEG_STREAM_HOST=host.docker.internal (resolve para o host)
-          OU use o IP real do container
+        FLUXO ROBUSTO:
+        1. Verificar se B-leg está em estado ACTIVE (pode receber audio stream)
+        2. Iniciar servidor WebSocket
+        3. Enviar uuid_audio_stream com retry
+        4. Aguardar conexão com timeout por tentativa
         """
         try:
             bind_host = os.getenv("REALTIME_BLEG_STREAM_BIND", "0.0.0.0")
-            # IMPORTANTE: Para Docker, usar host.docker.internal ou IP do container
-            # 127.0.0.1 não funciona se FreeSWITCH está no host
             connect_host = os.getenv("REALTIME_BLEG_STREAM_HOST", "127.0.0.1")
             bleg_port_str = os.getenv("REALTIME_BLEG_STREAM_PORT", "")
             base_port = int(bleg_port_str) if bleg_port_str else 0
             
-            # Log para debug de networking
             logger.info(f"🔊 Audio stream config: bind={bind_host}, connect={connect_host}, port={bleg_port_str or 'random'}")
             
-            # Se porta configurada, tentar um range para suportar sessões simultâneas
-            # Se porta 0, o OS escolhe uma porta livre
+            # =================================================================
+            # STEP 0: Verificar estado do B-leg ANTES de iniciar
+            # O uuid_audio_stream só funciona em canais ACTIVE (answered)
+            # =================================================================
+            try:
+                # Verificar se canal existe E está em estado correto
+                state_response = await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} state"),
+                    timeout=2.0
+                )
+                state_str = str(state_response).strip().lower() if state_response else ""
+                logger.info(f"🔍 B-leg state: {state_str}")
+                
+                # Estados válidos para audio stream: CS_EXECUTE, CS_ACTIVE
+                # NOTA: "parked" é o estado do app, não do channel
+                if "-err" in state_str or "no such channel" in state_str:
+                    logger.warning(f"🔍 B-leg não existe ou estado inválido: {state_str}")
+                    return
+                    
+            except asyncio.TimeoutError:
+                logger.debug("🔍 B-leg state check timeout - continuing")
+            except Exception as e:
+                logger.debug(f"🔍 B-leg state check error: {e} - continuing")
+            
+            # =================================================================
+            # STEP 1: Iniciar servidor WebSocket
+            # =================================================================
             if base_port == 0:
-                logger.debug("Using random port for audio WS")
-                ports_to_try = [0]  # OS escolhe
+                ports_to_try = [0]
             else:
-                # Tentar porta base e próximas 10 portas
                 ports_to_try = list(range(base_port, base_port + 10))
             
-            # Wrapper para logar conexões e erros
             async def ws_handler_with_logging(websocket):
                 try:
                     logger.info(f"🔌 WS HANDLER CALLED - new connection incoming")
@@ -624,15 +643,11 @@ class ConferenceAnnouncementSession:
                         bind_host,
                         port,
                         max_size=None,
-                        # Sem restrição de origin para aceitar conexão do FreeSWITCH
                         origins=None,
-                        # Não passar logger para evitar spam de logs binários
-                        # Os logs de conexão são feitos em ws_handler_with_logging
                     )
-                    break  # Sucesso
+                    break
                 except OSError as e:
                     if port == ports_to_try[-1]:
-                        # Última tentativa falhou
                         logger.warning(f"⚠️ Cannot bind any port in range: {e}")
                         self._audio_ws_server = None
                         return
@@ -650,50 +665,58 @@ class ConferenceAnnouncementSession:
             logger.info(f"🔊 WS Server listening on {bind_host}:{self._audio_ws_port}")
             logger.info(f"🔊 FreeSWITCH (on HOST) will connect to: {ws_url}")
             
-            # IMPORTANTE: Aguardar servidor estabilizar antes de enviar comando
-            # Sem esse delay, o comando pode chegar antes do servidor estar pronto
+            # Aguardar servidor estabilizar
             await asyncio.sleep(0.3)
             
-            # DEBUG: Log detalhado do estado do ESL
+            # =================================================================
+            # STEP 2: Verificar conexão ESL
+            # =================================================================
             logger.info(f"🔌 [ESL DEBUG] ESL object type: {type(self.esl).__name__}")
             logger.info(f"🔌 [ESL DEBUG] ESL object id: {id(self.esl)}")
             
-            # Verificar conexão ESL antes de executar comando
-            # IMPORTANTE: O atributo correto é _connected (com underscore)
             is_connected = getattr(self.esl, '_connected', False) or getattr(self.esl, 'connected', False)
             logger.info(f"🔌 [ESL DEBUG] is_connected: {is_connected}")
             
             if not is_connected:
                 logger.warning("🔌 ESL disconnected, attempting reconnect...")
                 try:
-                    await self.esl.connect()
+                    await asyncio.wait_for(self.esl.connect(), timeout=3.0)
                     logger.info("🔌 ESL reconnected successfully")
                 except Exception as e:
                     logger.error(f"🔌 ESL reconnect failed: {e}")
+                    return
             
-            # Verificação rápida do B-leg (máximo 500ms)
-            # Os diagnósticos detalhados foram removidos - causavam 3+ segundos de delay
+            # Verificação rápida do B-leg
             try:
                 exists_response = await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_exists {self.b_leg_uuid}"),
-                    timeout=0.5
+                    timeout=1.0
                 )
                 if "true" not in (exists_response or "").lower():
                     logger.warning(f"🔍 B-leg não existe mais: {exists_response}")
-                    return AnnouncementResult(accepted=False, rejected=True, reason="B-leg gone")
+                    return
                 logger.debug(f"🔍 B-leg exists: OK")
             except asyncio.TimeoutError:
                 logger.debug("🔍 B-leg check timeout - continuing anyway")
             except Exception as e:
                 logger.debug(f"🔍 B-leg check error: {e} - continuing anyway")
             
-            # Iniciar mod_audio_stream no B-leg
-            # IMPORTANTE: Tentar até 3 vezes com reconexão ESL entre tentativas
+            # =================================================================
+            # STEP 3: Iniciar mod_audio_stream com retry ROBUSTO
+            # 
+            # PROBLEMA: O comando retorna OK mas o FreeSWITCH pode não conectar.
+            # SOLUÇÃO: 
+            # - 3 tentativas totais
+            # - Timeout curto (2s) por tentativa de conexão
+            # - Parar e reiniciar stream entre tentativas
+            # =================================================================
             cmd = f"uuid_audio_stream {self.b_leg_uuid} start {ws_url} mono 16k"
             logger.info(f"🔊 Executing: {cmd}")
             
-            stream_started = False
-            for attempt in range(3):
+            stream_connected = False
+            max_attempts = 3
+            
+            for attempt in range(max_attempts):
                 try:
                     # Verificar/reconectar ESL antes de cada tentativa
                     is_connected = getattr(self.esl, '_connected', False)
@@ -707,45 +730,55 @@ class ConferenceAnnouncementSession:
                             await asyncio.sleep(0.5)
                             continue
                     
+                    # Se não é a primeira tentativa, parar stream anterior primeiro
+                    if attempt > 0:
+                        logger.info(f"🔄 [Attempt {attempt+1}] Stopping previous stream...")
+                        try:
+                            await asyncio.wait_for(
+                                self.esl.execute_api(f"uuid_audio_stream {self.b_leg_uuid} stop"),
+                                timeout=2.0
+                            )
+                            self._fs_connected.clear()  # Reset evento de conexão
+                            await asyncio.sleep(0.2)
+                        except Exception:
+                            pass
+                    
+                    # Enviar comando uuid_audio_stream
                     response = await asyncio.wait_for(
                         self.esl.execute_api(cmd),
-                        timeout=5.0
+                        timeout=3.0
                     )
                     
-                    # Verificar se resposta indica sucesso
                     response_str = str(response).strip() if response else ""
-                    if "+OK" in response_str or response_str == "":
-                        logger.info(f"🔊 Audio stream started: {response_str[:100] if response_str else 'OK'}")
-                        stream_started = True
-                        break
-                    elif "-ERR" in response_str:
+                    if "-ERR" in response_str:
                         logger.error(f"❌ [Attempt {attempt+1}] FreeSWITCH error: {response_str}")
                         await asyncio.sleep(0.5)
-                    else:
-                        # Resposta desconhecida - assumir sucesso
-                        logger.info(f"🔊 Audio stream response: {response_str[:100]}")
-                        stream_started = True
+                        continue
+                    
+                    logger.info(f"🔊 [Attempt {attempt+1}] Audio stream command sent: {response_str[:100] if response_str else 'OK'}")
+                    
+                    # Aguardar conexão do FreeSWITCH com timeout curto
+                    connection_timeout = 2.0 if attempt < max_attempts - 1 else 3.0
+                    try:
+                        await asyncio.wait_for(self._fs_connected.wait(), timeout=connection_timeout)
+                        logger.info(f"✅ [Attempt {attempt+1}] Audio stream connected (FULL-DUPLEX)")
+                        stream_connected = True
                         break
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⚠️ [Attempt {attempt+1}] Connection timeout ({connection_timeout}s)")
+                        # Continuar para próxima tentativa
                         
                 except asyncio.TimeoutError:
                     logger.error(f"❌ [Attempt {attempt+1}] ESL command timeout")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                 except Exception as e:
                     logger.error(f"❌ [Attempt {attempt+1}] ESL command failed: {e}")
-                    # Marcar como desconectado para forçar reconexão na próxima tentativa
                     if hasattr(self.esl, '_connected'):
                         self.esl._connected = False
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
             
-            if not stream_started:
-                logger.error(f"❌ Failed to start audio stream after 3 attempts")
-            
-            # Aguardar conexão do FreeSWITCH
-            try:
-                await asyncio.wait_for(self._fs_connected.wait(), timeout=5.0)
-                logger.info("✅ Audio stream connected (FULL-DUPLEX)")
-            except asyncio.TimeoutError:
-                logger.warning("⚠️ Audio stream did not connect - TTS fallback mode")
+            if not stream_connected:
+                logger.warning(f"⚠️ Audio stream did not connect after {max_attempts} attempts - TTS fallback mode")
             
         except Exception as e:
             logger.error(f"Audio stream init failed: {e}")

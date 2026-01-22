@@ -765,18 +765,21 @@ class ConferenceTransferManager:
     
     async def _stop_voiceai_stream(self) -> None:
         """
-        Pausa o stream de áudio do Voice AI no A-leg.
+        Para o stream de áudio do Voice AI no A-leg.
         
-        IMPORTANTE: Usamos PAUSE em vez de STOP para manter a conexão WebSocket
-        ativa. Isso permite retomar a sessão sem perder o contexto da conversa.
+        IMPORTANTE: Usamos STOP porque o uuid_transfer vai fechar a conexão
+        WebSocket de qualquer forma. O 'pause' não ajuda aqui.
         
-        O STOP fecha a conexão WebSocket e encerra a RealtimeSession.
-        O PAUSE mantém a conexão aberta mas para de enviar/receber áudio.
+        Quando a transferência terminar, _return_a_leg_to_voiceai() vai
+        fazer um novo 'start' para reconectar ao RealtimeServer.
+        
+        O RealtimeServer (server.py) reutiliza a RealtimeSession existente
+        quando o mesmo call_uuid reconecta, preservando o contexto.
         """
-        logger.debug(f"_stop_voiceai_stream: Sending uuid_audio_stream pause for {self.a_leg_uuid}")
+        logger.debug(f"_stop_voiceai_stream: Sending uuid_audio_stream stop for {self.a_leg_uuid}")
         try:
             result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} pause"),
+                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
                 timeout=3.0
             )
             logger.debug(f"_stop_voiceai_stream: Result: {result}")
@@ -1779,14 +1782,17 @@ Atendente: resposta que não é claramente aceite nem recusa
         """
         Retorna A-leg ao Voice AI.
         
-        Remove da conferência e retoma stream de áudio.
+        Remove da conferência e REINICIA stream de áudio.
         
-        NOTA: MOH foi removido - cliente fica em silêncio.
-        Apenas precisamos remover da conferência e retomar o stream.
+        IMPORTANTE: O uuid_transfer fecha a conexão WebSocket do mod_audio_stream.
+        Por isso, NÃO podemos usar 'resume' - precisamos usar 'start' novamente
+        com a URL completa para o FreeSWITCH reconectar ao RealtimeServer.
         
-        Usamos RESUME porque o stream foi PAUSADO (não parado)
-        em _stop_voiceai_stream(). Isso mantém a conexão WebSocket ativa
-        e preserva o contexto da conversa.
+        O RealtimeServer (server.py) já tem lógica para reutilizar a session
+        existente quando o mesmo call_uuid reconecta, preservando:
+        - Histórico da conversa
+        - Nome do cliente extraído
+        - Contexto do provider OpenAI
         """
         logger.info("🔙 Returning A-leg to Voice AI...")
         
@@ -1817,43 +1823,76 @@ Atendente: resposta que não é claramente aceite nem recusa
                 logger.debug(f"Could not kick A-leg from conference: {e}")
             
             # =================================================================
-            # STEP 2: Pequeno delay para estabilização
-            #
-            # NOTA: MOH foi removido - agora usamos modo silêncio.
-            # Não precisa mais de uuid_break ou uuid_hold off.
-            # Apenas um pequeno delay para o canal estabilizar.
+            # STEP 2: Delay para canal estabilizar após sair da conferência
             # =================================================================
             logger.info("⏳ Aguardando 200ms para canal estabilizar...")
             await asyncio.sleep(0.2)
             
             # =================================================================
-            # STEP 3: Retomar uuid_audio_stream
+            # STEP 3: REINICIAR uuid_audio_stream (não resume!)
             # 
-            # O stream foi PAUSADO (não parado) em _stop_voiceai_stream().
-            # Podemos retomar com segurança (não há mais MOH para parar).
-            #
-            # RESUME mantém a sessão RealtimeSession intacta com:
-            # - Histórico da conversa
-            # - Nome do cliente extraído
-            # - Contexto do provider OpenAI
+            # IMPORTANTE: O uuid_transfer FECHA a conexão WebSocket.
+            # 'resume' não funciona porque não há conexão para retomar.
+            # 
+            # Precisamos fazer 'start' novamente com a URL completa.
+            # O RealtimeServer vai reutilizar a session existente (via session_manager).
             # =================================================================
+            
+            # Construir URL do WebSocket
+            # Formato: ws://host:port/stream/{secretary_uuid}/{call_uuid}/{caller_id}
+            ws_host = os.getenv("REALTIME_WS_HOST", "127.0.0.1")
+            ws_port = os.getenv("REALTIME_WS_PORT", "8085")
+            
+            # Secretary UUID pode estar no self ou precisamos extrair da session
+            secretary_uuid = getattr(self, 'secretary_uuid', None) or "unknown"
+            
+            ws_url = f"ws://{ws_host}:{ws_port}/stream/{secretary_uuid}/{self.a_leg_uuid}/{self.caller_id}"
+            
+            logger.info(f"🔄 Reiniciando audio stream: {ws_url}")
+            
+            # Primeiro garantir que qualquer stream antigo está parado
             try:
-                logger.info(f"🔄 Retomando audio stream (uuid_audio_stream resume)...")
-                
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
+                    timeout=2.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass  # Pode falhar se não tinha stream, ok
+            
+            await asyncio.sleep(0.1)  # Pequeno delay para cleanup
+            
+            # Iniciar novo stream
+            # Formato: uuid_audio_stream <uuid> start <url> mono 8k
+            start_cmd = f"uuid_audio_stream {self.a_leg_uuid} start {ws_url} mono 8k"
+            logger.info(f"🔊 Executando: {start_cmd}")
+            
+            try:
                 result = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} resume"),
-                    timeout=3.0
+                    self.esl.execute_api(start_cmd),
+                    timeout=5.0
                 )
                 
-                if result and "+OK" in str(result):
-                    logger.info(f"✅ Audio stream retomado com sucesso")
+                result_str = str(result).strip() if result else ""
+                
+                if "+OK" in result_str or result_str == "":
+                    logger.info(f"✅ Audio stream reiniciado com sucesso")
+                elif "-ERR" in result_str:
+                    logger.error(f"❌ Falha ao reiniciar audio stream: {result_str}")
                 else:
-                    logger.warning(f"⚠️ Audio stream resume resultado: {result}")
+                    logger.info(f"🔊 Audio stream resultado: {result_str}")
                 
             except asyncio.TimeoutError:
-                logger.error("❌ Timeout ao retomar audio stream")
+                logger.error("❌ Timeout ao reiniciar audio stream")
             except Exception as e:
-                logger.error(f"❌ Erro ao retomar audio stream: {e}")
+                logger.error(f"❌ Erro ao reiniciar audio stream: {e}")
+            
+            # =================================================================
+            # STEP 4: Aguardar reconexão do WebSocket
+            # O RealtimeServer vai aceitar a nova conexão e reutilizar a session.
+            # Precisamos dar tempo para o FreeSWITCH conectar.
+            # =================================================================
+            logger.info("⏳ Aguardando 500ms para WebSocket reconectar...")
+            await asyncio.sleep(0.5)
             
             # Retomar Voice AI via callback
             if self.on_resume:
