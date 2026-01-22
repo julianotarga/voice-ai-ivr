@@ -150,9 +150,10 @@ TAKE_MESSAGE_FUNCTION_DEFINITION = {
     "description": (
         "Anota um recado do cliente para retorno posterior. "
         "OBRIGATÓRIO usar quando o cliente quiser deixar uma mensagem ou recado. "
-        "Após chamar esta função, a chamada será encerrada automaticamente. "
+        "IMPORTANTE: NÃO fale despedida ANTES de chamar esta função! "
+        "Chame a função PRIMEIRO, depois você receberá o resultado e poderá confirmar. "
         "Colete APENAS: nome do cliente, mensagem e urgência. "
-        "O telefone de retorno é AUTOMATICAMENTE o número desta ligação - NUNCA pergunte."
+        "O telefone de retorno é AUTOMATICAMENTE o número desta ligação."
     ),
     "parameters": {
         "type": "object",
@@ -208,11 +209,10 @@ FUNCTION_FILLERS = {
         "Registrando sua solicitação...",
     ],
     
-    # Anotar recado
-    "take_message": [
-        "Anotando o recado...",
-        "Registrando sua mensagem...",
-    ],
+    # Anotar recado - SEM FILLER
+    # A IA deve falar a confirmação APÓS receber o resultado da função
+    # Não usamos filler porque a IA geralmente já fala algo junto com a function call
+    "take_message": [],
     "leave_message": [
         "Anotando sua mensagem...",
     ],
@@ -2113,18 +2113,19 @@ Quando o cliente pedir para falar com humano/setor:
                     logger.warning(f"📝 [TAKE_MESSAGE] Erro ao enviar webhook: {e}")
             
             # IMPORTANTE: Agendar encerramento automático após recado
-            # Dar tempo suficiente para o OpenAI confirmar o recado antes de encerrar
-            # 8 segundos é suficiente para falar "Recado anotado, obrigado, tenha um bom dia!"
-            logger.info("📝 [TAKE_MESSAGE] Recado anotado - agendando encerramento em 8s (tempo para OpenAI falar)")
-            asyncio.create_task(self._delayed_stop(8.0, "take_message_done"))
-            self._ending_call = True
+            # 10 segundos para dar tempo da IA confirmar antes de encerrar
+            logger.info("📝 [TAKE_MESSAGE] Recado anotado - agendando encerramento em 10s")
+            asyncio.create_task(self._delayed_stop(10.0, "take_message_done"))
             
-            # Result simples - sem instrução de fala
-            # O filler "Anotando o recado..." já foi dito
-            # O OpenAI vai responder naturalmente baseado no status
+            # NÃO setar _ending_call = True ainda!
+            # Primeiro deixar a IA confirmar o recado, depois o _delayed_stop cuida do resto
+            # O _delayed_stop vai setar _ending_call quando começar a esperar a despedida
+            
+            # Result com instrução clara para a IA confirmar
             return {
                 "status": "success",
-                "action": "message_saved"
+                "action": "message_saved",
+                "instruction": "Confirme que o recado foi anotado e despeça-se brevemente. Exemplo: 'Recado anotado! Obrigado pela ligação, tenha um bom dia.'"
             }
         
         elif name == "get_business_info":
@@ -3103,20 +3104,31 @@ Quando o cliente pedir para falar com humano/setor:
         if self._ended:
             return
         
-        # 1. Esperar resposta de despedida iniciar
+        # 1. Dar tempo para a IA começar a gerar a resposta
+        # Isso é importante para take_message, onde a IA precisa confirmar
+        logger.debug(f"🔊 [delayed_stop] Aguardando resposta iniciar (reason={reason})")
         await self._wait_for_farewell_response(max_wait=5.0)
         
         if self._ended:
             return
         
-        # 2. Esperar áudio terminar de reproduzir
+        # 2. Agora que a resposta começou, marcar que estamos encerrando
+        # Isso faz com que o próximo áudio seja tratado como despedida
+        if not self._ending_call:
+            self._ending_call = True
+            self._farewell_response_started = False
+            self._pending_audio_bytes = 0
+            self._response_audio_start_time = time.time()
+            logger.debug(f"🔊 [delayed_stop] Marcando encerramento (reason={reason})")
+        
+        # 3. Esperar áudio terminar de reproduzir
         await self._wait_for_audio_playback(
             min_wait=delay / 2,
             max_wait=15.0,
             context="end_call"
         )
         
-        # 3. Encerrar chamada
+        # 4. Encerrar chamada
         if not self._ended:
             await self.stop(reason)
     
