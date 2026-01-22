@@ -19,6 +19,10 @@ from uuid import uuid4
 
 from .esl_client import AsyncESLClient
 
+# Core - Sistema de controle interno
+# Ref: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
+from ..core import EventBus, VoiceEvent, VoiceEventType
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +118,7 @@ class ConferenceTransferManager:
         on_resume: Optional[Callable[[], Awaitable[Any]]] = None,
         omniplay_api: Any = None,
         secretary_uuid: Optional[str] = None,  # Mantido para compatibilidade
+        event_bus: Optional[EventBus] = None,  # EventBus para emitir eventos
     ):
         """
         Inicializa o transfer manager.
@@ -128,12 +133,14 @@ class ConferenceTransferManager:
             on_resume: Callback para retomar Voice AI após falha
             omniplay_api: API OmniPlay para criar tickets (opcional)
             secretary_uuid: UUID da secretária (para fallback de reconexão)
+            event_bus: EventBus para emitir eventos internos (opcional)
         """
         self.esl = esl_client
         self.a_leg_uuid = a_leg_uuid
         self.domain = domain
         self.caller_id = caller_id
         self.config = config or ConferenceTransferConfig()
+        self.events = event_bus  # Pode ser None (retrocompatível)
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.on_resume = on_resume
         self.omniplay_api = omniplay_api
@@ -181,6 +188,25 @@ class ConferenceTransferManager:
             logger.error(f"🔌 [{context}] Error checking ESL connection: {e}")
             return False
     
+    async def _emit_event(self, event_type: VoiceEventType, **data) -> None:
+        """
+        Emite evento de forma segura (só se EventBus estiver disponível).
+        
+        Args:
+            event_type: Tipo do evento
+            **data: Dados adicionais do evento
+        """
+        if self.events:
+            try:
+                await self.events.emit(VoiceEvent(
+                    type=event_type,
+                    call_uuid=self.a_leg_uuid,
+                    data=data,
+                    source="transfer_manager"
+                ))
+            except Exception as e:
+                logger.warning(f"Error emitting event {event_type.value}: {e}")
+    
     async def execute_announced_transfer(
         self,
         destination: str,
@@ -215,6 +241,14 @@ class ConferenceTransferManager:
         logger.info(f"   Context: {context}")
         logger.info(f"   Caller: {caller_name or self.caller_id}")
         logger.info("=" * 70)
+        
+        # Emitir evento TRANSFER_DIALING no início
+        await self._emit_event(
+            VoiceEventType.TRANSFER_DIALING,
+            destination=destination,
+            context=context,
+            caller_name=caller_name,
+        )
         
         try:
             # ============================================================
@@ -398,6 +432,13 @@ class ConferenceTransferManager:
                 )
             logger.info(f"{elapsed()} STEP 4: ✅ Ramal atendeu: {self.b_leg_uuid}")
             
+            # Emitir evento TRANSFER_ANSWERED
+            await self._emit_event(
+                VoiceEventType.TRANSFER_ANSWERED,
+                destination=destination,
+                b_leg_uuid=self.b_leg_uuid,
+            )
+            
             # Aguardar B-leg estabilizar - verificando hangup
             logger.info(f"{elapsed()} STEP 4: Aguardando estabilização (1.5s)...")
             hangup_during_wait = await self._wait_for_hangup_or_timeout(1.5)
@@ -418,6 +459,14 @@ class ConferenceTransferManager:
             # STEP 5: Anunciar para o atendente
             # ============================================================
             logger.info(f"{elapsed()} 📍 STEP 5: Anunciando cliente para o atendente...")
+            
+            # Emitir evento TRANSFER_ANNOUNCING
+            await self._emit_event(
+                VoiceEventType.TRANSFER_ANNOUNCING,
+                destination=destination,
+                b_leg_uuid=self.b_leg_uuid,
+                announcement=announcement,
+            )
             
             # Checar hangup antes de anunciar
             if self._check_a_leg_hangup():
@@ -448,6 +497,12 @@ class ConferenceTransferManager:
                 )
             
             logger.info(f"{elapsed()} STEP 5: ✅ Decisão do atendente: {decision.value}")
+            
+            # Emitir evento TRANSFER_WAITING_RESPONSE (anúncio concluído, aguardando decisão)
+            await self._emit_event(
+                VoiceEventType.TRANSFER_WAITING_RESPONSE,
+                decision=decision.value,
+            )
             
             # ============================================================
             # STEP 6: Processar decisão do atendente
@@ -1186,6 +1241,13 @@ Atendente: "Não posso agora" / "Estou ocupado"
         """
         logger.info("✅ Transfer ACCEPTED")
         
+        # Emitir evento TRANSFER_ACCEPTED
+        await self._emit_event(
+            VoiceEventType.TRANSFER_ACCEPTED,
+            b_leg_uuid=self.b_leg_uuid,
+            conference_name=self.conference_name,
+        )
+        
         try:
             # =========================================================================
             # FLUXO CORRETO após aceitação:
@@ -1319,6 +1381,13 @@ Atendente: "Não posso agora" / "Estou ocupado"
             logger.info(f"   A-leg (cliente): {self.a_leg_uuid} - unmuted+undeaf")
             logger.info(f"   B-leg (atendente): {self.b_leg_uuid} - moderator|endconf")
             
+            # Emitir evento TRANSFER_COMPLETED (bridge feito com sucesso)
+            await self._emit_event(
+                VoiceEventType.TRANSFER_COMPLETED,
+                b_leg_uuid=self.b_leg_uuid,
+                conference_name=self.conference_name,
+            )
+            
             return ConferenceTransferResult(
                 success=True,
                 decision=TransferDecision.ACCEPTED,
@@ -1415,6 +1484,19 @@ Atendente: "Não posso agora" / "Estou ocupado"
         
         # Determinar decisão para o resultado
         result_decision = original_decision or TransferDecision.REJECTED
+        
+        # Emitir evento apropriado
+        if result_decision == TransferDecision.TIMEOUT:
+            await self._emit_event(
+                VoiceEventType.TRANSFER_TIMEOUT,
+                reason=reason,
+            )
+        else:
+            await self._emit_event(
+                VoiceEventType.TRANSFER_REJECTED,
+                reason=reason,
+                decision=result_decision.value,
+            )
         
         ticket_id = None
         

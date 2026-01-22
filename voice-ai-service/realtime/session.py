@@ -3947,6 +3947,7 @@ Quando o cliente pedir para falar com humano/setor:
                         ),
                         on_resume=self._resume_voice_ai,
                         secretary_uuid=self.config.secretary_uuid,
+                        event_bus=self.events,  # Passar EventBus para emissão de eventos
                     )
                     
                     # Executar transferência via conferência
