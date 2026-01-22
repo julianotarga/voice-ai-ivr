@@ -109,6 +109,7 @@ class ConferenceAnnouncementSession:
         voice: str = OPENAI_REALTIME_VOICE,
         model: str = OPENAI_REALTIME_MODEL,
         courtesy_message: Optional[str] = None,
+        a_leg_hangup_event: Optional[asyncio.Event] = None,
     ):
         """
         Args:
@@ -119,6 +120,7 @@ class ConferenceAnnouncementSession:
             voice: Voz do OpenAI
             model: Modelo Realtime
             courtesy_message: Mensagem de cortesia ao recusar (do banco de dados)
+            a_leg_hangup_event: Evento para detectar quando cliente (A-leg) desliga
         """
         self.esl = esl_client
         self.b_leg_uuid = b_leg_uuid
@@ -127,6 +129,7 @@ class ConferenceAnnouncementSession:
         self.voice = voice
         self.model = model
         self.courtesy_message = courtesy_message
+        self._a_leg_hangup_event = a_leg_hangup_event
         
         self._ws: Optional[ClientConnection] = None
         self._running = False
@@ -397,6 +400,13 @@ class ConferenceAnnouncementSession:
                 if loop_count % 5 == 0:
                     logger.debug(f"⏳ [LOOP {loop_count}] Still waiting for decision...")
                 
+                # Verificar se A-leg (cliente) desligou primeiro (mais crítico)
+                if self._a_leg_hangup_event and self._a_leg_hangup_event.is_set():
+                    logger.warning(f"🚨 [LOOP {loop_count}] A-leg hangup detected - client disconnected, aborting announcement")
+                    self._rejected = True
+                    self._rejection_message = "Cliente desligou"
+                    break
+                
                 # Verificar se B-leg ainda existe
                 try:
                     b_exists = await asyncio.wait_for(
@@ -410,16 +420,6 @@ class ConferenceAnnouncementSession:
                         break
                 except Exception as e:
                     logger.debug(f"⚠️ [LOOP {loop_count}] B-leg check failed: {e}")
-                
-                # TAMBÉM verificar se A-leg (cliente) ainda existe
-                # Se o cliente desligou, não faz sentido continuar o anúncio
-                try:
-                    # Obter A-leg UUID do transfer manager (via ESL client context)
-                    # Por enquanto, apenas verificar se B-leg desligou é suficiente
-                    # pois o A-leg está mudo na conferência
-                    pass
-                except Exception:
-                    pass
     
     async def _connect_openai(self) -> None:
         """Conecta ao WebSocket do OpenAI Realtime."""

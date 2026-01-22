@@ -1051,7 +1051,7 @@ class ConferenceTransferManager:
         )
         
         try:
-            # Criar sessão de anúncio
+            # Criar sessão de anúncio - passar evento de hangup para cancelamento rápido
             self._announcement_session = ConferenceAnnouncementSession(
                 esl_client=self.esl,
                 b_leg_uuid=self.b_leg_uuid,
@@ -1060,6 +1060,7 @@ class ConferenceTransferManager:
                 model=self.config.openai_model,
                 voice=self.config.openai_voice,
                 courtesy_message=self.config.courtesy_message,
+                a_leg_hangup_event=self._a_leg_hangup_event,
             )
             
             # Executar anúncio
