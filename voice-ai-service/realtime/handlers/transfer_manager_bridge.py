@@ -531,30 +531,37 @@ class BridgeTransferManager:
         """
         self._log_state_change(TransferState.ANNOUNCING)
         
+        # Construir system_prompt para o anúncio
+        # Usa o template do config ou um padrão
+        system_prompt = self.config.announcement_prompt or (
+            "Você é uma secretária virtual anunciando uma chamada. "
+            "Seja breve e objetiva. "
+            "Se o atendente aceitar, chame a função accept_transfer. "
+            "Se recusar, chame a função reject_transfer."
+        )
+        
         session = ConferenceAnnouncementSession(
+            esl_client=self.esl,
             b_leg_uuid=self._b_leg_uuid,
-            esl=self.esl,
-            openai_model=self.config.openai_model,
-            openai_voice=self.config.openai_voice,
-            announcement_prompt=self.config.announcement_prompt,
-            timeout=self.config.announcement_timeout,
+            system_prompt=system_prompt,
+            initial_message=announcement,
+            voice=self.config.openai_voice,
+            model=self.config.openai_model,
             a_leg_hangup_event=self._a_leg_hangup_event,
         )
         
         try:
-            accepted, rejected = await session.run(
-                initial_message=announcement,
-                caller_name=caller_name
-            )
+            result = await session.run(timeout=self.config.announcement_timeout)
             
             # CLEANUP: Verificar se A-leg desligou durante anúncio
             if self._a_leg_hangup_event.is_set():
                 logger.info(f"{self._elapsed()} A-leg desligou durante anúncio")
                 return TransferDecision.HANGUP
             
-            if accepted:
+            # Processar resultado
+            if result.accepted:
                 return TransferDecision.ACCEPTED
-            elif rejected:
+            elif result.rejected:
                 return TransferDecision.REJECTED
             else:
                 return TransferDecision.TIMEOUT
