@@ -2122,10 +2122,11 @@ Quando o cliente pedir para falar com humano/setor:
             # O _delayed_stop vai setar _ending_call quando começar a esperar a despedida
             
             # Result com instrução clara para a IA confirmar
+            # IMPORTANTE: Instrução curta e direta para evitar que a IA repita o recado
             return {
                 "status": "success",
                 "action": "message_saved",
-                "instruction": "Confirme que o recado foi anotado e despeça-se brevemente. Exemplo: 'Recado anotado! Obrigado pela ligação, tenha um bom dia.'"
+                "instruction": "Diga APENAS: 'Recado anotado! Obrigado, tenha um bom dia.' NÃO repita o recado."
             }
         
         elif name == "get_business_info":
@@ -3017,21 +3018,21 @@ Quando o cliente pedir para falar com humano/setor:
             
             if remaining_time > 0:
                 # =========================================================
-                # MARGEM DE SEGURANÇA: tempo restante + 1s FIXO
+                # MARGEM DE SEGURANÇA: tempo restante + 1.5s FIXO
                 # 
                 # O cálculo é simples:
                 # - remaining_time = tempo que falta reproduzir
-                # - 1s = margem fixa para latência de rede + buffer FreeSWITCH
+                # - 1.5s = margem fixa para latência de rede + buffer FreeSWITCH
                 #
                 # Para frase de 5s com 2s reproduzidos:
-                #   remaining = 3s, wait = 4s
+                #   remaining = 3s, wait = 4.5s
                 #
                 # Para frase de 1s com 0.5s reproduzidos:
-                #   remaining = 0.5s, wait = 1.5s
+                #   remaining = 0.5s, wait = 2.0s
                 #
                 # A margem é FIXA, não percentual, evitando silêncio excessivo.
                 # =========================================================
-                NETWORK_LATENCY_MARGIN = 1.0  # 1s margem fixa (rede + buffer FS)
+                NETWORK_LATENCY_MARGIN = 1.5  # 1.5s margem fixa (rede + buffer FS)
                 
                 wait_playback = remaining_time + NETWORK_LATENCY_MARGIN
                 
@@ -3124,19 +3125,24 @@ Quando o cliente pedir para falar com humano/setor:
                 return
             
             # Agora que o áudio começou, marcar que estamos encerrando
+            # IMPORTANTE: NÃO resetar _pending_audio_bytes nem _response_audio_start_time!
+            # Eles já estão sendo atualizados pelo handler de áudio e precisamos
+            # desses valores para calcular corretamente o tempo restante de reprodução.
             self._ending_call = True
             self._farewell_response_started = True  # Já começou!
-            # Resetar contador para medir apenas o áudio de despedida a partir de agora
-            self._pending_audio_bytes = 0
-            self._response_audio_start_time = time.time()
-            logger.debug(f"🔊 [delayed_stop] Resposta iniciada, marcando encerramento (reason={reason})")
+            logger.debug(
+                f"🔊 [delayed_stop] Resposta iniciada, marcando encerramento "
+                f"(reason={reason}, pending_bytes={self._pending_audio_bytes})"
+            )
         
         if self._ended:
             return
         
         # Esperar áudio terminar de reproduzir
+        # min_wait = 3s mínimo para respostas curtas
+        # max_wait = 15s para respostas longas
         await self._wait_for_audio_playback(
-            min_wait=delay / 2,
+            min_wait=max(delay / 2, 3.0),
             max_wait=15.0,
             context="end_call"
         )
