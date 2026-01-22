@@ -587,6 +587,9 @@ class RealtimeSession:
         # Lock para evitar múltiplas transferências simultâneas
         # Ref: Bug identificado no log - request_handoff chamado 2x
         self._transfer_lock = asyncio.Lock()
+        # Flag para preservar warmup estendido no próximo RESPONSE_STARTED
+        # Usado após resume de transferência para evitar que o reset() desfaça o warmup
+        self._preserve_extended_warmup = False
         
         # Business Hours / Callback Handler
         self._outside_hours_task: Optional[asyncio.Task] = None
@@ -1483,7 +1486,13 @@ Quando o cliente pedir para falar com humano/setor:
         if event.type == ProviderEventType.RESPONSE_STARTED:
             # Reset buffer e contador para nova resposta
             if self._resampler:
-                self._resampler.reset_output_buffer()
+                # IMPORTANTE: Preservar warmup estendido se foi configurado (após resume)
+                if self._preserve_extended_warmup:
+                    logger.debug("🔄 [RESPONSE_STARTED] Preservando warmup estendido")
+                    self._preserve_extended_warmup = False  # Consumir a flag
+                    # NÃO resetar - manter o warmup estendido já configurado
+                else:
+                    self._resampler.reset_output_buffer()
             self._pending_audio_bytes = 0
             self._response_audio_start_time = time.time()
             logger.info("Response started", extra={
@@ -3933,6 +3942,8 @@ Quando o cliente pedir para falar com humano/setor:
                     # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
                     # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
                     self._resampler.reset_output_buffer(extended_warmup_ms=400)
+                    # Preservar o warmup para o próximo RESPONSE_STARTED não desfazer
+                    self._preserve_extended_warmup = True
                 except Exception:
                     pass
             
@@ -4046,6 +4057,8 @@ Quando o cliente pedir para falar com humano/setor:
                 # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
                 # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
                 self._resampler.reset_output_buffer(extended_warmup_ms=400)
+                # Preservar o warmup para o próximo RESPONSE_STARTED não desfazer
+                self._preserve_extended_warmup = True
             except Exception:
                 pass
         
