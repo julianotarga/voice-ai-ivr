@@ -263,6 +263,9 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         self._session_start_time: Optional[float] = None
         self._max_session_duration_seconds: int = 55 * 60  # 55 min (5 min de margem)
         self._response_active: bool = False
+        # Flag para indicar que há resultado de função pendente aguardando processamento
+        # Se True, quando _response_active se tornar False, solicitar nova resposta
+        self._pending_function_result: bool = False
         
         # Contadores para agregação de logs de áudio (reduzir ruído)
         self._audio_chunks_sent: int = 0
@@ -833,8 +836,11 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         # Solicitar nova resposta após enviar resultado da função
         if not self._response_active:
             await self._ws.send(json.dumps({"type": "response.create"}))
+            self._pending_function_result = False
         else:
-            logger.debug("Response already active; skipping response.create after function", extra={
+            # Marcar que há resultado pendente - será processado quando response.done chegar
+            self._pending_function_result = True
+            logger.debug("Response already active; marking pending function result", extra={
                 "domain_uuid": self.config.domain_uuid,
                 "call_id": call_id,
             })
@@ -1098,6 +1104,17 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "domain_uuid": self.config.domain_uuid,
                 "status": status,
             })
+            
+            # Se há resultado de função pendente, solicitar nova resposta para processá-lo
+            # Isso acontece quando a IA chamou função DURANTE uma resposta ativa
+            if self._pending_function_result and self._ws:
+                self._pending_function_result = False
+                logger.info("Requesting response for pending function result", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                })
+                # Usar create_task para não bloquear o event loop
+                asyncio.create_task(self._ws.send(json.dumps({"type": "response.create"})))
+            
             return ProviderEvent(
                 type=ProviderEventType.RESPONSE_DONE,
                 data={"status": status}
