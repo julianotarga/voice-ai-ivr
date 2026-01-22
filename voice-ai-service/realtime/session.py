@@ -3420,61 +3420,47 @@ Quando o cliente pedir para falar com humano/setor:
         
         try:
             # =========================================================
-            # FASE 1: Esperar OpenAI INICIAR nova resposta
+            # FASE 1: Detectar resposta ativa (ATUAL ou NOVA)
             # =========================================================
-            # Após request_handoff, o OpenAI precisa:
-            # 1. Processar o function result
-            # 2. Gerar uma nova resposta (o aviso "Um momento...")
-            # 3. Começar a enviar áudio
+            # Quando request_handoff é chamado, a IA pode estar:
+            # A) Já falando "Vou verificar a disponibilidade..." (resposta ATUAL)
+            # B) Prestes a falar uma nova resposta (após function result)
             #
-            # Este processo leva 500ms-2s. Se não esperarmos, o código
-            # vai verificar _assistant_speaking (False) e _pending_audio_bytes (0)
-            # da resposta ANTERIOR, não da nova.
+            # Precisamos esperar QUALQUER resposta que tenha áudio pendente.
+            # O problema anterior era esperar apenas por NOVA resposta,
+            # ignorando a resposta ATUAL que já está sendo reproduzida.
             # =========================================================
             
-            # Guardar o timestamp da resposta anterior para detectar nova
-            previous_response_time = self._response_audio_start_time
+            wait_start = time.time()
+            max_wait_for_audio = 3.0  # Máximo de 3s para detectar áudio
+            audio_detected = False
             
-            # Esperar até que uma NOVA resposta comece (ou timeout de 3s)
-            new_response_started = False
-            wait_for_new_response = 0.0
-            max_wait_for_new = 3.0  # Máximo de 3s para OpenAI começar a falar
-            
-            while wait_for_new_response < max_wait_for_new:
+            while (time.time() - wait_start) < max_wait_for_audio:
                 if self._ended or self._ending_call:
                     logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante espera")
                     self._handoff_pending = False
                     return
                 
-                # Detectar se uma NOVA resposta começou
-                # (timestamp mudou OU está falando E há bytes pendentes)
-                if self._response_audio_start_time > previous_response_time:
-                    new_response_started = True
+                # Verificar se há áudio para reproduzir (de qualquer resposta)
+                # _pending_audio_bytes > 0 significa que há áudio no buffer
+                # _assistant_speaking = True significa que OpenAI ainda está gerando
+                if self._pending_audio_bytes > 0 or self._assistant_speaking:
+                    audio_detected = True
                     logger.info(
-                        f"⏳ [DELAYED_HANDOFF] Nova resposta detectada após {wait_for_new_response:.1f}s",
+                        f"⏳ [DELAYED_HANDOFF] Áudio detectado: "
+                        f"pending={self._pending_audio_bytes}b, speaking={self._assistant_speaking}",
                         extra={"call_uuid": self.call_uuid}
                     )
                     break
                 
-                # Também detectar se há bytes pendentes novos
-                if self._assistant_speaking and self._pending_audio_bytes > 100:
-                    new_response_started = True
-                    logger.info(
-                        f"⏳ [DELAYED_HANDOFF] Áudio detectado após {wait_for_new_response:.1f}s "
-                        f"({self._pending_audio_bytes} bytes)",
-                        extra={"call_uuid": self.call_uuid}
-                    )
-                    break
-                
-                await asyncio.sleep(0.1)
-                wait_for_new_response += 0.1
+                await asyncio.sleep(0.05)
             
-            if not new_response_started:
-                # OpenAI não começou a falar - pode ser que já terminou muito rápido
+            if not audio_detected:
+                # Nenhum áudio detectado - a IA pode ter terminado muito rápido
                 # ou houve algum problema. Continuar com margem mínima.
                 logger.warning(
-                    f"⏳ [DELAYED_HANDOFF] OpenAI não iniciou nova resposta em {max_wait_for_new}s. "
-                    "Continuando com margem mínima.",
+                    f"⏳ [DELAYED_HANDOFF] Nenhum áudio detectado em {max_wait_for_audio}s. "
+                    "A IA pode já ter terminado de falar.",
                     extra={"call_uuid": self.call_uuid}
                 )
             
@@ -3561,7 +3547,7 @@ Quando o cliente pedir para falar com humano/setor:
                 )
                 await asyncio.sleep(1.5)
             
-            total_wait = time.time() - generation_start + wait_for_new_response
+            total_wait = time.time() - wait_start
             
             # Verificar se a chamada ainda está ativa
             if self._ending_call or not self._provider:
