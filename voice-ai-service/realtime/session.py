@@ -4587,6 +4587,33 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 }
             )
             
+            # =================================================================
+            # VERIFICAÇÃO CRÍTICA: Cliente ainda está conectado?
+            #
+            # Se o A-leg foi destruído durante a transferência (conferência terminou,
+            # cliente desligou, etc), não faz sentido tentar retomar a conversa.
+            # Isso evita que o sistema fique "perdido" tentando falar com ninguém.
+            # =================================================================
+            try:
+                from .esl import get_esl_adapter
+                adapter = get_esl_adapter(self.call_uuid)
+                a_leg_exists = await asyncio.wait_for(
+                    adapter.uuid_exists(self.call_uuid),
+                    timeout=2.0
+                )
+            except Exception as e:
+                logger.warning(f"📋 [HANDLE_TRANSFER_RESULT] Could not check A-leg: {e}")
+                a_leg_exists = False
+            
+            if not a_leg_exists:
+                logger.error(
+                    "📋 [HANDLE_TRANSFER_RESULT] ❌ A-leg foi DESTRUÍDO durante transferência - encerrando sessão",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                self._set_transfer_in_progress(False, "a_leg_destroyed")
+                await self.stop("a_leg_destroyed_during_transfer")
+                return
+            
             # Transição de estado: voltar para LISTENING
             # Usar cancel_transfer que funciona de qualquer sub-estado de transferência
             current_state = self.state_machine.state.value

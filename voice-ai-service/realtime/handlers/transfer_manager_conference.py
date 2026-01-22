@@ -1830,7 +1830,33 @@ Atendente: resposta que não é claramente aceite nem recusa
                 a_exists = True  # Tentar mesmo assim
             
             if not a_exists:
-                logger.info("A-leg no longer exists")
+                # =================================================================
+                # CRÍTICO: A-leg foi destruído durante a transferência!
+                # 
+                # Possíveis causas:
+                # 1. Cliente desligou
+                # 2. Conferência terminou (sem moderator com endconf)
+                # 3. park_timeout expirou
+                # 4. Problema na configuração do profile de conferência
+                #
+                # IMPORTANTE: Sinalizar para a sessão que deve encerrar
+                # =================================================================
+                logger.error(
+                    f"❌ A-leg {self.a_leg_uuid} was DESTROYED during transfer! "
+                    f"Conference: {self.conference_name}"
+                )
+                
+                # Emitir evento de hangup para notificar a sessão
+                if self.event_bus:
+                    try:
+                        await self.event_bus.emit(
+                            "a_leg_destroyed",
+                            uuid=self.a_leg_uuid,
+                            reason="destroyed_during_transfer"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not emit a_leg_destroyed event: {e}")
+                
                 return
             
             # =================================================================
