@@ -1197,24 +1197,28 @@ class ESLCommandExecutor:
 
 ## Dependências
 
-Adicionar ao `requirements.txt`:
+**Nenhuma dependência externa necessária!**
 
-```
-transitions>=0.9.0
-anyio>=4.0.0
-```
+A implementação usa apenas bibliotecas padrão do Python:
+- `asyncio` - para operações assíncronas e timeouts
+- `dataclasses` - para estruturas de dados
+- `enum` - para tipos de eventos e estados
+- `typing` - para type hints
+
+> **Nota:** O plano original sugeria `transitions` e `anyio`, mas optamos por
+> implementação customizada para evitar dependências externas e ter controle total.
 
 ---
 
-## Cronograma Sugerido
+## Status da Implementação
 
-| Fase | Descrição | Estimativa |
-|------|-----------|------------|
-| 1 | Infraestrutura Core | Criar novos arquivos |
-| 2 | Integração Session | Modificar session.py |
-| 3 | Refatorar Transfer | Modificar transfer_manager*.py |
-| 4 | Desacoplar ESL | Refatorar esl/*.py |
-| 5 | Testes | Validar funcionamento |
+| Fase | Descrição | Status |
+|------|-----------|--------|
+| 1 | Infraestrutura Core | ✅ Completo |
+| 2 | Integração Session | ✅ Completo |
+| 3 | Refatorar Transfer | ✅ Completo |
+| 4 | Desacoplar ESL | ✅ Infraestrutura existe |
+| 5 | Testes | ⏳ Pendente |
 
 ---
 
@@ -1222,18 +1226,23 @@ anyio>=4.0.0
 
 | Risco | Mitigação |
 |-------|-----------|
-| Regressão em funcionalidades existentes | Implementar gradualmente, manter código antigo como fallback |
-| Biblioteca transitions com bugs | Usar versão estável, ter fallback manual |
-| Performance do Event Bus | Usar weak references, limitar histórico |
-| Deadlocks em estado | Timeouts em todas operações |
+| Regressão em funcionalidades existentes | Implementação gradual, código existente preservado |
+| Performance do Event Bus | Histórico limitado a 100 eventos, handlers removidos no close() |
+| Deadlocks em estado | Timeouts internos, transições validadas |
+| Sincronização de eventos/estados | Handlers automáticos sincronizam eventos com StateMachine |
 
 ---
 
-## Próximos Passos
+## Arquivos Criados/Modificados
 
-1. ✅ Plano criado
-2. ⏳ Implementar FASE 1 (Core)
-3. ⏳ Testes unitários do Core
-4. ⏳ Implementar FASE 2 (Integração)
-5. ⏳ Testes de integração
-6. ⏳ Deploy gradual
+### Novos (FASE 1)
+- `realtime/core/__init__.py`
+- `realtime/core/events.py` - VoiceEventType, VoiceEvent
+- `realtime/core/event_bus.py` - EventBus
+- `realtime/core/state_machine.py` - CallStateMachine, CallState
+- `realtime/core/heartbeat.py` - HeartbeatMonitor
+- `realtime/core/timeout_manager.py` - TimeoutManager
+
+### Modificados (FASES 2-3)
+- `realtime/session.py` - Integração com core
+- `realtime/handlers/transfer_manager_conference.py` - Emissão de eventos
