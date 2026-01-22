@@ -13,13 +13,20 @@ Fluxo:
 4. IA anuncia, atendente decide
 5a. SE ACEITO: uuid_bridge A-leg B-leg (hangup automático!)
 5b. SE REJEITADO: uuid_kill B-leg, uuid_audio_stream RESUME A-leg
+
+PONTOS DE ATENÇÃO:
+- Race Conditions: Lock para serializar operações no audio_stream
+- Timeouts: Configuráveis e explícitos em cada operação
+- Cleanup: try/finally garante limpeza mesmo com exceções
+- Logging: Cada transição é logada com estado
+- Rollback: Se falhar, volta ao estado anterior (resume A-leg)
 """
 
 import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Callable, Awaitable, Any
 from uuid import uuid4
@@ -42,6 +49,20 @@ class TransferDecision(Enum):
     ERROR = "error"
 
 
+class TransferState(Enum):
+    """Estado interno da transferência."""
+    IDLE = "idle"
+    A_LEG_PAUSED = "a_leg_paused"
+    B_LEG_RINGING = "b_leg_ringing"
+    B_LEG_ANSWERED = "b_leg_answered"
+    ANNOUNCING = "announcing"
+    BRIDGING = "bridging"
+    BRIDGED = "bridged"
+    ROLLING_BACK = "rolling_back"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 @dataclass
 class BridgeTransferResult:
     """Resultado da transferência anunciada via bridge."""
@@ -51,14 +72,20 @@ class BridgeTransferResult:
     error: Optional[str] = None
     ticket_id: Optional[str] = None
     duration_ms: int = 0
+    final_state: TransferState = TransferState.IDLE
 
 
 @dataclass
 class BridgeTransferConfig:
     """Configuração para transferência via bridge."""
-    # Timeouts
-    originate_timeout: int = 30
-    announcement_timeout: float = 30.0
+    # Timeouts (em segundos)
+    esl_command_timeout: float = 3.0      # Timeout para comandos ESL simples
+    originate_timeout: int = 30           # Timeout para B-leg atender
+    originate_poll_interval: float = 0.5  # Intervalo de polling durante originate
+    announcement_timeout: float = 30.0    # Timeout para decisão do atendente
+    bridge_timeout: float = 5.0           # Timeout para criar bridge
+    cleanup_timeout: float = 2.0          # Timeout para operações de cleanup
+    stabilization_delay: float = 0.5      # Delay após operações críticas
     
     # OpenAI
     openai_model: str = "gpt-realtime"
@@ -82,19 +109,11 @@ class BridgeTransferManager:
     - Se aceito: uuid_bridge conecta os dois diretamente
     - FreeSWITCH gerencia hangup automaticamente!
     
-    Uso:
-        manager = BridgeTransferManager(
-            esl_client=esl,
-            a_leg_uuid="xxx",
-            domain="empresa.com.br",
-            caller_id="5511999999999",
-        )
-        
-        result = await manager.execute_announced_transfer(
-            destination="1001",
-            context="internet lenta",
-            announcement="Cliente João com problema de internet"
-        )
+    PROTEÇÕES IMPLEMENTADAS:
+    - _state_lock: Serializa operações para evitar race conditions
+    - _state: Rastreia estado para rollback correto
+    - try/finally: Garante cleanup em caso de exceção
+    - Timeouts explícitos: Cada operação tem timeout configurável
     """
     
     def __init__(
@@ -117,16 +136,33 @@ class BridgeTransferManager:
         self.secretary_uuid = secretary_uuid
         self.event_bus = event_bus
         
-        # Estado
+        # Estado interno
+        self._state = TransferState.IDLE
+        self._state_lock = asyncio.Lock()  # PROTEÇÃO: Serializa operações
         self._b_leg_uuid: Optional[str] = None
         self._start_time: float = 0
+        
+        # Eventos de hangup
         self._a_leg_hangup_event = asyncio.Event()
         self._b_leg_hangup_event = asyncio.Event()
-        self._hangup_monitor_id: Optional[str] = None
-        
+        self._hangup_handler_id: Optional[str] = None
+    
+    # =========================================================================
+    # LOGGING E ESTADO
+    # =========================================================================
+    
     def _elapsed(self) -> str:
         """Retorna tempo decorrido formatado."""
         return f"[{time.time() - self._start_time:.2f}s]"
+    
+    def _log_state_change(self, new_state: TransferState, reason: str = "") -> None:
+        """Loga mudança de estado."""
+        old_state = self._state
+        self._state = new_state
+        logger.info(
+            f"{self._elapsed()} 🔄 STATE: {old_state.value} → {new_state.value}"
+            + (f" ({reason})" if reason else "")
+        )
     
     async def _emit_event(self, event_type: VoiceEventType, **kwargs) -> None:
         """Emite evento no EventBus."""
@@ -135,107 +171,160 @@ class BridgeTransferManager:
                 await self.event_bus.emit(
                     event_type.value,
                     call_uuid=self.a_leg_uuid,
+                    state=self._state.value,
                     **kwargs
                 )
             except Exception as e:
                 logger.debug(f"Could not emit event {event_type}: {e}")
     
+    # =========================================================================
+    # MONITOR DE HANGUP
+    # =========================================================================
+    
     async def _start_hangup_monitor(self) -> None:
         """Inicia monitor de hangup para ambas as pernas."""
-        self._hangup_monitor_id = str(uuid4())
+        self._hangup_handler_id = str(uuid4())
         
         async def on_hangup(uuid: str, cause: str, **kwargs):
             if uuid == self.a_leg_uuid:
-                logger.info(f"🔴 [HANGUP_MONITOR] A-leg hangup: {cause}")
+                logger.info(f"{self._elapsed()} 🔴 A-leg HANGUP: {cause}")
                 self._a_leg_hangup_event.set()
+                # CLEANUP: Se A-leg desliga, matar B-leg imediatamente
+                if self._b_leg_uuid and self._state not in (TransferState.BRIDGED, TransferState.COMPLETED):
+                    logger.info(f"{self._elapsed()} 🧹 Auto-cleanup: matando B-leg após A-leg hangup")
+                    await self._kill_b_leg_safe()
+                    
             elif uuid == self._b_leg_uuid:
-                logger.info(f"🔴 [HANGUP_MONITOR] B-leg hangup: {cause}")
+                logger.info(f"{self._elapsed()} 🔴 B-leg HANGUP: {cause}")
                 self._b_leg_hangup_event.set()
         
         if self.event_bus:
             self.event_bus.on("channel_hangup", on_hangup)
         
-        logger.debug(f"[HANGUP_MONITOR] Handler registrado: {self._hangup_monitor_id}")
+        logger.debug(f"[HANGUP_MONITOR] Registrado: {self._hangup_handler_id}")
     
     async def _stop_hangup_monitor(self) -> None:
         """Para monitor de hangup."""
-        if self._hangup_monitor_id:
-            logger.debug(f"[HANGUP_MONITOR] Handler removido: {self._hangup_monitor_id}")
-            self._hangup_monitor_id = None
+        if self._hangup_handler_id:
+            # TODO: Implementar remoção de handler no EventBus
+            logger.debug(f"[HANGUP_MONITOR] Removido: {self._hangup_handler_id}")
+            self._hangup_handler_id = None
     
-    async def _verify_a_leg_exists(self) -> bool:
-        """Verifica se A-leg ainda existe."""
-        try:
-            return await asyncio.wait_for(
-                self.esl.uuid_exists(self.a_leg_uuid),
-                timeout=2.0
-            )
-        except Exception:
-            return False
+    # =========================================================================
+    # OPERAÇÕES ESL (COM TIMEOUT E LOGGING)
+    # =========================================================================
     
-    async def _pause_a_leg_audio(self) -> bool:
-        """Pausa o audio stream do A-leg (cliente em silêncio)."""
-        logger.info(f"{self._elapsed()} Pausando audio do A-leg...")
+    async def _esl_command(
+        self,
+        command: str,
+        timeout: Optional[float] = None,
+        description: str = ""
+    ) -> tuple[bool, str]:
+        """
+        Executa comando ESL com timeout e logging.
+        
+        Returns:
+            (success, result_string)
+        """
+        timeout = timeout or self.config.esl_command_timeout
+        desc = description or command.split()[0]
+        
         try:
+            logger.debug(f"{self._elapsed()} ESL [{desc}]: {command}")
             result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} pause"),
-                timeout=3.0
+                self.esl.execute_api(command),
+                timeout=timeout
             )
             result_str = result if isinstance(result, str) else str(result)
-            if "+OK" in result_str or "Success" in result_str:
-                logger.info(f"{self._elapsed()} ✅ A-leg audio pausado")
+            
+            success = "+OK" in result_str or "Success" in result_str
+            log_level = logging.DEBUG if success else logging.WARNING
+            logger.log(log_level, f"{self._elapsed()} ESL [{desc}] → {result_str[:100]}")
+            
+            return success, result_str
+            
+        except asyncio.TimeoutError:
+            logger.error(f"{self._elapsed()} ESL [{desc}] TIMEOUT ({timeout}s)")
+            return False, "TIMEOUT"
+        except Exception as e:
+            logger.error(f"{self._elapsed()} ESL [{desc}] ERROR: {e}")
+            return False, str(e)
+    
+    async def _verify_channel_exists(self, uuid: str, name: str = "channel") -> bool:
+        """Verifica se um canal existe."""
+        try:
+            exists = await asyncio.wait_for(
+                self.esl.uuid_exists(uuid),
+                timeout=self.config.esl_command_timeout
+            )
+            logger.debug(f"{self._elapsed()} {name} exists: {exists}")
+            return exists
+        except Exception as e:
+            logger.warning(f"{self._elapsed()} Could not verify {name}: {e}")
+            return False
+    
+    # =========================================================================
+    # OPERAÇÕES DE ÁUDIO (COM LOCK PARA EVITAR RACE CONDITIONS)
+    # =========================================================================
+    
+    async def _pause_a_leg_audio(self) -> bool:
+        """
+        Pausa o audio stream do A-leg (cliente em silêncio).
+        
+        PROTEÇÃO: Usa lock para evitar race condition com resume.
+        """
+        async with self._state_lock:
+            logger.info(f"{self._elapsed()} 📍 Pausando audio do A-leg...")
+            
+            success, result = await self._esl_command(
+                f"uuid_audio_stream {self.a_leg_uuid} pause",
+                description="PAUSE_A"
+            )
+            
+            if success or "OK" in result:
+                self._log_state_change(TransferState.A_LEG_PAUSED)
                 return True
             else:
-                logger.warning(f"{self._elapsed()} ⚠️ Pause retornou: {result_str}")
+                logger.warning(f"{self._elapsed()} ⚠️ Pause falhou, mas continuando...")
                 return True  # Continuar mesmo assim
-        except Exception as e:
-            logger.error(f"{self._elapsed()} ❌ Erro ao pausar A-leg: {e}")
-            return False
     
     async def _resume_a_leg_audio(self) -> bool:
         """
         Resume o audio stream do A-leg.
         
-        IMPORTANTE: Durante o HOLD, o WebSocket pode ter fechado por timeout.
-        Por isso tentamos:
-        1. resume - se WebSocket ainda está aberto, funciona
-        2. start - reconecta WebSocket se fechou
-        
-        O RealtimeServer é projetado para REUTILIZAR a sessão existente
-        quando uma nova conexão chega para o mesmo call_uuid.
+        PROTEÇÃO: Usa lock para evitar race condition com pause.
+        FALLBACK: Se resume falhar, tenta reconectar via start.
         """
-        logger.info(f"{self._elapsed()} Resumindo audio do A-leg...")
-        
-        # Primeiro verificar se A-leg ainda existe
-        try:
-            a_exists = await asyncio.wait_for(
-                self.esl.uuid_exists(self.a_leg_uuid),
-                timeout=2.0
-            )
-            if not a_exists:
+        async with self._state_lock:
+            logger.info(f"{self._elapsed()} 📍 Resumindo audio do A-leg...")
+            
+            # 1. Verificar se A-leg ainda existe
+            if not await self._verify_channel_exists(self.a_leg_uuid, "A-leg"):
                 logger.error(f"{self._elapsed()} ❌ A-leg não existe mais!")
                 return False
-        except Exception as e:
-            logger.warning(f"{self._elapsed()} ⚠️ Não foi possível verificar A-leg: {e}")
-            # Continuar mesmo assim
-        
-        try:
-            # Tentar resume primeiro (mais rápido se WebSocket ainda está aberto)
-            result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} resume"),
-                timeout=3.0
-            )
-            result_str = result if isinstance(result, str) else str(result)
             
-            if "+OK" in result_str or "Success" in result_str:
+            # 2. Tentar RESUME primeiro (rápido se WS aberto)
+            success, result = await self._esl_command(
+                f"uuid_audio_stream {self.a_leg_uuid} resume",
+                description="RESUME_A"
+            )
+            
+            if success:
                 logger.info(f"{self._elapsed()} ✅ A-leg audio resumido via RESUME")
                 return True
             
-            # Resume falhou - WebSocket pode ter fechado
-            # Tentar reconectar com start
-            logger.warning(f"{self._elapsed()} Resume falhou ({result_str}), tentando START...")
+            # 3. Resume falhou - WebSocket pode ter fechado
+            logger.warning(f"{self._elapsed()} Resume falhou, tentando reconectar via START...")
             
-            # Construir URL do WebSocket
+            # 3a. Stop para limpar estado inconsistente
+            await self._esl_command(
+                f"uuid_audio_stream {self.a_leg_uuid} stop",
+                timeout=self.config.cleanup_timeout,
+                description="STOP_A_CLEANUP"
+            )
+            await asyncio.sleep(0.1)
+            
+            # 3b. Construir URL do WebSocket
             ws_host = os.getenv("REALTIME_WS_HOST", "127.0.0.1")
             ws_port = os.getenv("REALTIME_WS_PORT", "8085")
             sec_uuid = self.secretary_uuid or "unknown"
@@ -243,39 +332,24 @@ class BridgeTransferManager:
             
             logger.info(f"{self._elapsed()} Reconectando: {ws_url}")
             
-            # Parar stream anterior (pode estar em estado inconsistente)
-            try:
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
-                    timeout=2.0
-                )
-                await asyncio.sleep(0.1)  # Pequeno delay
-            except Exception:
-                pass  # Ignorar erros no stop
-            
-            # Iniciar nova conexão
-            result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} start {ws_url} mono 8k"),
-                timeout=5.0
+            # 3c. Iniciar nova conexão
+            success, result = await self._esl_command(
+                f"uuid_audio_stream {self.a_leg_uuid} start {ws_url} mono 8k",
+                timeout=5.0,
+                description="START_A_RECONNECT"
             )
-            result_str = result if isinstance(result, str) else str(result)
             
-            if "+OK" in result_str or "Success" in result_str:
+            if success:
                 logger.info(f"{self._elapsed()} ✅ A-leg audio reconectado via START")
-                
-                # Aguardar conexão estabelecer
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(self.config.stabilization_delay)
                 return True
             else:
-                logger.error(f"{self._elapsed()} ❌ START também falhou: {result_str}")
+                logger.error(f"{self._elapsed()} ❌ Falha total ao resumir A-leg")
                 return False
-                
-        except asyncio.TimeoutError:
-            logger.error(f"{self._elapsed()} ❌ Timeout ao resumir A-leg")
-            return False
-        except Exception as e:
-            logger.error(f"{self._elapsed()} ❌ Erro ao resumir A-leg: {e}")
-            return False
+    
+    # =========================================================================
+    # OPERAÇÕES B-LEG
+    # =========================================================================
     
     async def _originate_b_leg(
         self,
@@ -285,10 +359,10 @@ class BridgeTransferManager:
         """
         Origina B-leg (atendente) para park.
         
-        Returns:
-            UUID do B-leg se atendeu, None caso contrário
+        PROTEÇÃO: Verifica hangup do A-leg durante o polling.
+        CLEANUP: Mata B-leg se A-leg desligar.
         """
-        logger.info(f"{self._elapsed()} 📞 Originando B-leg para {destination}...")
+        self._log_state_change(TransferState.B_LEG_RINGING, f"destination={destination}")
         
         # Gerar UUID para o B-leg
         b_leg_uuid = str(uuid4())
@@ -296,7 +370,6 @@ class BridgeTransferManager:
         
         # Determinar dial string
         if direct_contact:
-            # Usar contato direto (já registrado)
             contact = direct_contact.replace("sip:", "").replace("<", "").replace(">", "").strip()
             dial_string = f"sofia/internal/{contact}"
         else:
@@ -309,70 +382,61 @@ class BridgeTransferManager:
             f"origination_caller_id_name=Secretaria_Virtual,"
             f"originate_timeout={self.config.originate_timeout},"
             f"ignore_early_media=true,"
-            f"hangup_after_bridge=true"  # IMPORTANTE: hangup automático!
+            f"hangup_after_bridge=true"
         )
         
-        # Comando: origina e vai para park
         cmd = f"bgapi originate {{{originate_vars}}}{dial_string} 'answer:,park:' inline"
         
-        logger.info(f"{self._elapsed()} Dial string: {dial_string}")
-        logger.debug(f"{self._elapsed()} Originate vars: {originate_vars}")
+        logger.info(f"{self._elapsed()} 📞 Dial: {dial_string}")
         
-        try:
-            result = await asyncio.wait_for(
-                self.esl.execute_api(cmd),
-                timeout=5.0
-            )
-            logger.info(f"{self._elapsed()} bgapi result: {result}")
-        except Exception as e:
-            logger.error(f"{self._elapsed()} ❌ Originate falhou: {e}")
+        success, result = await self._esl_command(cmd, timeout=5.0, description="ORIGINATE_B")
+        if not success and "Job-UUID" not in result:
+            logger.error(f"{self._elapsed()} ❌ Originate falhou")
             return None
         
         # Polling para aguardar atendimento
-        logger.info(f"{self._elapsed()} Aguardando B-leg atender...")
-        max_attempts = self.config.originate_timeout * 2  # 2x por segundo
+        logger.info(f"{self._elapsed()} ⏳ Aguardando B-leg atender (max {self.config.originate_timeout}s)...")
+        max_attempts = int(self.config.originate_timeout / self.config.originate_poll_interval)
         
         for attempt in range(max_attempts):
-            # Verificar hangup do A-leg
+            # CLEANUP: Verificar hangup do A-leg
             if self._a_leg_hangup_event.is_set():
-                logger.warning(f"{self._elapsed()} A-leg desligou durante originate")
-                await self._kill_b_leg()
+                logger.warning(f"{self._elapsed()} 🔴 A-leg desligou durante originate")
+                await self._kill_b_leg_safe()
                 return None
             
             # Verificar se B-leg existe (atendeu)
-            try:
-                b_exists = await asyncio.wait_for(
-                    self.esl.uuid_exists(b_leg_uuid),
-                    timeout=1.0
-                )
-                if b_exists:
-                    logger.info(f"{self._elapsed()} ✅ B-leg {b_leg_uuid} atendeu!")
-                    return b_leg_uuid
-            except Exception:
-                pass
+            if await self._verify_channel_exists(b_leg_uuid, "B-leg"):
+                logger.info(f"{self._elapsed()} ✅ B-leg {b_leg_uuid[:8]}... atendeu!")
+                self._log_state_change(TransferState.B_LEG_ANSWERED)
+                return b_leg_uuid
             
             # Verificar hangup do B-leg (rejeitou)
             if self._b_leg_hangup_event.is_set():
-                logger.warning(f"{self._elapsed()} B-leg rejeitou/não atendeu")
+                logger.warning(f"{self._elapsed()} 🔴 B-leg rejeitou/não atendeu")
                 return None
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.config.originate_poll_interval)
         
         logger.warning(f"{self._elapsed()} ⏰ Timeout aguardando B-leg")
-        await self._kill_b_leg()
+        await self._kill_b_leg_safe()
         return None
     
-    async def _kill_b_leg(self) -> None:
-        """Desliga B-leg se existir."""
+    async def _kill_b_leg_safe(self) -> None:
+        """Desliga B-leg se existir (com timeout e sem exceções)."""
         if self._b_leg_uuid:
             try:
-                await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_kill {self._b_leg_uuid}"),
-                    timeout=2.0
+                await self._esl_command(
+                    f"uuid_kill {self._b_leg_uuid}",
+                    timeout=self.config.cleanup_timeout,
+                    description="KILL_B"
                 )
-                logger.info(f"{self._elapsed()} B-leg {self._b_leg_uuid} desligado")
             except Exception as e:
-                logger.debug(f"Kill B-leg error: {e}")
+                logger.debug(f"Kill B-leg error (ignorado): {e}")
+    
+    # =========================================================================
+    # ANÚNCIO
+    # =========================================================================
     
     async def _run_announcement(
         self,
@@ -382,11 +446,10 @@ class BridgeTransferManager:
         """
         Executa anúncio para o atendente via OpenAI Realtime.
         
-        O B-leg está em PARK e recebe audio stream conectado ao OpenAI.
+        PROTEÇÃO: Verifica hangup do A-leg durante anúncio.
         """
-        logger.info(f"{self._elapsed()} 🎤 Iniciando anúncio para B-leg...")
+        self._log_state_change(TransferState.ANNOUNCING)
         
-        # Criar sessão de anúncio (reutiliza a existente)
         session = ConferenceAnnouncementSession(
             b_leg_uuid=self._b_leg_uuid,
             esl=self.esl,
@@ -403,7 +466,9 @@ class BridgeTransferManager:
                 caller_name=caller_name
             )
             
+            # CLEANUP: Verificar se A-leg desligou durante anúncio
             if self._a_leg_hangup_event.is_set():
+                logger.info(f"{self._elapsed()} A-leg desligou durante anúncio")
                 return TransferDecision.HANGUP
             
             if accepted:
@@ -417,52 +482,89 @@ class BridgeTransferManager:
             logger.error(f"{self._elapsed()} ❌ Erro no anúncio: {e}")
             return TransferDecision.ERROR
     
+    # =========================================================================
+    # BRIDGE
+    # =========================================================================
+    
     async def _bridge_legs(self) -> bool:
         """
         Cria bridge entre A-leg e B-leg.
         
-        IMPORTANTE: hangup_after_bridge=true já foi setado no originate,
+        IMPORTANTE: hangup_after_bridge=true foi setado no originate,
         então quando qualquer perna desligar, a outra também será desligada.
         """
-        logger.info(f"{self._elapsed()} 🔗 Criando bridge entre A-leg e B-leg...")
+        self._log_state_change(TransferState.BRIDGING)
         
         try:
-            # Parar audio streams primeiro
-            logger.info(f"{self._elapsed()} Parando audio streams...")
-            
-            # Stop no B-leg (estava com anúncio)
-            await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self._b_leg_uuid} stop"),
-                timeout=2.0
+            # 1. Parar audio stream do B-leg (estava com anúncio)
+            await self._esl_command(
+                f"uuid_audio_stream {self._b_leg_uuid} stop",
+                timeout=self.config.cleanup_timeout,
+                description="STOP_B"
             )
             
-            # Stop no A-leg (estava pausado)
-            await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
-                timeout=2.0
+            # 2. Parar audio stream do A-leg (estava pausado)
+            await self._esl_command(
+                f"uuid_audio_stream {self.a_leg_uuid} stop",
+                timeout=self.config.cleanup_timeout,
+                description="STOP_A"
             )
             
-            # Pequeno delay para garantir que streams pararam
-            await asyncio.sleep(0.2)
+            # 3. Delay para garantir que streams pararam
+            await asyncio.sleep(self.config.stabilization_delay)
             
-            # Criar bridge
-            # uuid_bridge <a_leg> <b_leg>
-            result = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_bridge {self.a_leg_uuid} {self._b_leg_uuid}"),
-                timeout=5.0
+            # 4. Criar bridge
+            success, result = await self._esl_command(
+                f"uuid_bridge {self.a_leg_uuid} {self._b_leg_uuid}",
+                timeout=self.config.bridge_timeout,
+                description="BRIDGE"
             )
-            result_str = result if isinstance(result, str) else str(result)
             
-            if "+OK" in result_str or "Success" in result_str:
-                logger.info(f"{self._elapsed()} ✅ Bridge criado com sucesso!")
+            if success:
+                self._log_state_change(TransferState.BRIDGED)
+                logger.info(f"{self._elapsed()} ✅ Bridge estabelecido!")
                 return True
             else:
-                logger.error(f"{self._elapsed()} ❌ Bridge falhou: {result_str}")
+                logger.error(f"{self._elapsed()} ❌ Bridge falhou: {result}")
                 return False
                 
         except Exception as e:
             logger.error(f"{self._elapsed()} ❌ Erro ao criar bridge: {e}")
             return False
+    
+    # =========================================================================
+    # ROLLBACK
+    # =========================================================================
+    
+    async def _rollback(self, reason: str) -> None:
+        """
+        Rollback: volta ao estado anterior ao transfer.
+        
+        Dependendo do estado atual:
+        - A_LEG_PAUSED: resume A-leg
+        - B_LEG_*: kill B-leg, resume A-leg
+        - ANNOUNCING: kill B-leg, resume A-leg
+        """
+        self._log_state_change(TransferState.ROLLING_BACK, reason)
+        
+        # Matar B-leg se existir
+        if self._b_leg_uuid:
+            await self._kill_b_leg_safe()
+        
+        # Resumir A-leg se estava pausado
+        if self._state in (
+            TransferState.A_LEG_PAUSED,
+            TransferState.B_LEG_RINGING,
+            TransferState.B_LEG_ANSWERED,
+            TransferState.ANNOUNCING,
+            TransferState.BRIDGING,
+            TransferState.ROLLING_BACK,
+        ):
+            await self._resume_a_leg_audio()
+    
+    # =========================================================================
+    # MÉTODO PRINCIPAL
+    # =========================================================================
     
     async def execute_announced_transfer(
         self,
@@ -475,123 +577,140 @@ class BridgeTransferManager:
         """
         Executa transferência anunciada usando bridge.
         
-        Args:
-            destination: Ramal destino (ex: "1001@domain.com")
-            context: Contexto/motivo da transferência
-            announcement: Mensagem de anúncio para o atendente
-            caller_name: Nome do cliente
-            direct_contact: Contato SIP direto (se disponível)
-            
-        Returns:
-            BridgeTransferResult com o resultado
+        GARANTIAS:
+        - try/finally garante cleanup em caso de exceção
+        - Cada passo verifica estado e faz rollback se necessário
+        - Hangup do A-leg em qualquer momento cancela transferência
         """
         self._start_time = time.time()
+        self._state = TransferState.IDLE
         
         logger.info("=" * 70)
         logger.info("🎯 ANNOUNCED TRANSFER - uuid_bridge")
-        logger.info(f"   A-leg UUID: {self.a_leg_uuid}")
+        logger.info(f"   A-leg: {self.a_leg_uuid[:12]}...")
         logger.info(f"   Destination: {destination}")
         logger.info(f"   Context: {context}")
         logger.info(f"   Caller: {caller_name}")
+        logger.info(f"   Timeouts: originate={self.config.originate_timeout}s, "
+                   f"announce={self.config.announcement_timeout}s")
         logger.info("=" * 70)
         
-        # STEP 0: Iniciar monitor de hangup
-        await self._start_hangup_monitor()
-        
-        # STEP 1: Verificar A-leg
-        logger.info(f"{self._elapsed()} 📍 STEP 1: Verificando A-leg...")
-        if not await self._verify_a_leg_exists():
-            logger.error(f"{self._elapsed()} ❌ A-leg não existe!")
-            await self._stop_hangup_monitor()
-            return BridgeTransferResult(
-                success=False,
-                decision=TransferDecision.ERROR,
-                error="A-leg não existe"
-            )
-        logger.info(f"{self._elapsed()} ✅ A-leg existe")
-        
-        # STEP 2: Pausar A-leg (cliente em silêncio)
-        logger.info(f"{self._elapsed()} 📍 STEP 2: Pausando A-leg...")
-        await self._pause_a_leg_audio()
-        logger.info(f"{self._elapsed()} ✅ A-leg em silêncio")
-        
-        # STEP 3: Originar B-leg
-        logger.info(f"{self._elapsed()} 📍 STEP 3: Originando B-leg...")
-        b_leg_uuid = await self._originate_b_leg(destination, direct_contact)
-        
-        if not b_leg_uuid:
-            # B-leg não atendeu
-            logger.warning(f"{self._elapsed()} ❌ B-leg não atendeu")
-            await self._resume_a_leg_audio()
-            await self._stop_hangup_monitor()
-            await self._emit_event(VoiceEventType.TRANSFER_TIMEOUT, reason="no_answer")
-            return BridgeTransferResult(
-                success=False,
-                decision=TransferDecision.TIMEOUT,
-                error="Ramal não atendeu"
-            )
-        
-        logger.info(f"{self._elapsed()} ✅ B-leg atendeu: {b_leg_uuid}")
-        await self._emit_event(VoiceEventType.TRANSFER_ANSWERED)
-        
-        # Aguardar estabilização
-        await asyncio.sleep(1.0)
-        
-        # STEP 4: Anúncio
-        logger.info(f"{self._elapsed()} 📍 STEP 4: Anunciando para atendente...")
-        decision = await self._run_announcement(announcement, caller_name)
-        logger.info(f"{self._elapsed()} Decisão: {decision.value}")
-        
-        # STEP 5: Processar decisão
-        logger.info(f"{self._elapsed()} 📍 STEP 5: Processando decisão...")
-        
-        if decision == TransferDecision.ACCEPTED:
-            # Criar bridge
-            bridge_ok = await self._bridge_legs()
+        try:
+            # STEP 0: Iniciar monitor de hangup
+            await self._start_hangup_monitor()
             
-            if bridge_ok:
-                logger.info(f"{self._elapsed()} ✅ SUCESSO - Bridge estabelecido!")
-                await self._stop_hangup_monitor()
-                await self._emit_event(VoiceEventType.TRANSFER_COMPLETED)
-                return BridgeTransferResult(
-                    success=True,
-                    decision=TransferDecision.ACCEPTED,
-                    b_leg_uuid=b_leg_uuid,
-                    duration_ms=int((time.time() - self._start_time) * 1000)
-                )
-            else:
-                # Bridge falhou - retornar ao Voice AI
-                logger.error(f"{self._elapsed()} ❌ Bridge falhou")
-                await self._kill_b_leg()
-                await self._resume_a_leg_audio()
-                await self._stop_hangup_monitor()
+            # STEP 1: Verificar A-leg existe
+            logger.info(f"{self._elapsed()} 📍 STEP 1: Verificando A-leg...")
+            if not await self._verify_channel_exists(self.a_leg_uuid, "A-leg"):
+                self._log_state_change(TransferState.FAILED, "A-leg não existe")
                 return BridgeTransferResult(
                     success=False,
                     decision=TransferDecision.ERROR,
-                    error="Falha ao criar bridge"
+                    error="A-leg não existe",
+                    final_state=self._state
+                )
+            
+            # STEP 2: Pausar A-leg (cliente em silêncio)
+            logger.info(f"{self._elapsed()} 📍 STEP 2: Pausando A-leg...")
+            if not await self._pause_a_leg_audio():
+                self._log_state_change(TransferState.FAILED, "Falha ao pausar A-leg")
+                return BridgeTransferResult(
+                    success=False,
+                    decision=TransferDecision.ERROR,
+                    error="Falha ao pausar A-leg",
+                    final_state=self._state
+                )
+            
+            # STEP 3: Originar B-leg
+            logger.info(f"{self._elapsed()} 📍 STEP 3: Originando B-leg...")
+            b_leg_uuid = await self._originate_b_leg(destination, direct_contact)
+            
+            if not b_leg_uuid:
+                # B-leg não atendeu - ROLLBACK
+                logger.warning(f"{self._elapsed()} ❌ B-leg não atendeu - ROLLBACK")
+                await self._rollback("B-leg não atendeu")
+                await self._emit_event(VoiceEventType.TRANSFER_TIMEOUT, reason="no_answer")
+                return BridgeTransferResult(
+                    success=False,
+                    decision=TransferDecision.TIMEOUT,
+                    error="Ramal não atendeu",
+                    final_state=self._state
+                )
+            
+            await self._emit_event(VoiceEventType.TRANSFER_ANSWERED)
+            
+            # Estabilização após atendimento
+            await asyncio.sleep(self.config.stabilization_delay * 2)
+            
+            # STEP 4: Anúncio
+            logger.info(f"{self._elapsed()} 📍 STEP 4: Anunciando para atendente...")
+            decision = await self._run_announcement(announcement, caller_name)
+            logger.info(f"{self._elapsed()} 📋 Decisão: {decision.value}")
+            
+            # STEP 5: Processar decisão
+            logger.info(f"{self._elapsed()} 📍 STEP 5: Processando decisão...")
+            
+            if decision == TransferDecision.ACCEPTED:
+                # Criar bridge
+                if await self._bridge_legs():
+                    self._log_state_change(TransferState.COMPLETED, "Bridge OK")
+                    await self._emit_event(VoiceEventType.TRANSFER_COMPLETED)
+                    return BridgeTransferResult(
+                        success=True,
+                        decision=TransferDecision.ACCEPTED,
+                        b_leg_uuid=b_leg_uuid,
+                        duration_ms=int((time.time() - self._start_time) * 1000),
+                        final_state=self._state
+                    )
+                else:
+                    # Bridge falhou - ROLLBACK
+                    logger.error(f"{self._elapsed()} ❌ Bridge falhou - ROLLBACK")
+                    await self._rollback("Bridge falhou")
+                    return BridgeTransferResult(
+                        success=False,
+                        decision=TransferDecision.ERROR,
+                        error="Falha ao criar bridge",
+                        final_state=self._state
+                    )
+            
+            elif decision == TransferDecision.HANGUP:
+                # Cliente desligou - só cleanup
+                self._log_state_change(TransferState.FAILED, "Cliente desligou")
+                await self._kill_b_leg_safe()
+                return BridgeTransferResult(
+                    success=False,
+                    decision=TransferDecision.HANGUP,
+                    error="Cliente desligou",
+                    final_state=self._state
+                )
+            
+            else:
+                # Rejeitado, timeout ou erro - ROLLBACK
+                logger.info(f"{self._elapsed()} ❌ Não aceito ({decision.value}) - ROLLBACK")
+                await self._rollback(f"decision={decision.value}")
+                await self._emit_event(VoiceEventType.TRANSFER_REJECTED, reason=decision.value)
+                return BridgeTransferResult(
+                    success=False,
+                    decision=decision,
+                    b_leg_uuid=b_leg_uuid,
+                    error="Atendente não aceitou",
+                    final_state=self._state
                 )
         
-        elif decision == TransferDecision.HANGUP:
-            # Cliente desligou
-            logger.info(f"{self._elapsed()} 📞 Cliente desligou durante transferência")
-            await self._kill_b_leg()
-            await self._stop_hangup_monitor()
+        except Exception as e:
+            # EXCEÇÃO INESPERADA - ROLLBACK
+            logger.exception(f"{self._elapsed()} ❌ EXCEÇÃO: {e}")
+            await self._rollback(f"exception: {e}")
             return BridgeTransferResult(
                 success=False,
-                decision=TransferDecision.HANGUP,
-                error="Cliente desligou"
+                decision=TransferDecision.ERROR,
+                error=str(e),
+                final_state=self._state
             )
         
-        else:
-            # Rejeitado, timeout ou erro - retornar ao Voice AI
-            logger.info(f"{self._elapsed()} ❌ Transferência não aceita: {decision.value}")
-            await self._kill_b_leg()
-            await self._resume_a_leg_audio()
+        finally:
+            # CLEANUP: Sempre parar monitor de hangup
             await self._stop_hangup_monitor()
-            await self._emit_event(VoiceEventType.TRANSFER_REJECTED, reason=decision.value)
-            return BridgeTransferResult(
-                success=False,
-                decision=decision,
-                b_leg_uuid=b_leg_uuid,
-                error="Atendente não aceitou"
-            )
+            
+            duration = time.time() - self._start_time
+            logger.info(f"{self._elapsed()} 🏁 Transfer finalizado em {duration:.2f}s - Estado: {self._state.value}")
