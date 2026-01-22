@@ -141,6 +141,7 @@ class BridgeTransferManager:
         self._state_lock = asyncio.Lock()  # PROTEÇÃO: Serializa operações
         self._b_leg_uuid: Optional[str] = None
         self._start_time: float = 0
+        self._transfer_active: bool = False  # Flag para desativar handlers após stop
         
         # Eventos de hangup
         self._a_leg_hangup_event = asyncio.Event()
@@ -182,12 +183,32 @@ class BridgeTransferManager:
     # =========================================================================
     
     async def _start_hangup_monitor(self) -> None:
-        """Inicia monitor de hangup para ambas as pernas."""
-        self._hangup_handler_id = str(uuid4())
+        """
+        Inicia monitoramento de eventos CHANNEL_HANGUP para A-leg e B-leg.
         
-        async def on_hangup(uuid: str, cause: str, **kwargs):
+        Usa ESL event subscription (como ConferenceTransferManager).
+        Quando detecta hangup, seta o asyncio.Event correspondente.
+        """
+        self._transfer_active = True
+        self._a_leg_hangup_event.clear()
+        self._b_leg_hangup_event.clear()
+        
+        # Handler para eventos de hangup
+        async def on_hangup(event):
+            if not self._transfer_active:
+                return
+            
+            # Extrair UUID e causa do evento ESL
+            uuid = event.uuid if hasattr(event, 'uuid') else (
+                event.headers.get('Unique-ID', '') if hasattr(event, 'headers') else ''
+            )
+            hangup_cause = (
+                event.headers.get('Hangup-Cause', 'UNKNOWN') 
+                if hasattr(event, 'headers') else 'UNKNOWN'
+            )
+            
             if uuid == self.a_leg_uuid:
-                logger.info(f"{self._elapsed()} 🔴 A-leg HANGUP: {cause}")
+                logger.warning(f"{self._elapsed()} 🔴 A-leg HANGUP: {hangup_cause}")
                 self._a_leg_hangup_event.set()
                 # CLEANUP: Se A-leg desliga, matar B-leg imediatamente
                 if self._b_leg_uuid and self._state not in (TransferState.BRIDGED, TransferState.COMPLETED):
@@ -195,20 +216,37 @@ class BridgeTransferManager:
                     await self._kill_b_leg_safe()
                     
             elif uuid == self._b_leg_uuid:
-                logger.info(f"{self._elapsed()} 🔴 B-leg HANGUP: {cause}")
+                logger.info(f"{self._elapsed()} 🔴 B-leg HANGUP: {hangup_cause}")
                 self._b_leg_hangup_event.set()
         
-        if self.event_bus:
-            self.event_bus.on("channel_hangup", on_hangup)
-        
-        logger.debug(f"[HANGUP_MONITOR] Registrado: {self._hangup_handler_id}")
+        # Registrar handler no ESL client (como ConferenceTransferManager)
+        if hasattr(self.esl, 'register_event_handler'):
+            try:
+                self._hangup_handler_id = await self.esl.register_event_handler(
+                    event_name="CHANNEL_HANGUP",
+                    callback=on_hangup,
+                    uuid_filter=None  # Monitorar todos, filtrar no callback
+                )
+                logger.debug(f"[HANGUP_MONITOR] ESL handler registrado: {self._hangup_handler_id}")
+            except Exception as e:
+                logger.debug(f"[HANGUP_MONITOR] Falha ao registrar ESL handler: {e}")
+                self._hangup_handler_id = None
+        else:
+            logger.debug("[HANGUP_MONITOR] ESL não suporta event handlers, usando polling")
+            self._hangup_handler_id = None
     
     async def _stop_hangup_monitor(self) -> None:
-        """Para monitor de hangup."""
-        if self._hangup_handler_id:
-            # TODO: Implementar remoção de handler no EventBus
-            logger.debug(f"[HANGUP_MONITOR] Removido: {self._hangup_handler_id}")
-            self._hangup_handler_id = None
+        """Para o monitoramento de hangup."""
+        self._transfer_active = False
+        
+        # Remover handler se registrado
+        if self._hangup_handler_id and hasattr(self.esl, 'unregister_event_handler'):
+            try:
+                await self.esl.unregister_event_handler(self._hangup_handler_id)
+                logger.debug(f"[HANGUP_MONITOR] ESL handler removido: {self._hangup_handler_id}")
+            except Exception as e:
+                logger.debug(f"[HANGUP_MONITOR] Erro removendo handler: {e}")
+        self._hangup_handler_id = None
     
     # =========================================================================
     # OPERAÇÕES ESL (COM TIMEOUT E LOGGING)
