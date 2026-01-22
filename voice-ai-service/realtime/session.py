@@ -63,13 +63,22 @@ from .handlers.transfer_manager import (
 )
 from .handlers.transfer_destination_loader import TransferDestination
 
-# FASE 2: Transferência via Conferência (mod_conference)
+# FASE 2: Transferência via Conferência (mod_conference) - LEGADO
 # Ref: voice-ai-ivr/docs/announced-transfer-conference.md
 from .handlers.transfer_manager_conference import (
     ConferenceTransferManager,
     ConferenceTransferResult,
     ConferenceTransferConfig,
     TransferDecision,
+)
+
+# FASE 3: Transferência via Bridge (uuid_bridge) - RECOMENDADO
+# Abordagem simplificada que evita problemas de conferência
+from .handlers.transfer_manager_bridge import (
+    BridgeTransferManager,
+    BridgeTransferResult,
+    BridgeTransferConfig,
+    TransferDecision as BridgeTransferDecision,
 )
 
 logger = logging.getLogger(__name__)
@@ -4399,47 +4408,81 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                     )
                 
                 if use_conference_mode:
-                    # CONFERENCE MODE: Usa mod_conference (RECOMENDADO)
-                    # Mais robusto e confiável que &park()
-                    logger.info("Using CONFERENCE mode for announced transfer (mod_conference)")
+                    # Escolher entre BRIDGE (novo) e CONFERENCE (legado)
+                    # BRIDGE é mais simples e evita problemas de hangup_after_conference
+                    use_bridge_mode = os.getenv("TRANSFER_USE_BRIDGE", "true").lower() == "true"
                     
                     # Usar ESL do TransferManager existente (já conectado)
                     esl_client = self._transfer_manager._esl
                     logger.debug(f"Using ESL from TransferManager")
                     
-                    conf_manager = ConferenceTransferManager(
-                        esl_client=esl_client,
-                        a_leg_uuid=self.call_uuid,
-                        domain=destination.destination_context or "",
-                        caller_id=self.config.caller_id or "Unknown",
-                        config=ConferenceTransferConfig(
-                            originate_timeout=self.config.transfer_default_timeout,
-                            announcement_timeout=self.config.transfer_realtime_timeout,
-                            openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
-                            openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
-                            # Prompts customizados do banco de dados (FusionPBX)
-                            # Se None, usa prompts padrão hardcoded como fallback
-                            announcement_prompt=self.config.transfer_realtime_prompt,
-                        ),
-                        on_resume=self._resume_voice_ai,
-                        secretary_uuid=self.config.secretary_uuid,
-                        event_bus=self.events,  # Passar EventBus para emissão de eventos
-                    )
-                    
-                    # Executar transferência via conferência
                     # IMPORTANTE: Usar o nome do cliente extraído, não o caller_id (número)
                     extracted_caller_name = self._extract_caller_name()
-                    logger.info(f"📋 [CONFERENCE] caller_name extraído: {extracted_caller_name or 'Não informado'}")
                     
-                    conf_result = await conf_manager.execute_announced_transfer(
-                        destination=destination.destination_number,
-                        context=reason,
-                        announcement=announcement,
-                        caller_name=extracted_caller_name,
-                    )
+                    if use_bridge_mode:
+                        # BRIDGE MODE: Usa uuid_bridge (RECOMENDADO)
+                        # Mais simples e evita problemas de conferência
+                        logger.info("Using BRIDGE mode for announced transfer (uuid_bridge)")
+                        logger.info(f"📋 [BRIDGE] caller_name extraído: {extracted_caller_name or 'Não informado'}")
+                        
+                        bridge_manager = BridgeTransferManager(
+                            esl_client=esl_client,
+                            a_leg_uuid=self.call_uuid,
+                            domain=destination.destination_context or "",
+                            caller_id=self.config.caller_id or "Unknown",
+                            config=BridgeTransferConfig(
+                                originate_timeout=self.config.transfer_default_timeout,
+                                announcement_timeout=self.config.transfer_realtime_timeout,
+                                openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
+                                openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
+                                announcement_prompt=self.config.transfer_realtime_prompt,
+                            ),
+                            on_resume=self._resume_voice_ai,
+                            secretary_uuid=self.config.secretary_uuid,
+                            event_bus=self.events,
+                        )
+                        
+                        bridge_result = await bridge_manager.execute_announced_transfer(
+                            destination=destination.destination_number,
+                            context=reason,
+                            announcement=announcement,
+                            caller_name=extracted_caller_name,
+                        )
+                        
+                        # Converter BridgeTransferResult para TransferResult
+                        result = self._convert_bridge_result(bridge_result, destination)
                     
-                    # Converter ConferenceTransferResult para TransferResult
-                    result = self._convert_conference_result(conf_result, destination)
+                    else:
+                        # CONFERENCE MODE (LEGADO): Usa mod_conference
+                        logger.info("Using CONFERENCE mode for announced transfer (mod_conference)")
+                        logger.info(f"📋 [CONFERENCE] caller_name extraído: {extracted_caller_name or 'Não informado'}")
+                        
+                        conf_manager = ConferenceTransferManager(
+                            esl_client=esl_client,
+                            a_leg_uuid=self.call_uuid,
+                            domain=destination.destination_context or "",
+                            caller_id=self.config.caller_id or "Unknown",
+                            config=ConferenceTransferConfig(
+                                originate_timeout=self.config.transfer_default_timeout,
+                                announcement_timeout=self.config.transfer_realtime_timeout,
+                                openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
+                                openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
+                                announcement_prompt=self.config.transfer_realtime_prompt,
+                            ),
+                            on_resume=self._resume_voice_ai,
+                            secretary_uuid=self.config.secretary_uuid,
+                            event_bus=self.events,
+                        )
+                        
+                        conf_result = await conf_manager.execute_announced_transfer(
+                            destination=destination.destination_number,
+                            context=reason,
+                            announcement=announcement,
+                            caller_name=extracted_caller_name,
+                        )
+                        
+                        # Converter ConferenceTransferResult para TransferResult
+                        result = self._convert_conference_result(conf_result, destination)
                     
                 elif self.config.transfer_realtime_enabled:
                     # REALTIME MODE (LEGADO): Conversa por voz com humano
@@ -4869,6 +4912,42 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             b_leg_uuid=conf_result.b_leg_uuid,
             duration_ms=conf_result.duration_ms,
             error=conf_result.error,
+        )
+    
+    def _convert_bridge_result(
+        self,
+        bridge_result: BridgeTransferResult,
+        destination: TransferDestination
+    ) -> TransferResult:
+        """
+        Converte BridgeTransferResult para TransferResult.
+        
+        Permite compatibilidade com o código existente de handling.
+        
+        Args:
+            bridge_result: Resultado da transferência via bridge
+            destination: Destino da transferência
+        
+        Returns:
+            TransferResult compatível
+        """
+        # Mapear BridgeTransferDecision para TransferStatus
+        decision_to_status = {
+            BridgeTransferDecision.ACCEPTED: TransferStatus.SUCCESS,
+            BridgeTransferDecision.REJECTED: TransferStatus.REJECTED,
+            BridgeTransferDecision.TIMEOUT: TransferStatus.NO_ANSWER,
+            BridgeTransferDecision.HANGUP: TransferStatus.NO_ANSWER,
+            BridgeTransferDecision.ERROR: TransferStatus.FAILED,
+        }
+        
+        status = decision_to_status.get(bridge_result.decision, TransferStatus.FAILED)
+        
+        return TransferResult(
+            status=status,
+            destination=destination,
+            b_leg_uuid=bridge_result.b_leg_uuid,
+            duration_ms=bridge_result.duration_ms,
+            error=bridge_result.error,
         )
     
     async def _on_transfer_complete(self, result: TransferResult) -> None:
