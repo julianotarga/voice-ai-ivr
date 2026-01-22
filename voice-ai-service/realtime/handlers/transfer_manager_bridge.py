@@ -314,92 +314,97 @@ class BridgeTransferManager:
         IMPORTANTE: uuid_audio_stream só funciona em canal ANSWERED!
         Um canal em RINGING ainda não pode receber audio stream.
         
-        DOCUMENTAÇÃO CONTEXT7:
-        - Header de evento: Channel-Call-State → variável: call_state
-        - Header de evento: Answer-State → variável: answer_state
+        PROBLEMA IDENTIFICADO:
+        uuid_getvar retorna _undef_ para canais criados via bgapi originate
+        porque o ESL pode não ter acesso às variáveis do canal outbound.
         
-        Valores:
-        - call_state: RINGING, EARLY, ACTIVE, HANGUP
-        - answer_state: ringing, early, answered
+        SOLUÇÃO:
+        Usar 'show channels' que retorna o Channel-State real:
+        - CS_CONSUME_MEDIA = RINGING (ainda não atendeu)
+        - CS_EXECUTE = ANSWERED e executando dialplan/app
+        - CS_PARK = ANSWERED e em park
+        - CS_EXCHANGE_MEDIA = ANSWERED e trocando mídia
         """
         try:
             # =====================================================================
-            # MÉTODO 1: answer_state (mais direto - "answered" ou "ringing")
-            # Documentado em Event-List_7143557.mdx: "Answer-State: answered"
+            # MÉTODO: Usar 'show channels' e parsear o estado
+            # Este método funciona mesmo para canais criados via bgapi
             # =====================================================================
             response = await asyncio.wait_for(
-                self.esl.execute_api(f"uuid_getvar {uuid} answer_state"),
+                self.esl.execute_api(f"show channels like {uuid}"),
                 timeout=self.config.esl_command_timeout
             )
             
-            answer_state = str(response).strip().lower() if response else ""
+            output = str(response).strip() if response else ""
             
-            # Verificar erros
-            if "-err" in answer_state or "no such channel" in answer_state:
-                logger.debug(f"{self._elapsed()} {name} não existe ou erro: {answer_state}")
+            # Log para debug
+            if len(output) > 200:
+                logger.debug(f"{self._elapsed()} {name} show channels: {output[:200]}...")
+            else:
+                logger.debug(f"{self._elapsed()} {name} show channels: {output}")
+            
+            # Verificar se canal não existe
+            if "0 total" in output or not uuid in output:
+                logger.debug(f"{self._elapsed()} {name} não existe (0 total)")
                 return False
             
-            # Log do estado
-            logger.debug(f"{self._elapsed()} {name} answer_state: '{answer_state}'")
+            # Parsear o estado do canal
+            # Formato: uuid,direction,created,created_epoch,name,state,cid_name,cid_num,...
+            # O estado fica na coluna 'state' que mostra CS_xxx
             
-            # answered = canal atendeu!
-            if "answered" in answer_state:
-                logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (answer_state=answered)")
-                return True
-            
-            # ringing ou early = ainda não atendeu
-            if "ringing" in answer_state or "early" in answer_state:
-                logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (answer_state={answer_state})")
-                return False
-            
-            # _undef_ ou vazio - tentar call_state
-            if "_undef_" in answer_state or not answer_state:
-                # =====================================================================
-                # MÉTODO 2: call_state (Channel-Call-State sem prefixo)
-                # Documentado: RINGING, EARLY, ACTIVE, HANGUP
-                # =====================================================================
-                response2 = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_getvar {uuid} call_state"),
-                    timeout=self.config.esl_command_timeout
-                )
-                call_state = str(response2).strip().upper() if response2 else ""
-                
-                logger.debug(f"{self._elapsed()} {name} call_state: '{call_state}'")
-                
-                if call_state == "ACTIVE":
-                    logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (call_state=ACTIVE)")
-                    return True
-                
-                if call_state in ("RINGING", "EARLY", "DOWN"):
-                    logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (call_state={call_state})")
-                    return False
-                
-                if call_state == "HANGUP":
-                    logger.debug(f"{self._elapsed()} 🔴 {name} está desligando (call_state=HANGUP)")
-                    return False
-                
-                # =====================================================================
-                # MÉTODO 3: current_application (fallback - verifica se está em park)
-                # Se o canal está executando &park(), significa que atendeu
-                # =====================================================================
-                if "_undef_" in call_state.lower() or not call_state:
-                    response3 = await asyncio.wait_for(
-                        self.esl.execute_api(f"uuid_getvar {uuid} current_application"),
-                        timeout=self.config.esl_command_timeout
-                    )
-                    current_app = str(response3).strip().lower() if response3 else ""
+            lines = output.split('\n')
+            for line in lines:
+                if uuid in line:
+                    # Encontrou a linha do canal
+                    parts = line.split(',')
                     
-                    logger.debug(f"{self._elapsed()} {name} current_application: '{current_app}'")
+                    # Procurar por CS_xxx no output
+                    state = None
+                    callstate = None
                     
-                    if "park" in current_app:
-                        logger.debug(f"{self._elapsed()} ✅ {name} está ANSWERED (current_app=park)")
+                    for part in parts:
+                        part_clean = part.strip()
+                        if part_clean.startswith('CS_'):
+                            state = part_clean
+                        # Também pode ter o callstate (RINGING, ACTIVE, etc)
+                        if part_clean in ('RINGING', 'EARLY', 'ACTIVE', 'HANGUP', 'DOWN'):
+                            callstate = part_clean
+                    
+                    logger.debug(f"{self._elapsed()} {name} parsed: state={state}, callstate={callstate}")
+                    
+                    # Estados que indicam ANSWERED
+                    answered_states = ['CS_EXECUTE', 'CS_PARK', 'CS_EXCHANGE_MEDIA', 'CS_SOFT_EXECUTE']
+                    if state in answered_states:
+                        logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (state={state})")
                         return True
                     
-                    logger.debug(f"{self._elapsed()} ⏳ {name} state unknown: answer={answer_state}, call={call_state}, app={current_app}")
+                    # Callstate ACTIVE também indica answered
+                    if callstate == 'ACTIVE':
+                        logger.info(f"{self._elapsed()} ✅ {name} está ANSWERED (callstate=ACTIVE)")
+                        return True
+                    
+                    # Estados que indicam RINGING
+                    ringing_states = ['CS_CONSUME_MEDIA', 'CS_ROUTING', 'CS_INIT', 'CS_NEW']
+                    if state in ringing_states:
+                        logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (state={state})")
+                        return False
+                    
+                    # Callstate RINGING ou EARLY
+                    if callstate in ('RINGING', 'EARLY', 'DOWN'):
+                        logger.debug(f"{self._elapsed()} ⏳ {name} ainda não answered (callstate={callstate})")
+                        return False
+                    
+                    # Estados que indicam problema
+                    if state in ('CS_HANGUP', 'CS_REPORTING', 'CS_DESTROY'):
+                        logger.debug(f"{self._elapsed()} 🔴 {name} está terminando (state={state})")
+                        return False
+                    
+                    # Estado desconhecido - logar toda a linha para debug
+                    logger.warning(f"{self._elapsed()} ⚠️ {name} estado desconhecido. Line: {line[:100]}")
                     return False
             
-            # Estado desconhecido
-            logger.warning(f"{self._elapsed()} ⚠️ {name} answer_state desconhecido: {answer_state}")
+            # Canal não encontrado no output
+            logger.debug(f"{self._elapsed()} {name} não encontrado no output")
             return False
             
         except asyncio.TimeoutError:
