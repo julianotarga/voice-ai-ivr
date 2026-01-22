@@ -3814,11 +3814,36 @@ Quando o cliente pedir para falar com humano/setor:
                 "reason": reason,
                 "transfer_in_progress": self._transfer_in_progress,
                 "on_hold": self._on_hold,
+                "state_machine": self.state_machine.state.value,
             }
         )
         
         if not self._transfer_manager:
             logger.warning("📞 [INTELLIGENT_HANDOFF] ERRO: TransferManager não inicializado")
+            return
+        
+        # Validar estado da máquina de estados antes de iniciar transferência
+        # A transferência só pode ser iniciada de estados ativos (listening, speaking, processing)
+        current_state = self.state_machine.state.value
+        if current_state not in ("listening", "speaking", "processing"):
+            logger.warning(
+                f"📞 [INTELLIGENT_HANDOFF] BLOQUEADO: Estado '{current_state}' não permite transferência",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "current_state": current_state,
+                    "allowed_states": ["listening", "speaking", "processing"],
+                }
+            )
+            # Emitir evento de bloqueio
+            await self.events.emit(VoiceEvent(
+                type=VoiceEventType.STATE_TRANSITION_BLOCKED,
+                call_uuid=self.call_uuid,
+                data={
+                    "trigger": "request_transfer",
+                    "from_state": current_state,
+                    "reason": "invalid_state_for_transfer",
+                }
+            ))
             return
         
         # NOTA: _transfer_in_progress já é True (setado em _execute_function)
@@ -3869,6 +3894,15 @@ Quando o cliente pedir para falar com humano/setor:
                     "destination_number": destination.destination_number,
                     "destination_type": destination.destination_type,
                 }
+            )
+            
+            # Transição de estado: request_transfer -> transferring_validating
+            # Extrair caller_name para o guard da StateMachine
+            caller_name = self._extract_caller_name()
+            await self.state_machine.request_transfer(
+                destination=destination.name,
+                reason=reason,
+                caller_name=caller_name
             )
             
             # 2. COLOCAR CLIENTE EM ESPERA antes de verificar/transferir
