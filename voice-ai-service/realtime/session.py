@@ -4626,12 +4626,14 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 # Fallback para outros status (FAILED, etc.)
                 contextual_message = get_no_answer_message(destination_name)
             
-            # Construir instrução concisa para o OpenAI
-            # IMPORTANTE: Instruções curtas são seguidas melhor pelo LLM
+            # Construir instrução clara para o OpenAI
+            # IMPORTANTE: Ser explícito sobre não mentir para o cliente
             openai_instruction = (
                 f"[SISTEMA] Fale ao cliente: '{contextual_message}' "
-                "Se cliente quiser deixar recado: use take_message. "
-                "Se não quiser: agradeça e use end_call."
+                "REGRAS OBRIGATÓRIAS: "
+                "1) Se cliente quiser deixar recado: PRIMEIRO chame take_message para coletar os dados. "
+                "2) NUNCA diga que a mensagem foi anotada sem ter chamado take_message. "
+                "3) Se cliente não quiser deixar recado: agradeça e use end_call."
             )
             
             logger.info(
