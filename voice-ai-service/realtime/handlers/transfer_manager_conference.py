@@ -342,6 +342,14 @@ class ConferenceTransferManager:
             if check_ok and not is_registered:
                 logger.warning(f"{elapsed()} STEP 2: ❌ Ramal {destination} não está registrado/online")
                 await self._stop_hangup_monitor()
+                
+                # Emitir evento TRANSFER_REJECTED - ramal offline
+                await self._emit_event(
+                    VoiceEventType.TRANSFER_REJECTED,
+                    reason="destination_offline",
+                    destination=destination,
+                )
+                
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,
@@ -430,6 +438,14 @@ class ConferenceTransferManager:
                 # Tirar cliente da espera e dar feedback
                 await self._cleanup_and_return(reason="Ramal não atendeu")
                 await self._stop_hangup_monitor()
+                
+                # Emitir evento TRANSFER_TIMEOUT - ramal não atendeu
+                await self._emit_event(
+                    VoiceEventType.TRANSFER_TIMEOUT,
+                    reason="no_answer",
+                    destination=destination,
+                )
+                
                 return ConferenceTransferResult(
                     success=False,
                     decision=TransferDecision.REJECTED,

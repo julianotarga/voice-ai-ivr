@@ -41,6 +41,7 @@ from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 from .core import (
     EventBus,
     CallStateMachine,
+    CallState as CoreCallState,  # Renomeado para evitar conflito com CallState local
     HeartbeatMonitor,
     TimeoutManager,
     TimeoutConfig,
@@ -3905,6 +3906,10 @@ Quando o cliente pedir para falar com humano/setor:
                 caller_name=caller_name
             )
             
+            # Transição: destination_validated -> transferring_dialing
+            # O destino foi encontrado e validado, agora vamos discar
+            await self.state_machine.trigger("destination_validated")
+            
             # 2. COLOCAR CLIENTE EM ESPERA antes de verificar/transferir
             # O agente já avisou o cliente através do LLM, agora colocamos em hold
             logger.info("📞 [INTELLIGENT_HANDOFF] Step 2: Colocando cliente em HOLD...")
@@ -4066,6 +4071,12 @@ Quando o cliente pedir para falar com humano/setor:
         except Exception as e:
             logger.exception(f"Intelligent handoff error: {e}")
             
+            # Transição de estado: voltar para LISTENING em caso de erro
+            current_state = self.state_machine.state.value
+            if current_state.startswith("transferring"):
+                await self.state_machine.trigger("cancel_transfer")
+                logger.info(f"📋 [INTELLIGENT_HANDOFF] Error recovery: {current_state} -> listening")
+            
             # Se erro, garantir que cliente sai do hold
             if client_on_hold:
                 logger.info("Error during handoff, removing client from hold")
@@ -4113,6 +4124,18 @@ Quando o cliente pedir para falar com humano/setor:
                     "destination": result.destination.name if result.destination else None,
                 }
             )
+            # Transição: bridge_complete -> bridged
+            # Nota: A StateMachine pode estar em qualquer sub-estado de transferência
+            # porque o ConferenceTransferManager progride internamente.
+            # Forçamos a transição apenas se em estado de transferência.
+            current_state = self.state_machine.state.value
+            if current_state.startswith("transferring"):
+                # Avançar para bridging se necessário, depois completar
+                if current_state != "transferring_bridging":
+                    # Forçar estado intermediário não é ideal, mas evita erros
+                    logger.debug(f"📋 [HANDLE_TRANSFER_RESULT] Forcing state from {current_state} to bridged")
+                    self.state_machine._state = CoreCallState.TRANSFERRING_BRIDGING
+                await self.state_machine.trigger("bridge_complete")
             # Encerrar sessão Voice AI (cliente agora está com humano)
             await self.stop("transfer_success")
             
@@ -4133,6 +4156,14 @@ Quando o cliente pedir para falar com humano/setor:
                     "status": result.status.value if result.status else "None",
                 }
             )
+            
+            # Transição de estado: voltar para LISTENING
+            # Usar cancel_transfer que funciona de qualquer sub-estado de transferência
+            current_state = self.state_machine.state.value
+            if current_state.startswith("transferring"):
+                await self.state_machine.trigger("cancel_transfer")
+                logger.info(f"📋 [HANDLE_TRANSFER_RESULT] State Machine: {current_state} -> listening")
+            
             # 
             # NOVA ABORDAGEM: Usar voz do OpenAI em vez de FreeSWITCH TTS
             # 
