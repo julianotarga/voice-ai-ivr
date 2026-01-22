@@ -42,11 +42,17 @@ class ConferenceAnnouncementResult:
 
 
 # Tools/Functions para OpenAI Realtime
+# IMPORTANTE: Descrições detalhadas para evitar falsos positivos/negativos
 TRANSFER_TOOLS = [
     {
         "type": "function",
         "name": "accept_transfer",
-        "description": "Chamado quando o atendente ACEITA a transferência. Use quando ouvir 'sim', 'aceito', 'pode conectar', 'pode passar', 'ok', 'tá bom'.",
+        "description": (
+            "Chamado SOMENTE quando o atendente ACEITA EXPLICITAMENTE a transferência. "
+            "Use APENAS quando ouvir confirmação INEQUÍVOCA como: "
+            "'pode passar', 'pode conectar', 'manda', 'ok pode', 'coloca na linha', 'pode colocar'. "
+            "NÃO use para saudações (alô, oi, meu querido, bom dia) nem para perguntas (quem é?)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -56,13 +62,18 @@ TRANSFER_TOOLS = [
     {
         "type": "function",
         "name": "reject_transfer",
-        "description": "Chamado quando o atendente RECUSA a transferência. Use quando ouvir 'não', 'não posso', 'ocupado', 'recuso', 'depois', 'agora não'.",
+        "description": (
+            "Chamado SOMENTE quando o atendente RECUSA EXPLICITAMENTE a transferência. "
+            "Use APENAS quando ouvir recusa CLARA como: "
+            "'não posso', 'estou ocupado', 'agora não', 'não dá', 'depois', 'liga mais tarde'. "
+            "NÃO use para saudações (alô, oi, meu querido, bom dia) nem para perguntas (quem é?)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
-                    "description": "Motivo opcional da recusa"
+                    "description": "Motivo da recusa (ex: 'ocupado', 'em reunião')"
                 }
             },
             "required": []
@@ -1043,6 +1054,73 @@ class ConferenceAnnouncementSession:
                     logger.info(f"✅ Function call: ACCEPTED (no rejection indicators in '{combined_transcript}')")
                 
             elif function_name == "reject_transfer":
+                # =========================================================================
+                # VERIFICAÇÃO DE SEGURANÇA: Checar se foi apenas saudação mal interpretada
+                # Saudações/cumprimentos NÃO devem ser interpretados como rejeição
+                # =========================================================================
+                all_transcripts = getattr(self, '_all_human_transcripts', [])
+                combined_transcript = ' '.join(all_transcripts).lower().strip()
+                
+                # Lista de saudações/cumprimentos GENUÍNOS que NÃO são rejeição
+                greeting_patterns = [
+                    "alô", "alo", "oi", "olá", "ola", "fala", "pois não", "pois nao",
+                    "bom dia", "boa tarde", "boa noite", "tudo bem", "como vai",
+                    "fala aí", "fala ai", "e aí", "e ai", "opa", "beleza",
+                    "pode falar", "estou ouvindo", "ouvindo", "presente",
+                    "sim", "sim?", "diga", "fale", "pronto"
+                ]
+                
+                # Expressões ambíguas no Brasil (irônicas/sarcásticas) - NÃO são recusa explícita
+                # Quando ouvir isso, devemos PERGUNTAR de novo, não rejeitar automaticamente
+                ambiguous_patterns = [
+                    "meu querido", "minha querida", "meu amigo", "minha amiga",
+                    "querido", "querida", "amigo", "amiga"
+                ]
+                
+                # Verificar se é saudação genuína
+                is_only_greeting = False
+                for pattern in greeting_patterns:
+                    if combined_transcript == pattern or combined_transcript.startswith(pattern + " ") or combined_transcript.endswith(" " + pattern):
+                        is_only_greeting = True
+                        logger.warning(f"⚠️ Safety check: reject_transfer called but transcript looks like greeting: '{combined_transcript}'")
+                        break
+                
+                # Verificar se é expressão ambígua (irônica)
+                is_ambiguous = False
+                if not is_only_greeting:
+                    for pattern in ambiguous_patterns:
+                        if pattern in combined_transcript:
+                            is_ambiguous = True
+                            logger.warning(f"⚠️ Safety check: reject_transfer called but transcript is ambiguous/ironic: '{combined_transcript}'")
+                            break
+                
+                logger.info(f"🔍 Safety check (reject): combined = '{combined_transcript}', is_greeting = {is_only_greeting}, is_ambiguous = {is_ambiguous}")
+                
+                if is_only_greeting or is_ambiguous:
+                    # NÃO rejeitar - foi saudação ou expressão ambígua
+                    # Fazer a IA perguntar novamente
+                    logger.info(f"🔄 Function call IGNORED: reject→ask_again (greeting/ambiguous)")
+                    # Enviar output e fazer a IA perguntar de novo
+                    if call_id:
+                        await self._send_function_output(call_id, {"status": "ignored_ambiguous"})
+                    
+                    # Solicitar nova resposta perguntando diretamente
+                    try:
+                        await self._ws.send(json.dumps({
+                            "type": "response.create",
+                            "response": {
+                                "instructions": (
+                                    "O atendente não deu uma resposta clara. "
+                                    "Pergunte diretamente: 'Você pode atender essa ligação agora ou prefere que eu anote o recado?'"
+                                )
+                            }
+                        }))
+                        logger.info("🔄 Asked attendant again after ambiguous response")
+                    except Exception as e:
+                        logger.debug(f"Could not ask again: {e}")
+                    
+                    return  # Sair sem marcar decisão
+                
                 # Extrair motivo se fornecido
                 try:
                     args = json.loads(arguments) if isinstance(arguments, str) else arguments
