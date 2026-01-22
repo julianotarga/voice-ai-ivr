@@ -2326,9 +2326,18 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 
                 logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
                 
-                # IMPORTANTE: Enviar instrução explícita para o OpenAI falar
-                # O result do function call é processado internamente, mas
-                # precisamos garantir que o OpenAI gere uma resposta de voz
+                # IMPORTANTE: Fazer interrupt ANTES de enviar a instrução
+                # Isso garante que não há resposta ativa que bloqueie o response.create
+                # Sem isso, se a IA ainda está gerando resposta, a instrução é ignorada
+                if self._provider and hasattr(self._provider, 'interrupt'):
+                    try:
+                        await self._provider.interrupt()
+                        await asyncio.sleep(0.15)  # Aguardar interrupt ser processado
+                        logger.debug("🔄 [HANDOFF] Interrupt enviado antes da instrução")
+                    except Exception as e:
+                        logger.debug(f"🔄 [HANDOFF] Interrupt falhou: {e}")
+                
+                # Enviar instrução explícita para o OpenAI falar
                 await self._send_text_to_provider(
                     f"[SISTEMA] Diga apenas: '{spoken_message}' - exatamente assim, breve e direto.",
                     request_response=True
