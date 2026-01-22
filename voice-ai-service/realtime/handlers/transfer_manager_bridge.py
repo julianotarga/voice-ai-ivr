@@ -692,19 +692,20 @@ class BridgeTransferManager:
         self._log_state_change(TransferState.ANNOUNCING)
         
         # Construir system_prompt para o anúncio
-        # Usa o template do config ou um padrão
-        system_prompt = self.config.announcement_prompt or (
-            "Você é uma secretária virtual anunciando uma chamada. "
-            "Seja breve e objetiva. "
-            "Se o atendente aceitar, chame a função accept_transfer. "
-            "Se recusar, chame a função reject_transfer."
+        # Usa o template do config ou um padrão mais completo
+        system_prompt = self.config.announcement_prompt or self._build_default_announcement_prompt(
+            caller_name, announcement
         )
+        
+        # IMPORTANTE: Adicionar pergunta ao final do anúncio
+        # Sem isso, o atendente não sabe que precisa responder
+        initial_message = f"{announcement}. Você pode atender agora?"
         
         session = ConferenceAnnouncementSession(
             esl_client=self.esl,
             b_leg_uuid=self._b_leg_uuid,
             system_prompt=system_prompt,
-            initial_message=announcement,
+            initial_message=initial_message,
             voice=self.config.openai_voice,
             model=self.config.openai_model,
             a_leg_hangup_event=self._a_leg_hangup_event,
@@ -729,6 +730,59 @@ class BridgeTransferManager:
         except Exception as e:
             logger.error(f"{self._elapsed()} ❌ Erro no anúncio: {e}")
             return TransferDecision.ERROR
+    
+    def _build_default_announcement_prompt(
+        self,
+        caller_name: Optional[str],
+        context: str
+    ) -> str:
+        """
+        Constrói o system prompt padrão para o anúncio ao atendente.
+        
+        Este prompt instrui a IA a:
+        1. Anunciar a chamada e PERGUNTAR se pode atender
+        2. Aguardar resposta clara do atendente
+        3. Chamar accept_transfer ou reject_transfer conforme a resposta
+        """
+        caller_display = caller_name or "um cliente"
+        
+        return f"""Você é uma secretária virtual fazendo uma transferência de chamada.
+
+# INFORMAÇÕES DA CHAMADA
+- Cliente: {caller_display}
+- Contexto: {context}
+
+# SEU OBJETIVO
+Anunciar a chamada para o atendente e obter uma resposta CLARA: aceita ou recusa.
+
+# IMPORTANTE - SEMPRE PERGUNTE
+Após anunciar, você DEVE perguntar: "Você pode atender agora?"
+Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a ligação?"
+
+# COMO INTERPRETAR RESPOSTAS
+
+## ACEITAÇÃO (chame accept_transfer)
+- "Pode transferir", "Pode passar", "Manda", "Passa pra mim"
+- "Sim", "Claro", "Pode", "Tudo bem", "Ok"
+- "Estou disponível", "Pode conectar"
+
+## RECUSA (chame reject_transfer com motivo)
+- "Não posso agora", "Estou ocupado", "Estou em reunião"
+- "Depois", "Mais tarde", "Não", "Agora não dá"
+- "Liga depois", "Anota recado"
+
+## AMBÍGUO (NÃO chame função, pergunte novamente)
+- "Oi", "Alô", "Bom dia", "Boa tarde" → Repita: "Tenho {caller_display} na linha. Pode atender?"
+- "Quem é?" → Responda: "É {caller_display}. Pode atendê-lo?"
+- "Hmm", "Ah", "Sei" → Pergunte: "Então posso transferir a ligação?"
+- Silêncio por 3+ segundos → Pergunte: "Você está aí? Pode atender a chamada?"
+
+# REGRAS CRÍTICAS
+1. NUNCA assuma aceitação sem resposta explícita
+2. NUNCA assuma recusa sem resposta explícita  
+3. Se em dúvida, PERGUNTE novamente
+4. Seja breve e direta nas respostas
+5. Use tom profissional mas amigável"""
     
     # =========================================================================
     # BRIDGE
