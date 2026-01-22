@@ -125,11 +125,19 @@ class CallStateMachine:
         (CallState.TRANSFERRING_BRIDGING, "bridge_complete"): CallState.BRIDGED,
         (CallState.TRANSFERRING_BRIDGING, "bridge_failed"): CallState.LISTENING,
         
+        # Bridge direto de qualquer sub-estado (quando ConferenceTransferManager completa internamente)
+        # Isso permite pular estados intermediários se a transferência completar rapidamente
+        (CallState.TRANSFERRING_VALIDATING, "bridge_complete"): CallState.BRIDGED,
+        (CallState.TRANSFERRING_DIALING, "bridge_complete"): CallState.BRIDGED,
+        (CallState.TRANSFERRING_ANNOUNCING, "bridge_complete"): CallState.BRIDGED,
+        (CallState.TRANSFERRING_WAITING, "bridge_complete"): CallState.BRIDGED,
+        
         # Cancelamento de transferência (de qualquer sub-estado)
         (CallState.TRANSFERRING_VALIDATING, "cancel_transfer"): CallState.LISTENING,
         (CallState.TRANSFERRING_DIALING, "cancel_transfer"): CallState.LISTENING,
         (CallState.TRANSFERRING_ANNOUNCING, "cancel_transfer"): CallState.LISTENING,
         (CallState.TRANSFERRING_WAITING, "cancel_transfer"): CallState.LISTENING,
+        (CallState.TRANSFERRING_BRIDGING, "cancel_transfer"): CallState.LISTENING,
         
         # Fim da chamada (de qualquer estado)
         (CallState.LISTENING, "end_call"): CallState.ENDING,
@@ -223,18 +231,6 @@ class CallStateMachine:
         
         # Guard para transferência: precisa ter dados necessários
         def can_transfer(trigger: str, data: Dict) -> bool:
-            if not self.session:
-                return True  # Sem session, permite
-            
-            # Verificar se tem caller_name
-            caller_name = getattr(self.session, 'caller_name', None)
-            if not caller_name:
-                logger.warning(
-                    "Transfer blocked: caller_name not set",
-                    extra={"call_uuid": self.call_uuid}
-                )
-                return False
-            
             # Verificar se tem destination
             destination = data.get('destination')
             if not destination:
@@ -243,6 +239,15 @@ class CallStateMachine:
                     extra={"call_uuid": self.call_uuid}
                 )
                 return False
+            
+            # caller_name é opcional - pode ser extraído depois
+            # Não bloquear se não tiver, pois pode ser extraído do transcript
+            caller_name = data.get('caller_name')
+            if not caller_name:
+                logger.debug(
+                    "Transfer proceeding without caller_name (will be extracted later)",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             return True
         

@@ -41,7 +41,6 @@ from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 from .core import (
     EventBus,
     CallStateMachine,
-    CallState as CoreCallState,  # Renomeado para evitar conflito com CallState local
     HeartbeatMonitor,
     TimeoutManager,
     TimeoutConfig,
@@ -4127,15 +4126,11 @@ Quando o cliente pedir para falar com humano/setor:
             # Transição: bridge_complete -> bridged
             # Nota: A StateMachine pode estar em qualquer sub-estado de transferência
             # porque o ConferenceTransferManager progride internamente.
-            # Forçamos a transição apenas se em estado de transferência.
+            # A StateMachine permite bridge_complete de qualquer sub-estado TRANSFERRING_*.
             current_state = self.state_machine.state.value
             if current_state.startswith("transferring"):
-                # Avançar para bridging se necessário, depois completar
-                if current_state != "transferring_bridging":
-                    # Forçar estado intermediário não é ideal, mas evita erros
-                    logger.debug(f"📋 [HANDLE_TRANSFER_RESULT] Forcing state from {current_state} to bridged")
-                    self.state_machine._state = CoreCallState.TRANSFERRING_BRIDGING
                 await self.state_machine.trigger("bridge_complete")
+                logger.debug(f"📋 [HANDLE_TRANSFER_RESULT] State: {current_state} -> bridged")
             # Encerrar sessão Voice AI (cliente agora está com humano)
             await self.stop("transfer_success")
             

@@ -151,7 +151,9 @@ class TimeoutManager:
                 )
                 
                 # Emitir evento se configurado
-                if emit_event:
+                # NOTA: Só emite TRANSFER_TIMEOUT para timeouts de transferência
+                # Outros timeouts são apenas logados
+                if emit_event and name.startswith("transfer"):
                     await self.events.emit(VoiceEvent(
                         type=VoiceEventType.TRANSFER_TIMEOUT,
                         call_uuid=self.call_uuid,
