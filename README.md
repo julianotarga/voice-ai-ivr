@@ -2,6 +2,69 @@
 
 Sistema de atendimento telefônico com IA que funciona como uma secretária virtual humana.
 
+## 🆕 Arquitetura de Controle Interno (v2 - Jan/2026)
+
+O sistema utiliza uma arquitetura de **controle interno** que reduz a dependência do FreeSWITCH para gerenciamento de estado. A lógica de negócio é controlada 100% pelo Python.
+
+### Vantagens
+
+| Aspecto | Antes | Depois |
+|---------|-------|--------|
+| **Fonte da verdade** | FreeSWITCH ESL events | StateMachine Python |
+| **Detecção de problemas** | Esperar ESL HANGUP | HeartbeatMonitor proativo |
+| **Comunicação** | Callbacks acoplados | EventBus desacoplado |
+| **Timeouts** | FreeSWITCH timers | TimeoutManager interno |
+
+### Componentes Core
+
+```
+voice-ai-service/realtime/core/
+├── events.py          # VoiceEventType, VoiceEvent (tipagem)
+├── event_bus.py       # Pub/sub interno async
+├── state_machine.py   # Estados da chamada com guards
+├── heartbeat.py       # Monitor de saúde da conexão
+└── timeout_manager.py # Gerenciador de timeouts
+```
+
+### Estados da Chamada (CallState)
+
+```
+IDLE → CONNECTING → CONNECTED → LISTENING ↔ SPEAKING → PROCESSING
+                                    │
+                                    ↓
+                        TRANSFERRING_VALIDATING
+                                    │
+                        TRANSFERRING_DIALING
+                                    │
+                        TRANSFERRING_ANNOUNCING
+                                    │
+                        TRANSFERRING_WAITING
+                                    │
+                        TRANSFERRING_BRIDGING → BRIDGED
+                                    │
+                                    ↓
+                                  ENDED
+```
+
+### Logs Estruturados
+
+```bash
+# Identificação visual por emoji
+📢 [EVENT_BUS]      # Eventos emitidos
+🔄 [STATE_MACHINE]  # Transições de estado
+💓 [HEARTBEAT]      # Monitoramento de saúde
+⏱️ [TIMEOUT_MGR]   # Timeouts
+📞 [SESSION]        # Início/fim de chamada
+⚠️ [CORE]          # Warnings (conexão, provider)
+```
+
+### Documentação Detalhada
+
+- `docs/PLANO-ARQUITETURA-INTERNA.md` - Plano completo da arquitetura
+- `docs/KNOWLEDGE_BASE.md` - Referências de APIs (Context7)
+
+---
+
 ## ⚠️ REQUISITOS OBRIGATÓRIOS
 
 ### Multi-Tenant
@@ -13,7 +76,7 @@ Sistema de atendimento telefônico com IA que funciona como uma secretária virt
 - Scripts FreeSWITCH: **Lua 5.2+** (mod_lua)
 - App FusionPBX: **PHP 7.4+ / 8.x**
 - Banco de Dados: **PostgreSQL** (sintaxe nativa)
-- Serviço Auxiliar: **Python 3.10+**
+- Serviço Principal: **Python 3.11+** (asyncio)
 
 ---
 

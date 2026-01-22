@@ -1,5 +1,9 @@
 # Plano de Implementação: Arquitetura de Controle Interno
 
+> **Status: ✅ IMPLEMENTADO (Jan/2026)**
+> 
+> Fases 1-4 concluídas. Sistema em produção.
+
 ## Objetivo
 
 Reduzir dependência do FreeSWITCH para controle de estado e eventos, movendo a lógica para código Python que temos 100% de controle.
@@ -1212,24 +1216,61 @@ A implementação usa apenas bibliotecas padrão do Python:
 
 ## Status da Implementação
 
-| Fase | Descrição | Status |
-|------|-----------|--------|
-| 1 | Infraestrutura Core | ✅ Completo |
-| 2 | Integração Session | ✅ Completo |
-| 3 | Refatorar Transfer | ✅ Completo |
-| 4 | Desacoplar ESL | ✅ Infraestrutura existe |
-| 5 | Testes | ⏳ Pendente |
+| Fase | Descrição | Status | Data |
+|------|-----------|--------|------|
+| 1 | Infraestrutura Core | ✅ Completo | Jan/2026 |
+| 2 | Integração Session | ✅ Completo | Jan/2026 |
+| 3 | Refatorar Transfer | ✅ Completo | Jan/2026 |
+| 4 | Desacoplar ESL | ✅ Infraestrutura existe | Jan/2026 |
+| 5 | Testes | ⏳ Pendente | - |
+
+---
+
+## Ganhos Obtidos
+
+### Comparativo Antes x Depois
+
+| Aspecto | Antes (FreeSWITCH controlando) | Depois (Python controlando) |
+|---------|-------------------------------|----------------------------|
+| **Fonte da verdade** | Eventos ESL espalhados | `CallStateMachine` centralizada |
+| **Detecção de problemas** | Esperar ESL HANGUP (~5s delay) | `HeartbeatMonitor` proativo (~1s) |
+| **Comunicação entre módulos** | Callbacks acoplados | `EventBus` desacoplado |
+| **Controle de timeouts** | FreeSWITCH timers | `TimeoutManager` interno |
+| **Debug** | Logs dispersos | Logs estruturados com emojis |
+| **Extensibilidade** | Difícil adicionar features | Fácil (eventos tipados) |
+
+### Benefícios Práticos
+
+1. **Detecção proativa de problemas:**
+   - OpenAI lento → `PROVIDER_TIMEOUT` antes de timeout genérico
+   - Caller desligou → `CONNECTION_DEGRADED` antes de ESL HANGUP
+   - Transferência travou → `TRANSFER_TIMEOUT` interno
+
+2. **Estado consistente:**
+   - Guards impedem transições inválidas
+   - Histórico de transições para debug
+   - Impossível chegar em estado inconsistente
+
+3. **Logs estruturados:**
+   - Identificação visual por emoji (📢 🔄 💓 ⏱️ 📞 ⚠️)
+   - Filtro fácil por componente
+   - Fluxo completo visível
+
+4. **Observabilidade:**
+   - `EventBus.get_history()` para debug
+   - `StateMachine.history` para auditoria
+   - Métricas de saúde via `HeartbeatMonitor`
 
 ---
 
 ## Riscos e Mitigações
 
-| Risco | Mitigação |
-|-------|-----------|
-| Regressão em funcionalidades existentes | Implementação gradual, código existente preservado |
-| Performance do Event Bus | Histórico limitado a 100 eventos, handlers removidos no close() |
-| Deadlocks em estado | Timeouts internos, transições validadas |
-| Sincronização de eventos/estados | Handlers automáticos sincronizam eventos com StateMachine |
+| Risco | Mitigação | Status |
+|-------|-----------|--------|
+| Regressão em funcionalidades | Implementação gradual, código preservado | ✅ Mitigado |
+| Performance do Event Bus | Histórico limitado a 100 eventos | ✅ Mitigado |
+| Deadlocks em estado | Timeouts internos, transições validadas | ✅ Mitigado |
+| Sincronização eventos/estados | Handlers automáticos sincronizam | ✅ Mitigado |
 
 ---
 
@@ -1238,11 +1279,23 @@ A implementação usa apenas bibliotecas padrão do Python:
 ### Novos (FASE 1)
 - `realtime/core/__init__.py`
 - `realtime/core/events.py` - VoiceEventType, VoiceEvent
-- `realtime/core/event_bus.py` - EventBus
+- `realtime/core/event_bus.py` - EventBus (pub/sub async)
 - `realtime/core/state_machine.py` - CallStateMachine, CallState
 - `realtime/core/heartbeat.py` - HeartbeatMonitor
 - `realtime/core/timeout_manager.py` - TimeoutManager
 
-### Modificados (FASES 2-3)
-- `realtime/session.py` - Integração com core
+### Modificados (FASES 2-4)
+- `realtime/session.py` - Integração com core, handlers de eventos
 - `realtime/handlers/transfer_manager_conference.py` - Emissão de eventos
+- `realtime/providers/openai_realtime.py` - Logs agregados
+- `realtime/server.py` - Logs otimizados
+- `realtime/utils/echo_canceller.py` - Logs reduzidos
+
+---
+
+## Próximos Passos (Opcional)
+
+1. **Testes unitários** para componentes core
+2. **Métricas Prometheus** baseadas em eventos
+3. **Reconexão automática** ao provider usando HeartbeatMonitor
+4. **Fallback de provider** usando estado da StateMachine

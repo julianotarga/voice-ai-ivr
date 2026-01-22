@@ -1,10 +1,69 @@
 # AGENTS.md - Voice AI IVR
 
+## 🏗️ Arquitetura de Controle Interno (v2 - Jan/2026)
+
+O sistema usa uma arquitetura de **controle interno** que reduz dependência do FreeSWITCH.
+
+### Componentes Core (realtime/core/)
+
+| Componente | Arquivo | Responsabilidade |
+|------------|---------|------------------|
+| **EventBus** | `event_bus.py` | Pub/sub async de eventos tipados |
+| **StateMachine** | `state_machine.py` | Estados da chamada com guards |
+| **HeartbeatMonitor** | `heartbeat.py` | Detecção proativa de problemas |
+| **TimeoutManager** | `timeout_manager.py` | Timeouts controlados internamente |
+| **VoiceEvent** | `events.py` | Tipos de eventos (enum + dataclass) |
+
+### Regras de Modificação
+
+1. **SEMPRE use VoiceEventType** para novos eventos (não strings)
+2. **NUNCA manipule StateMachine._state diretamente** - use `trigger()`
+3. **Guards devem retornar bool** - não lançar exceções
+4. **Heartbeat pause/resume** durante transferências
+
+### Fluxo de Eventos Típico
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. TransferManager detecta necessidade de transferir        │
+│    └─> emit(TRANSFER_REQUESTED)                             │
+│                                                              │
+│ 2. RealtimeSession recebe evento                            │
+│    └─> state_machine.request_transfer()                     │
+│    └─> state_machine.trigger("destination_validated")       │
+│                                                              │
+│ 3. ConferenceTransferManager executa                        │
+│    └─> emit(TRANSFER_DIALING, TRANSFER_ANSWERED, etc)       │
+│                                                              │
+│ 4. RealtimeSession sincroniza                               │
+│    └─> state_machine.trigger("bridge_complete")             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Logs Estruturados
+
+```bash
+# Identificação visual por emoji
+📢 [EVENT_BUS]      # Eventos emitidos
+🔄 [STATE_MACHINE]  # Transições de estado  
+💓 [HEARTBEAT]      # Monitoramento de saúde
+⏱️ [TIMEOUT_MGR]   # Timeouts
+📞 [SESSION]        # Início/fim de chamada
+⚠️ [CORE]          # Warnings
+
+# Filtrar por componente
+grep "STATE_MACHINE" logs/realtime-error.log
+grep "📞" logs/realtime-error.log
+```
+
+---
+
 ## 📚 Knowledge Base (OBRIGATÓRIO)
 
 **SEMPRE consulte a Knowledge Base antes de modificar providers de IA:**
 
 - **Arquivo principal:** `docs/KNOWLEDGE_BASE.md`
+- **Arquitetura interna:** `docs/PLANO-ARQUITETURA-INTERNA.md`
 - **Context7 MCP:** Use para buscar documentação atualizada
 
 ### Context7 Library IDs
