@@ -300,25 +300,62 @@ class ConferenceAnnouncementSession:
         try:
             self._running = True
             
+            # Helper para verificar hangup do A-leg (cliente)
+            def check_a_leg_hangup() -> bool:
+                if self._a_leg_hangup_event and self._a_leg_hangup_event.is_set():
+                    logger.warning("🚨 [ANNOUNCEMENT] A-leg hangup detected - aborting")
+                    self._rejected = True
+                    self._rejection_message = "Cliente desligou"
+                    return True
+                return False
+            
             # 1. Conectar ao OpenAI Realtime
             logger.info("🔌 Step 1: Connecting to OpenAI Realtime...")
             await self._connect_openai()
             logger.info("✅ Step 1: Connected")
+            
+            # Verificar A-leg antes de continuar
+            if check_a_leg_hangup():
+                return ConferenceAnnouncementResult(
+                    accepted=False, rejected=True, 
+                    message="Cliente desligou", duration_seconds=time.time() - start_time
+                )
             
             # 2. Configurar sessão COM function calls
             logger.info("⚙️ Step 2: Configuring session with tools...")
             await self._configure_session_with_tools()
             logger.info("✅ Step 2: Session configured")
             
+            # Verificar A-leg antes de continuar
+            if check_a_leg_hangup():
+                return ConferenceAnnouncementResult(
+                    accepted=False, rejected=True,
+                    message="Cliente desligou", duration_seconds=time.time() - start_time
+                )
+            
             # 3. Iniciar stream de áudio
             logger.info("🎤 Step 3: Starting audio stream...")
             await self._start_audio_stream()
             logger.info("✅ Step 3: Audio stream ready")
             
+            # Verificar A-leg antes de continuar
+            if check_a_leg_hangup():
+                return ConferenceAnnouncementResult(
+                    accepted=False, rejected=True,
+                    message="Cliente desligou", duration_seconds=time.time() - start_time
+                )
+            
             # 4. Enviar mensagem inicial
             logger.info("💬 Step 4: Sending initial message...")
             await self._send_initial_message()
             logger.info("✅ Step 4: Initial message sent")
+            
+            # Verificar A-leg antes de entrar no loop
+            if check_a_leg_hangup():
+                return ConferenceAnnouncementResult(
+                    accepted=False, rejected=True,
+                    message="Cliente desligou", duration_seconds=time.time() - start_time
+                )
             
             # 5. Loop principal - processar eventos até decisão ou timeout
             logger.info(f"▶️ Step 5: Waiting for decision (timeout={timeout}s)...")
