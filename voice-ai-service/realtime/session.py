@@ -41,7 +41,6 @@ from .handlers.handoff import HandoffHandler, HandoffConfig, HandoffResult
 from .core import (
     EventBus,
     CallStateMachine,
-    CallState as CoreCallState,
     HeartbeatMonitor,
     TimeoutManager,
     TimeoutConfig,
@@ -911,8 +910,8 @@ class RealtimeSession:
         # Transição da máquina de estados: idle -> connecting
         await self.state_machine.connect()
         
-        # Iniciar HeartbeatMonitor em background
-        await self.heartbeat.start()
+        # NOTA: HeartbeatMonitor é iniciado após _create_provider() para evitar
+        # falsos positivos de PROVIDER_TIMEOUT antes do provider existir
         
         self._metrics.session_started(
             domain_uuid=self.domain_uuid,
@@ -940,6 +939,10 @@ class RealtimeSession:
         try:
             await self._create_provider()
             self._setup_resampler()
+            
+            # Iniciar HeartbeatMonitor APÓS provider estar conectado
+            # para evitar falsos positivos de PROVIDER_TIMEOUT
+            await self.heartbeat.start()
             
             # FASE 1: Inicializar TransferManager para handoff inteligente
             if self.config.intelligent_handoff_enabled:
@@ -1148,8 +1151,11 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         await self._provider.configure()
         
         # Transição de estado: connecting -> connected -> listening
-        await self.state_machine.connected()
-        await self.state_machine.start_listening()
+        # Só fazer transições se ainda estiver em 'connecting' (primeira conexão)
+        # Em reconexões, o estado já será 'listening' ou outro
+        if self.state_machine.state.value == "connecting":
+            await self.state_machine.connected()
+            await self.state_machine.start_listening()
     
     def _build_system_prompt_with_guardrails(self) -> str:
         """
@@ -1651,9 +1657,12 @@ Quando o cliente pedir para falar com humano/setor:
             # Atualizar HeartbeatMonitor com resposta do provider
             self.heartbeat.provider_responded()
             
-            # Transição de estado: listening -> speaking (só na primeira vez)
+            # Transição de estado: listening/processing -> speaking (só na primeira vez)
+            # Verifica se está em estado que permite transição para speaking
             if not was_speaking and not self._transfer_in_progress:
-                await self.state_machine.ai_start_speaking()
+                current_state = self.state_machine.state.value
+                if current_state in ("listening", "processing"):
+                    await self.state_machine.ai_start_speaking()
             
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.SPEAKING, "audio_delta")
@@ -1694,7 +1703,9 @@ Quando o cliente pedir para falar com humano/setor:
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "audio_done")
                 # Transição de estado: speaking -> listening
-                await self.state_machine.ai_stop_speaking()
+                # Só fazer transição se estiver em 'speaking'
+                if self.state_machine.state.value == "speaking":
+                    await self.state_machine.ai_stop_speaking()
             
             # Flush buffer restante ao final do áudio
             if self._resampler:
@@ -3174,17 +3185,23 @@ Quando o cliente pedir para falar com humano/setor:
         # ========================================
         # Core - Parar componentes de controle interno
         # ========================================
-        # Parar HeartbeatMonitor
-        await self.heartbeat.stop()
-        
-        # Cancelar timeouts ativos
-        self.timeouts.cancel_all()
-        
-        # Transição final da máquina de estados
-        await self.state_machine.force_end(reason=reason)
-        
-        # Fechar EventBus
-        self.events.close()
+        try:
+            # Parar HeartbeatMonitor (seguro mesmo se não foi iniciado)
+            await self.heartbeat.stop()
+            
+            # Cancelar timeouts ativos
+            self.timeouts.cancel_all()
+            
+            # Transição final da máquina de estados (só se não estiver em 'ended')
+            if self.state_machine.state.value != "ended":
+                await self.state_machine.force_end(reason=reason)
+            
+            # Fechar EventBus
+            self.events.close()
+        except Exception as e:
+            logger.warning(f"Error stopping core components: {e}", extra={
+                "call_uuid": self.call_uuid
+            })
         
         logger.info("Realtime session stopped", extra={
             "call_uuid": self.call_uuid,
