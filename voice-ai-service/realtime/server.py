@@ -250,28 +250,44 @@ class RealtimeServer:
         manager = get_session_manager()
         metrics = get_metrics()
         session = None
-        
-        # Criar sessão imediatamente (mod_audio_stream não envia metadata)
-        # caller_id agora é recebido via URL
-        try:
-            session = await self._create_session_from_db(
-                secretary_uuid=secretary_uuid,
-                call_uuid=call_uuid,
-                caller_id=caller_id,
-                websocket=websocket,
+
+        # Reusar sessão se já existir (reconexão do WS durante transfer)
+        existing = manager.get_session(call_uuid)
+        if existing and existing.is_active:
+            logger.info("WS reconectado - reutilizando sessão", extra={
+                "call_uuid": call_uuid,
+                "secretary_uuid": secretary_uuid,
+            })
+            session = existing
+            send_audio, clear_playback, flush_audio = self._build_audio_handlers(websocket, call_uuid)
+            session.update_audio_handlers(
+                on_audio_output=send_audio,
+                on_barge_in=clear_playback,
+                on_transfer=clear_playback,
+                on_audio_done=flush_audio,
             )
-            logger.info("Session created", extra={
-                "secretary_uuid": secretary_uuid,
-                "call_uuid": call_uuid,
-                "session_active": session.is_active if session else False,
-            })
-        except Exception as e:
-            logger.error(f"Failed to create session: {e}", extra={
-                "secretary_uuid": secretary_uuid,
-                "call_uuid": call_uuid,
-            })
-            await websocket.close(1011, f"Session creation failed: {e}")
-            return
+        else:
+            # Criar sessão imediatamente (mod_audio_stream não envia metadata)
+            # caller_id agora é recebido via URL
+            try:
+                session = await self._create_session_from_db(
+                    secretary_uuid=secretary_uuid,
+                    call_uuid=call_uuid,
+                    caller_id=caller_id,
+                    websocket=websocket,
+                )
+                logger.info("Session created", extra={
+                    "secretary_uuid": secretary_uuid,
+                    "call_uuid": call_uuid,
+                    "session_active": session.is_active if session else False,
+                })
+            except Exception as e:
+                logger.error(f"Failed to create session: {e}", extra={
+                    "secretary_uuid": secretary_uuid,
+                    "call_uuid": call_uuid,
+                })
+                await websocket.close(1011, f"Session creation failed: {e}")
+                return
         
         # Log para debug - início do loop de mensagens
         logger.info("Starting message loop, waiting for audio from FreeSWITCH...", extra={
@@ -357,7 +373,230 @@ class RealtimeServer:
             })
             
             if session and session.is_active:
-                await session.stop("connection_closed")
+                if getattr(session, "in_transfer", False):
+                    logger.warning(
+                        "WebSocket closed during transfer/handoff - mantendo sessão ativa",
+                        extra={"call_uuid": call_uuid}
+                    )
+                else:
+                    await session.stop("connection_closed")
+
+    def _build_audio_handlers(
+        self,
+        websocket: ServerConnection,
+        call_uuid: str,
+    ):
+        """
+        Cria handlers de áudio ligados a uma conexão WS específica.
+        Usado tanto na criação da sessão quanto em reconexões.
+        """
+        audio_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
+        pending = bytearray()
+        sender_task: Optional[asyncio.Task] = None
+        format_sent = False
+        playback_generation = 0
+        playback_lock = asyncio.Lock()
+        playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
+        allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
+
+        # Determinar sample rate e chunk size para OUTPUT
+        fs_sample_rate = 8000
+        fs_chunk_size = 320   # L16: 8000 samples/s * 0.020s * 2 bytes/sample
+        logger.info(
+            f"Audio output format: L16 PCM @ {fs_sample_rate}Hz, {fs_chunk_size}B/chunk",
+            extra={"call_uuid": call_uuid}
+        )
+
+        # Forçar streamAudio para compatibilidade
+        if playback_mode not in ("rawaudio", "streamaudio"):
+            playback_mode = "streamaudio"
+        playback_mode = "streamaudio"
+
+        # Calcular tamanho do frame streamAudio
+        streamaudio_frame_bytes = int(fs_sample_rate * 2 * STREAMAUDIO_FRAME_MS / 1000)
+        logger.info(
+            f"Playback mode: {playback_mode}, frame_size: {streamaudio_frame_bytes}B ({STREAMAUDIO_FRAME_MS}ms)",
+            extra={"call_uuid": call_uuid}
+        )
+
+        async def _send_rawaudio_header() -> bool:
+            nonlocal format_sent
+            if format_sent:
+                return True
+            try:
+                format_msg = json.dumps({
+                    "type": "rawAudio",
+                    "data": {"sampleRate": fs_sample_rate}
+                })
+                await websocket.send(format_msg)
+                format_sent = True
+                logger.info(
+                    f"Audio format sent to FreeSWITCH (rawAudio @ {fs_sample_rate}Hz)",
+                    extra={"call_uuid": call_uuid}
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to send rawAudio header: {e}", extra={"call_uuid": call_uuid})
+                return False
+
+        _metrics = get_metrics()
+
+        async def _send_streamaudio_chunk(chunk_bytes: bytes) -> None:
+            payload = json.dumps({
+                "type": "streamAudio",
+                "data": {
+                    "audioDataType": "raw",
+                    "sampleRate": fs_sample_rate,
+                    "audioData": base64.b64encode(chunk_bytes).decode("utf-8"),
+                }
+            })
+            await websocket.send(payload)
+            try:
+                _metrics.record_audio(call_uuid, "out", len(chunk_bytes))
+            except Exception:
+                pass
+
+        async def _send_stop_audio() -> None:
+            try:
+                await websocket.send(json.dumps({"type": "stopAudio"}))
+                logger.info("StopAudio sent to FreeSWITCH (barge-in)", extra={"call_uuid": call_uuid})
+            except Exception as e:
+                logger.warning(f"Failed to send stopAudio: {e}", extra={"call_uuid": call_uuid})
+
+        async def _sender_loop_rawaudio() -> None:
+            nonlocal playback_mode
+            try:
+                last_health_update = 0.0
+                chunks_sent = 0
+                batch_buffer = bytearray()
+                warmup_complete = False
+                last_send_time = 0.0
+
+                warmup_bytes = 1600
+                batch_bytes = 1600
+                batch_duration_ms = 100.0
+
+                while True:
+                    item = await audio_out_queue.get()
+                    if item is None:
+                        if batch_buffer:
+                            await _send_streamaudio_chunk(bytes(batch_buffer))
+                        return
+
+                    if isinstance(item[0], str) and item[0] == "STOP":
+                        batch_buffer.clear()
+                        warmup_complete = False
+                        last_send_time = 0.0
+                        await _send_stop_audio()
+                        continue
+
+                    if isinstance(item[0], str) and item[0] == "FLUSH":
+                        if batch_buffer:
+                            remaining_bytes = len(batch_buffer)
+                            await _send_streamaudio_chunk(bytes(batch_buffer))
+
+                            remaining_duration_ms = (remaining_bytes / 16.0) + 50
+                            logger.debug(
+                                f"FLUSH: sent {remaining_bytes} bytes, waiting {remaining_duration_ms:.0f}ms tail buffer",
+                                extra={"call_uuid": call_uuid}
+                            )
+                            await asyncio.sleep(remaining_duration_ms / 1000.0)
+                            batch_buffer.clear()
+                        continue
+
+                    generation, chunk = item
+                    if generation != playback_generation:
+                        continue
+
+                    batch_buffer.extend(chunk)
+
+                    if not warmup_complete:
+                        if len(batch_buffer) >= warmup_bytes:
+                            warmup_complete = True
+                            last_send_time = time.time()
+                            logger.info(
+                                f"Streaming warmup complete ({len(batch_buffer)} bytes)",
+                                extra={"call_uuid": call_uuid}
+                            )
+                        else:
+                            continue
+
+                    if len(batch_buffer) >= batch_bytes:
+                        now = time.time()
+                        elapsed_ms = (now - last_send_time) * 1000
+                        if elapsed_ms < batch_duration_ms:
+                            wait_ms = batch_duration_ms - elapsed_ms
+                            await asyncio.sleep(wait_ms / 1000.0)
+
+                        await _send_streamaudio_chunk(bytes(batch_buffer))
+                        last_send_time = time.time()
+                        chunks_sent += 1
+                        batch_buffer.clear()
+
+                        if chunks_sent == 1:
+                            logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
+
+                    now = time.time()
+                    if now - last_health_update >= 1.0:
+                        session_metrics = _metrics.get_session_metrics(call_uuid)
+                        if session_metrics:
+                            health_score = 100.0 - min(30.0, session_metrics.avg_latency_ms / 50.0)
+                            _metrics.update_health_score(call_uuid, health_score)
+                        last_health_update = now
+
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("WebSocket closed during audio playback", extra={"call_uuid": call_uuid})
+            except Exception as e:
+                logger.error(
+                    f"Error in FreeSWITCH playback sender loop: {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
+
+        async def send_audio(audio_bytes: bytes):
+            nonlocal sender_task
+            try:
+                if not audio_bytes:
+                    return
+
+                if sender_task is None:
+                    sender_task = asyncio.create_task(_sender_loop_rawaudio())
+                    logger.info(
+                        f"FreeSWITCH playback sender started (mode={playback_mode})",
+                        extra={"call_uuid": call_uuid}
+                    )
+
+                pending.extend(audio_bytes)
+
+                while len(pending) >= fs_chunk_size:
+                    chunk = bytes(pending[:fs_chunk_size])
+                    del pending[:fs_chunk_size]
+                    await audio_out_queue.put((playback_generation, chunk))
+
+            except Exception as e:
+                logger.error(
+                    f"Error queueing audio for FreeSWITCH (rawAudio): {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
+
+        async def clear_playback(_: str) -> None:
+            nonlocal playback_generation
+            async with playback_lock:
+                playback_generation += 1
+                pending.clear()
+                try:
+                    while True:
+                        audio_out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                if sender_task is not None:
+                    await audio_out_queue.put(("STOP", playback_generation))
+
+        async def flush_audio():
+            await audio_out_queue.put(("FLUSH", playback_generation))
+
+        return send_audio, clear_playback, flush_audio
     
     async def _create_session_from_db(
         self,
@@ -865,275 +1104,8 @@ class RealtimeServer:
             "provider": config.provider_name,
         })
         
-        # Callback para enviar áudio de volta ao FreeSWITCH
-        #
-        # Protocolo rawAudio + binário (mod_audio_stream v1.0.3+):
-        # - G.711 @ 8kHz: {"sampleRate":8000}, chunks de 160 bytes (20ms)
-        # - L16 @ 16kHz: {"sampleRate":16000}, chunks de 640 bytes (20ms)
-        # - L16 @ 8kHz: {"sampleRate":8000}, chunks de 320 bytes (20ms)
-        #
-        # Ref: https://github.com/os11k/freeswitch-elevenlabs-bridge/blob/main/server.js
-        audio_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
-        pending = bytearray()
-        sender_task: Optional[asyncio.Task] = None
-        format_sent = False
-        playback_generation = 0
-        playback_lock = asyncio.Lock()
-        playback_mode = os.getenv("FS_PLAYBACK_MODE", "rawAudio").lower()
-        allow_streamaudio_fallback = os.getenv("FS_STREAMAUDIO_FALLBACK", "true").lower() in ("1", "true", "yes")
-        
-        # Determinar sample rate e chunk size para OUTPUT
-        # NOTA: mod_audio_stream sempre espera L16 PCM para playback (streamAudio)
-        # A conversão G.711 só acontece na entrada (FS→Python)
-        # Output é sempre L16 @ 8kHz
-        fs_sample_rate = 8000
-        fs_chunk_size = 320   # L16: 8000 samples/s * 0.020s * 2 bytes/sample
-        logger.info(f"Audio output format: L16 PCM @ {fs_sample_rate}Hz, {fs_chunk_size}B/chunk", extra={"call_uuid": call_uuid})
-        
-        # Audio Configuration - usar valores já extraídos do banco (db_warmup_* definidos acima)
-        adaptive_warmup = db_adaptive_warmup
-        warmup_min = max(5, db_warmup_chunks - 10)  # min = default - 10 (mas pelo menos 5)
-        warmup_max = db_warmup_chunks + 10  # max = default + 10
-        warmup_default = db_warmup_chunks
-        
-        # Provider config pode sobrescrever
-        if isinstance(provider_config, dict):
-            if "adaptive_warmup" in provider_config:
-                adaptive_warmup = str(provider_config.get("adaptive_warmup")).lower() in ("1", "true", "yes")
-            if "warmup_chunks_min" in provider_config:
-                warmup_min = int(provider_config.get("warmup_chunks_min"))
-            if "warmup_chunks_max" in provider_config:
-                warmup_max = int(provider_config.get("warmup_chunks_max"))
-            if "warmup_chunks" in provider_config:
-                warmup_default = int(provider_config.get("warmup_chunks"))
-        # NOTA: mod_audio_stream não suporta rawAudio binário para recepção
-        # Apenas streamAudio (base64 → arquivo → playback) funciona
-        # Forçar streamAudio até mod_audio_stream ser atualizado
-        if playback_mode not in ("rawaudio", "streamaudio"):
-            playback_mode = "streamaudio"
-        # Forçar streamAudio para compatibilidade
-        playback_mode = "streamaudio"
-        
-        # Calcular tamanho do frame streamAudio baseado no sample rate real
-        # L16 @ 8kHz: 8000 samples/s * 2 bytes * 0.200s = 3200 bytes (200ms)
-        streamaudio_frame_bytes = int(fs_sample_rate * 2 * STREAMAUDIO_FRAME_MS / 1000)
-        logger.info(f"Playback mode: {playback_mode}, frame_size: {streamaudio_frame_bytes}B ({STREAMAUDIO_FRAME_MS}ms)", extra={"call_uuid": call_uuid})
-
-        async def _send_rawaudio_header() -> bool:
-            nonlocal format_sent
-            if format_sent:
-                return True
-            try:
-                format_msg = json.dumps({
-                    "type": "rawAudio",
-                    "data": {
-                        "sampleRate": fs_sample_rate
-                    }
-                })
-                await websocket.send(format_msg)
-                format_sent = True
-                logger.info(f"Audio format sent to FreeSWITCH (rawAudio @ {fs_sample_rate}Hz)", extra={"call_uuid": call_uuid})
-                return True
-            except Exception as e:
-                logger.warning(f"Failed to send rawAudio header: {e}", extra={"call_uuid": call_uuid})
-                return False
-
-        # Obter instância de métricas para funções aninhadas
-        _metrics = get_metrics()
-
-        async def _send_streamaudio_chunk(chunk_bytes: bytes) -> None:
-            """Send audio chunk directly to FreeSWITCH streaming buffer."""
-            payload = json.dumps({
-                "type": "streamAudio",
-                "data": {
-                    "audioDataType": "raw",
-                    "sampleRate": fs_sample_rate,
-                    "audioData": base64.b64encode(chunk_bytes).decode("utf-8"),
-                }
-            })
-            await websocket.send(payload)
-            try:
-                _metrics.record_audio(call_uuid, "out", len(chunk_bytes))
-            except Exception:
-                pass
-        
-        async def _send_stop_audio() -> None:
-            """Send stop signal for barge-in."""
-            try:
-                await websocket.send(json.dumps({"type": "stopAudio"}))
-                logger.info("StopAudio sent to FreeSWITCH (barge-in)", extra={"call_uuid": call_uuid})
-            except Exception as e:
-                logger.warning(f"Failed to send stopAudio: {e}", extra={"call_uuid": call_uuid})
-
-        async def _sender_loop_rawaudio() -> None:
-            """
-            Envia áudio para o buffer de streaming do FreeSWITCH.
-            
-            v2.2: TRUE STREAMING com rate limiting:
-            - Warmup: acumula 100ms antes de enviar (evita underrun inicial)
-            - Batch: agrupa chunks de 100ms
-            - Rate limit: envia na velocidade de tempo real para evitar buffer overrun
-            - O mod_audio_stream mantém ring buffer e injeta no canal
-            """
-            nonlocal playback_mode
-            try:
-                last_health_update = 0.0
-                chunks_sent = 0
-                batch_buffer = bytearray()
-                warmup_complete = False
-                last_send_time = 0.0
-                
-                # Configuração de streaming
-                # Warmup: 100ms = 5 chunks de 20ms = 1600 bytes @ 8kHz L16
-                warmup_bytes = 1600
-                # Batch: enviar a cada 100ms para reduzir overhead
-                batch_bytes = 1600
-                # Rate limit: 100ms de áudio = 100ms de tempo real
-                batch_duration_ms = 100.0
-                
-                while True:
-                    item = await audio_out_queue.get()
-                    if item is None:
-                        # Flush remaining batch
-                        if batch_buffer:
-                            await _send_streamaudio_chunk(bytes(batch_buffer))
-                        return
-                    
-                    # Tratar sentinela STOP (barge-in)
-                    if isinstance(item[0], str) and item[0] == "STOP":
-                        batch_buffer.clear()
-                        warmup_complete = False
-                        last_send_time = 0.0
-                        await _send_stop_audio()
-                        continue
-                    
-                    # Tratar sentinela FLUSH (fim de resposta)
-                    # Envia os bytes restantes e aguarda tempo proporcional (tail buffer)
-                    if isinstance(item[0], str) and item[0] == "FLUSH":
-                        if batch_buffer:
-                            remaining_bytes = len(batch_buffer)
-                            await _send_streamaudio_chunk(bytes(batch_buffer))
-                            
-                            # TAIL BUFFER: Calcular duração do áudio restante e aguardar
-                            # L16 @ 8kHz = 16000 bytes/segundo (8000 samples * 2 bytes)
-                            # Adicionar 50ms extra de margem de segurança
-                            remaining_duration_ms = (remaining_bytes / 16.0) + 50
-                            
-                            logger.debug(
-                                f"FLUSH: sent {remaining_bytes} bytes, waiting {remaining_duration_ms:.0f}ms tail buffer",
-                                extra={"call_uuid": call_uuid}
-                            )
-                            
-                            # Aguardar o tempo do áudio restante para garantir playback completo
-                            await asyncio.sleep(remaining_duration_ms / 1000.0)
-                            batch_buffer.clear()
-                        continue
-                    
-                    generation, chunk = item
-                    if generation != playback_generation:
-                        continue
-                    
-                    # Acumular no batch buffer
-                    batch_buffer.extend(chunk)
-                    
-                    # Warmup: esperar ter dados suficientes antes de começar
-                    if not warmup_complete:
-                        if len(batch_buffer) >= warmup_bytes:
-                            warmup_complete = True
-                            last_send_time = time.time()
-                            logger.info(f"Streaming warmup complete ({len(batch_buffer)} bytes)", 
-                                       extra={"call_uuid": call_uuid})
-                        else:
-                            continue
-                    
-                    # Enviar batch quando atingir tamanho alvo
-                    if len(batch_buffer) >= batch_bytes:
-                        # Rate limit: esperar tempo real antes de enviar próximo batch
-                        now = time.time()
-                        elapsed_ms = (now - last_send_time) * 1000
-                        if elapsed_ms < batch_duration_ms:
-                            wait_ms = batch_duration_ms - elapsed_ms
-                            await asyncio.sleep(wait_ms / 1000.0)
-                        
-                        await _send_streamaudio_chunk(bytes(batch_buffer))
-                        last_send_time = time.time()
-                        chunks_sent += 1
-                        batch_buffer.clear()
-                        
-                        if chunks_sent == 1:
-                            logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
-
-                    # Atualizar health score periodicamente
-                    now = time.time()
-                    if now - last_health_update >= 1.0:
-                        session_metrics = _metrics.get_session_metrics(call_uuid)
-                        if session_metrics:
-                            health_score = 100.0 - min(30.0, session_metrics.avg_latency_ms / 50.0)
-                            _metrics.update_health_score(call_uuid, health_score)
-                        last_health_update = now
-
-            except websockets.exceptions.ConnectionClosed:
-                logger.debug("WebSocket closed during audio playback", extra={"call_uuid": call_uuid})
-            except Exception as e:
-                logger.error(
-                    f"Error in FreeSWITCH playback sender loop: {e}",
-                    exc_info=True,
-                    extra={"call_uuid": call_uuid},
-                )
-
-        async def send_audio(audio_bytes: bytes):
-            """
-            Recebe áudio do provider (PCM16) e enfileira em chunks de 20ms (640 bytes).
-            """
-            nonlocal sender_task
-            try:
-                if not audio_bytes:
-                    return
-
-                if sender_task is None:
-                    sender_task = asyncio.create_task(_sender_loop_rawaudio())
-                    logger.info(f"FreeSWITCH playback sender started (mode={playback_mode})", extra={"call_uuid": call_uuid})
-
-                pending.extend(audio_bytes)
-
-                # Usar tamanho de chunk baseado no formato (G.711=160B, L16@8k=320B)
-                while len(pending) >= fs_chunk_size:
-                    chunk = bytes(pending[:fs_chunk_size])
-                    del pending[:fs_chunk_size]
-                    await audio_out_queue.put((playback_generation, chunk))
-
-            except Exception as e:
-                logger.error(
-                    f"Error queueing audio for FreeSWITCH (rawAudio): {e}",
-                    exc_info=True,
-                    extra={"call_uuid": call_uuid},
-                )
-
-        async def clear_playback(_: str) -> None:
-            """
-            Barge-in: limpa buffer local e envia stopAudio para FreeSWITCH.
-            """
-            nonlocal playback_generation
-            async with playback_lock:
-                playback_generation += 1
-                pending.clear()
-                try:
-                    while True:
-                        audio_out_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                # Enviar STOP para FreeSWITCH limpar seu buffer interno
-                if sender_task is not None:
-                    await audio_out_queue.put(("STOP", playback_generation))
-        
-        async def flush_audio():
-            """
-            Callback quando a resposta de áudio termina.
-            Envia FLUSH para o sender loop enviar os bytes restantes no batch_buffer.
-            """
-            if sender_task is not None:
-                await audio_out_queue.put(("FLUSH", playback_generation))
-                logger.debug("FLUSH signal sent to sender loop", extra={"call_uuid": call_uuid})
+        # Handlers de áudio para este WebSocket
+        send_audio, clear_playback, flush_audio = self._build_audio_handlers(websocket, call_uuid)
         
         # Criar sessão via manager
         manager = get_session_manager()

@@ -701,6 +701,34 @@ class RealtimeSession:
     @property
     def is_active(self) -> bool:
         return self._started and not self._ended
+
+    @property
+    def in_transfer(self) -> bool:
+        """
+        Indica se a sessão está em transferência ou aguardando handoff.
+        Útil para evitar encerrar a sessão quando o WS fecha durante transfer.
+        """
+        return self._transfer_in_progress or self._handoff_pending
+
+    def update_audio_handlers(
+        self,
+        on_audio_output: Optional[Callable] = None,
+        on_barge_in: Optional[Callable] = None,
+        on_transfer: Optional[Callable] = None,
+        on_audio_done: Optional[Callable] = None,
+    ) -> None:
+        """
+        Atualiza handlers de áudio para reconexões do WS.
+        Mantém a sessão e apenas troca os callbacks de saída/controle.
+        """
+        if on_audio_output:
+            self._on_audio_output = on_audio_output
+        if on_barge_in:
+            self._on_barge_in = on_barge_in
+        if on_transfer:
+            self._on_transfer = on_transfer
+        if on_audio_done:
+            self._on_audio_done = on_audio_done
     
     @property
     def transcript(self) -> List[TranscriptEntry]:
