@@ -139,6 +139,7 @@ class ConferenceAnnouncementSession:
         self._accepted = False
         self._rejected = False
         self._rejection_message: Optional[str] = None
+        self._reject_retry_count = 0
         
         # Evento para sinalizar decisão via function call
         self._decision_event = asyncio.Event()
@@ -1177,28 +1178,44 @@ class ConferenceAnnouncementSession:
                 
                 logger.info(f"🔍 Safety check (reject): raw='{combined_transcript}', clean='{combined_clean}', is_greeting={is_only_greeting}, is_ambiguous={is_ambiguous}")
                 
-                if is_only_greeting or is_ambiguous:
-                    # NÃO rejeitar - foi saudação ou expressão ambígua
-                    # Fazer a IA perguntar novamente
-                    logger.info(f"🔄 Function call IGNORED: reject→ask_again (greeting/ambiguous)")
-                    # Enviar output e fazer a IA perguntar de novo
-                    if call_id:
-                        await self._send_function_output(call_id, {"status": "ignored_ambiguous"})
-                    
-                    # Solicitar nova resposta perguntando diretamente
-                    try:
-                        await self._ws.send(json.dumps({
-                            "type": "response.create",
-                            "response": {
-                                "instructions": (
-                                    "O atendente não deu uma resposta clara. "
-                                    "Pergunte diretamente: 'Você pode atender essa ligação agora ou prefere que eu anote o recado?'"
-                                )
-                            }
-                        }))
-                        logger.info("🔄 Asked attendant again after ambiguous response")
-                    except Exception as e:
-                        logger.debug(f"Could not ask again: {e}")
+                # Verificar se há recusa EXPLÍCITA no transcript
+                rejection_indicators = [
+                    "não", "nao", "agora não", "agora nao", "não posso", "nao posso",
+                    "ocupado", "ocupada", "depois", "mais tarde", "não dá", "nao da",
+                    "não vai dar", "nao vai dar", "não consigo", "nao consigo",
+                    "recusar", "recuso", "não atendo", "nao atendo"
+                ]
+                has_explicit_reject = any(indicator in combined_clean for indicator in rejection_indicators)
+                
+                if not has_explicit_reject:
+                    logger.warning(f"⚠️ Safety check: reject_transfer sem recusa explícita no transcript")
+                
+                should_ask_again = (is_only_greeting or is_ambiguous or not has_explicit_reject)
+                if should_ask_again:
+                    if self._reject_retry_count < 1:
+                        self._reject_retry_count += 1
+                        reason = "greeting/ambiguous" if (is_only_greeting or is_ambiguous) else "unclear_reject"
+                        logger.info(f"🔄 Function call IGNORED: reject→ask_again ({reason})")
+                        if call_id:
+                            status = "ignored_ambiguous" if (is_only_greeting or is_ambiguous) else "ignored_unclear"
+                            await self._send_function_output(call_id, {"status": status})
+                        
+                        try:
+                            await self._ws.send(json.dumps({
+                                "type": "response.create",
+                                "response": {
+                                    "instructions": (
+                                        "O atendente não deu uma resposta clara. "
+                                        "Pergunte diretamente: 'Você pode atender essa ligação agora ou prefere que eu anote o recado?'"
+                                    )
+                                }
+                            }))
+                            logger.info("🔄 Asked attendant again after ambiguous response")
+                        except Exception as e:
+                            logger.debug(f"Could not ask again: {e}")
+                        return
+                    else:
+                        logger.warning("⚠️ Safety check: limite de re-tentativas atingido, aceitando rejeição")
                     
                     return  # Sair sem marcar decisão
                 
