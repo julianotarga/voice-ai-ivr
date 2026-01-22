@@ -1310,10 +1310,14 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.debug(f"Could not stop B-leg stream: {e}")
             
-            # 2. AGORA setar hangup_after_conference no A-leg
+            # 2. AGORA setar hangup_after_conference em AMBOS os legs
             # Só setamos aqui porque a transferência foi ACEITA.
             # Se o atendente desligasse ANTES de aceitar, o cliente ficaria na linha
             # para receber feedback e poder deixar recado.
+            # 
+            # IMPORTANTE: Setar em AMBOS os legs garante que:
+            # - Se A-leg (cliente) desligar: conferência termina → B-leg desliga
+            # - Se B-leg (atendente) desligar: conferência termina (endconf) → A-leg desliga
             try:
                 await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_setvar {self.a_leg_uuid} hangup_after_conference true"),
@@ -1321,7 +1325,16 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 )
                 logger.debug("_handle_accepted: hangup_after_conference=true set on A-leg")
             except (asyncio.TimeoutError, Exception) as e:
-                logger.debug(f"_handle_accepted: Could not set hangup_after_conference: {e}")
+                logger.debug(f"_handle_accepted: Could not set hangup_after_conference on A-leg: {e}")
+            
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_setvar {self.b_leg_uuid} hangup_after_conference true"),
+                    timeout=2.0
+                )
+                logger.debug("_handle_accepted: hangup_after_conference=true set on B-leg")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug(f"_handle_accepted: Could not set hangup_after_conference on B-leg: {e}")
             
             # 3. Mover B-leg para conferência com flags corretas
             # moderator: pode controlar a conferência
@@ -1349,8 +1362,10 @@ Atendente: "Não posso agora" / "Estou ocupado"
             except asyncio.TimeoutError:
                 logger.warning("B-leg transfer timeout, continuing anyway")
             
-            # 4. Desmutar e tirar deaf da A-leg na conferência
+            # 4. Desmutar, tirar deaf e adicionar endconf na A-leg
             # NOTA: Os comandos unmute/undeaf requerem member_id (número), não UUID
+            # IMPORTANTE: Adicionar 'endconf' ao A-leg garante que quando QUALQUER
+            # membro sair, a conferência termine e ambos desliguem.
             # Ref: Context7 - conference <confname> unmute/undeaf <member_id>|all|last|non_moderator
             
             member_id = await self._get_conference_member_id(self.a_leg_uuid)
@@ -1408,6 +1423,11 @@ Atendente: "Não posso agora" / "Estou ocupado"
             logger.info(f"   A-leg (cliente): {self.a_leg_uuid} - unmuted+undeaf")
             logger.info(f"   B-leg (atendente): {self.b_leg_uuid} - moderator|endconf")
             
+            # 6. Iniciar monitor de hangup pós-conferência
+            # Isso garante que quando o A-leg desligar, o B-leg também seja desligado
+            # (e vice-versa, embora o B-leg com endconf já faça isso automaticamente)
+            asyncio.create_task(self._monitor_conference_hangup())
+            
             # Emitir evento TRANSFER_COMPLETED (bridge feito com sucesso)
             await self._emit_event(
                 VoiceEventType.TRANSFER_COMPLETED,
@@ -1434,6 +1454,76 @@ Atendente: "Não posso agora" / "Estou ocupado"
                 decision=TransferDecision.ERROR,
                 error=str(e)
             )
+    
+    async def _monitor_conference_hangup(self) -> None:
+        """
+        Monitora a conferência para detectar quando um membro sai e desligar o outro.
+        
+        Isso é necessário porque:
+        - B-leg tem 'endconf', então quando B-leg sai, A-leg é desligado automaticamente
+        - A-leg NÃO tem 'endconf', então quando A-leg sai, B-leg fica sozinho
+        
+        Este monitor verifica periodicamente os membros e desliga o sobrevivente.
+        """
+        logger.info(f"📞 [HANGUP_MONITOR] Starting post-conference monitor for {self.conference_name}")
+        
+        check_interval = 2.0  # Verificar a cada 2 segundos
+        max_checks = 300  # Máximo 10 minutos (300 * 2s)
+        
+        for _ in range(max_checks):
+            try:
+                await asyncio.sleep(check_interval)
+                
+                # Verificar se a conferência ainda existe e quantos membros tem
+                result = await asyncio.wait_for(
+                    self.esl.execute_api(f"conference {self.conference_name} list count"),
+                    timeout=3.0
+                )
+                
+                result_str = str(result).strip()
+                
+                # Se conferência não existe mais ou tem 0 membros, parar
+                if "-ERR" in result_str or "not found" in result_str.lower():
+                    logger.info(f"📞 [HANGUP_MONITOR] Conference {self.conference_name} ended")
+                    break
+                
+                # Parsear o número de membros
+                # O output pode ser "1" ou "Conference xyz has 1 member" etc
+                try:
+                    # Tentar extrair número
+                    import re
+                    numbers = re.findall(r'\d+', result_str)
+                    if numbers:
+                        member_count = int(numbers[0])
+                        
+                        if member_count == 0:
+                            logger.info(f"📞 [HANGUP_MONITOR] Conference empty, stopping monitor")
+                            break
+                        elif member_count == 1:
+                            # Só 1 membro - alguém saiu, desligar o sobrevivente
+                            logger.warning(f"📞 [HANGUP_MONITOR] Only 1 member left, kicking remaining")
+                            
+                            # Desligar todos os membros restantes
+                            try:
+                                await asyncio.wait_for(
+                                    self.esl.execute_api(f"conference {self.conference_name} kick all"),
+                                    timeout=3.0
+                                )
+                                logger.info(f"📞 [HANGUP_MONITOR] Kicked remaining member")
+                            except Exception as e:
+                                logger.debug(f"Could not kick remaining member: {e}")
+                            break
+                except (ValueError, IndexError):
+                    pass
+                    
+            except asyncio.CancelledError:
+                logger.debug(f"📞 [HANGUP_MONITOR] Cancelled")
+                break
+            except Exception as e:
+                logger.debug(f"📞 [HANGUP_MONITOR] Check error: {e}")
+                # Continuar monitorando
+        
+        logger.info(f"📞 [HANGUP_MONITOR] Monitor ended for {self.conference_name}")
     
     async def _get_conference_member_id(self, uuid: str) -> Optional[str]:
         """

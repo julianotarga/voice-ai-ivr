@@ -472,7 +472,8 @@ class ConferenceAnnouncementSession:
                             "silence_duration_ms": 700
                         },
                         "transcription": {
-                            "model": "gpt-4o-transcribe"
+                            "model": "gpt-4o-transcribe",
+                            "language": "pt"  # Português para evitar transcrição em outros idiomas
                         },
                     },
                     "output": {
