@@ -242,13 +242,7 @@ class ConferenceTransferManager:
         logger.info(f"   Caller: {caller_name or self.caller_id}")
         logger.info("=" * 70)
         
-        # Emitir evento TRANSFER_DIALING no início
-        await self._emit_event(
-            VoiceEventType.TRANSFER_DIALING,
-            destination=destination,
-            context=context,
-            caller_name=caller_name,
-        )
+        # NOTA: TRANSFER_DIALING será emitido após validações (ESL, A-leg, ramal)
         
         try:
             # ============================================================
@@ -273,6 +267,11 @@ class ConferenceTransferManager:
                     logger.info(f"{elapsed()} STEP 0: ✅ ESL connected successfully")
                 except Exception as e:
                     logger.error(f"{elapsed()} STEP 0: ❌ Failed to connect ESL: {e}")
+                    await self._emit_event(
+                        VoiceEventType.TRANSFER_FAILED,
+                        reason="esl_connection_failed",
+                        error=str(e),
+                    )
                     return ConferenceTransferResult(
                         success=False,
                         decision=TransferDecision.ERROR,
@@ -350,6 +349,14 @@ class ConferenceTransferManager:
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
             logger.info(f"{elapsed()} STEP 2: ✅ Ramal disponível")
+            
+            # Emitir evento TRANSFER_DIALING após todas as validações
+            await self._emit_event(
+                VoiceEventType.TRANSFER_DIALING,
+                destination=destination,
+                context=context,
+                caller_name=caller_name,
+            )
             
             # ============================================================
             # STEP 3: Colocar cliente em espera (conferência mutada)
@@ -498,11 +505,8 @@ class ConferenceTransferManager:
             
             logger.info(f"{elapsed()} STEP 5: ✅ Decisão do atendente: {decision.value}")
             
-            # Emitir evento TRANSFER_WAITING_RESPONSE (anúncio concluído, aguardando decisão)
-            await self._emit_event(
-                VoiceEventType.TRANSFER_WAITING_RESPONSE,
-                decision=decision.value,
-            )
+            # NOTA: Evento de decisão (ACCEPTED/REJECTED/TIMEOUT) será emitido
+            # pelo método correspondente (_handle_accepted, _handle_rejected)
             
             # ============================================================
             # STEP 6: Processar decisão do atendente
@@ -542,6 +546,13 @@ class ConferenceTransferManager:
             logger.error(f"Transfer failed: {e}", exc_info=True)
             await self._stop_hangup_monitor()
             await self._cleanup_on_error()
+            
+            # Emitir evento TRANSFER_FAILED
+            await self._emit_event(
+                VoiceEventType.TRANSFER_FAILED,
+                reason="unexpected_error",
+                error=str(e),
+            )
             
             return ConferenceTransferResult(
                 success=False,
@@ -1397,6 +1408,11 @@ Atendente: "Não posso agora" / "Estou ocupado"
             
         except Exception as e:
             logger.error(f"Failed to complete transfer: {e}")
+            await self._emit_event(
+                VoiceEventType.TRANSFER_FAILED,
+                reason="bridge_failed",
+                error=str(e),
+            )
             return ConferenceTransferResult(
                 success=False,
                 decision=TransferDecision.ERROR,
