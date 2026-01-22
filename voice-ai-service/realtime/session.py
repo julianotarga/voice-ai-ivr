@@ -1616,7 +1616,14 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         # Log do primeiro frame de output
         if self._output_frame_count == 1:
-            logger.info(f"🔊 [OUTPUT] Primeiro frame do OpenAI: {original_len}B (PCM16 @ 24kHz)", extra={
+            # Detectar formato baseado no tamanho do frame
+            # G.711 @ 8kHz/20ms = 160 bytes (1 byte/sample)
+            # PCM16 @ 24kHz/20ms = 960 bytes (2 bytes/sample)
+            if original_len <= 200:
+                output_format_log = "G.711 @ 8kHz"
+            else:
+                output_format_log = "PCM16 @ 24kHz"
+            logger.info(f"🔊 [OUTPUT] Primeiro frame do OpenAI: {original_len}B ({output_format_log})", extra={
                 "call_uuid": self.call_uuid,
             })
         
@@ -1654,9 +1661,16 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             audio_bytes = self._resampler.resample_output(audio_bytes)
             # Log do primeiro resample
             if self._output_frame_count == 1 and audio_bytes:
-                logger.info(f"🔊 [OUTPUT] Após resample 24k→8k: {pre_resample_len}B → {len(audio_bytes)}B", extra={
-                    "call_uuid": self.call_uuid,
-                })
+                provider_out = self._provider.output_sample_rate if self._provider else 24000
+                fs_rate = self.config.freeswitch_sample_rate
+                if provider_out == fs_rate:
+                    logger.info(f"🔊 [OUTPUT] Passthrough (sem resample): {pre_resample_len}B → {len(audio_bytes)}B @ {fs_rate}Hz", extra={
+                        "call_uuid": self.call_uuid,
+                    })
+                else:
+                    logger.info(f"🔊 [OUTPUT] Após resample {provider_out//1000}k→{fs_rate//1000}k: {pre_resample_len}B → {len(audio_bytes)}B", extra={
+                        "call_uuid": self.call_uuid,
+                    })
         
         # Durante warmup, resample_output retorna b""
         # Durante transfer, não enviar áudio (cliente em silêncio)
