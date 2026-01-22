@@ -157,8 +157,9 @@ class ConferenceAnnouncementSession:
         # IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz
         # Resample direto 24kHz -> 8kHz (evita artefatos de resampling em cadeia)
         self._resampler_out_8k = Resampler(24000, 8000)
-        # Warmup de 400ms para buffer mais suave e evitar cortes iniciais
-        self._fs_audio_buffer = AudioBuffer(warmup_ms=400, sample_rate=8000)
+        # Warmup de 100ms - B-leg já está estável (diferente do A-leg que precisa de mais)
+        # 400ms causava delay de 5+ segundos até o atendente ouvir algo
+        self._fs_audio_buffer = AudioBuffer(warmup_ms=100, sample_rate=8000)
         
         # Buffer de áudio para fallback TTS
         self._audio_buffer = bytearray()
@@ -435,12 +436,21 @@ class ConferenceAnnouncementSession:
         if "preview" in self.model.lower():
             headers["OpenAI-Beta"] = "realtime=v1"
         
-        self._ws = await websockets.connect(
-            url,
-            additional_headers=headers,
-            ping_interval=20,
-            ping_timeout=10,
-        )
+        # Timeout de 5 segundos para conexão (8+ segundos é inaceitável)
+        try:
+            self._ws = await asyncio.wait_for(
+                websockets.connect(
+                    url,
+                    additional_headers=headers,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    open_timeout=5,  # Timeout para handshake
+                ),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.error("🔌 OpenAI connection timeout (5s) - rede pode estar lenta")
+            raise RuntimeError("OpenAI connection timeout - network may be slow")
         
         # Aguardar session.created
         msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
@@ -623,45 +633,21 @@ class ConferenceAnnouncementSession:
                 except Exception as e:
                     logger.error(f"🔌 ESL reconnect failed: {e}")
             
-            # DIAGNÓSTICO: Verificar estado do canal B-leg antes de iniciar stream
-            logger.info(f"🔍 [DIAG] Starting B-leg diagnostics for UUID: {self.b_leg_uuid}")
+            # Verificação rápida do B-leg (máximo 500ms)
+            # Os diagnósticos detalhados foram removidos - causavam 3+ segundos de delay
             try:
-                # Verificar se canal existe
-                logger.info(f"🔍 [DIAG] Calling uuid_exists...")
                 exists_response = await asyncio.wait_for(
                     self.esl.execute_api(f"uuid_exists {self.b_leg_uuid}"),
-                    timeout=3.0
+                    timeout=0.5
                 )
-                logger.info(f"🔍 [DIAG] B-leg exists check: '{exists_response}'")
-                
-                # Verificar estado do canal
-                logger.info(f"🔍 [DIAG] Calling uuid_getvar Channel-Call-State...")
-                state_response = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Channel-Call-State"),
-                    timeout=3.0
-                )
-                logger.info(f"🔍 [DIAG] B-leg Channel-Call-State: '{state_response}'")
-                
-                # Verificar se está answered
-                logger.info(f"🔍 [DIAG] Calling uuid_getvar Caller-Channel-Answered-Time...")
-                answered_response = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Caller-Channel-Answered-Time"),
-                    timeout=3.0
-                )
-                logger.info(f"🔍 [DIAG] B-leg Answered-Time: '{answered_response}'")
-                
-                # Verificar answer state
-                logger.info(f"🔍 [DIAG] Calling uuid_getvar Answer-State...")
-                answer_state = await asyncio.wait_for(
-                    self.esl.execute_api(f"uuid_getvar {self.b_leg_uuid} Answer-State"),
-                    timeout=3.0
-                )
-                logger.info(f"🔍 [DIAG] B-leg Answer-State: '{answer_state}'")
-                
-            except asyncio.TimeoutError as diag_e:
-                logger.error(f"🔍 [DIAG] Diagnóstico TIMEOUT: {diag_e}")
-            except Exception as diag_e:
-                logger.error(f"🔍 [DIAG] Diagnóstico falhou: {type(diag_e).__name__}: {diag_e}")
+                if "true" not in (exists_response or "").lower():
+                    logger.warning(f"🔍 B-leg não existe mais: {exists_response}")
+                    return AnnouncementResult(accepted=False, rejected=True, reason="B-leg gone")
+                logger.debug(f"🔍 B-leg exists: OK")
+            except asyncio.TimeoutError:
+                logger.debug("🔍 B-leg check timeout - continuing anyway")
+            except Exception as e:
+                logger.debug(f"🔍 B-leg check error: {e} - continuing anyway")
             
             # Iniciar mod_audio_stream no B-leg
             # IMPORTANTE: Tentar até 3 vezes com reconexão ESL entre tentativas
