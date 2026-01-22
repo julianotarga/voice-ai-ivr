@@ -267,6 +267,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         # Contadores para agregação de logs de áudio (reduzir ruído)
         self._audio_chunks_sent: int = 0
         self._audio_bytes_sent: int = 0
+        self._audio_chunks_received: int = 0
+        self._audio_bytes_received: int = 0
         self._last_audio_log_time: float = 0.0
         self._AUDIO_LOG_INTERVAL: float = 5.0  # Logar a cada 5 segundos
     
@@ -999,11 +1001,16 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             audio_b64 = event.get("delta", "")
             audio_bytes = base64.b64decode(audio_b64) if audio_b64 else b""
             
-            logger.info(f"OpenAI audio received: {len(audio_bytes)} bytes", extra={
-                "domain_uuid": self.config.domain_uuid,
-                "response_id": event.get("response_id"),
-                "event_type": etype,
-            })
+            # Agregação de logs - contar chunks, logar apenas no primeiro
+            self._audio_chunks_received += 1
+            self._audio_bytes_received += len(audio_bytes)
+            
+            # Log apenas no primeiro chunk de cada resposta
+            if self._audio_chunks_received == 1:
+                logger.info(
+                    f"🔊 [OPENAI] First audio chunk: {len(audio_bytes)}B",
+                    extra={"domain_uuid": self.config.domain_uuid}
+                )
             
             return ProviderEvent(
                 type=ProviderEventType.AUDIO_DELTA,
@@ -1014,10 +1021,19 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         
         # COMPATIBILIDADE: Suporta ambos os formatos de audio.done
         if etype in ("response.audio.done", "response.output_audio.done"):
-            logger.info("OpenAI audio output done", extra={
-                "domain_uuid": self.config.domain_uuid,
-                "event_type": etype,
-            })
+            # Log agregado do total de áudio recebido nesta resposta
+            logger.info(
+                f"🔊 [OPENAI] Audio complete: {self._audio_chunks_received} chunks, {self._audio_bytes_received}B",
+                extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "chunks": self._audio_chunks_received,
+                    "bytes": self._audio_bytes_received,
+                }
+            )
+            # Resetar contadores para próxima resposta
+            self._audio_chunks_received = 0
+            self._audio_bytes_received = 0
+            
             return ProviderEvent(type=ProviderEventType.AUDIO_DONE, data={})
         
         # ===== TRANSCRIÇÃO DO ASSISTENTE =====

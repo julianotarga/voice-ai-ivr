@@ -1742,10 +1742,7 @@ Quando o cliente pedir para falar com humano/setor:
                 logger.debug("Farewell response audio started, counter reset")
             
             if event.audio_bytes:
-                logger.info(f"Audio delta received: {len(event.audio_bytes)} bytes", extra={
-                    "call_uuid": self.call_uuid,
-                    "audio_size": len(event.audio_bytes),
-                })
+                # Log removido - já logado pelo provider de forma agregada
                 await self._handle_audio_output(event.audio_bytes)
             else:
                 logger.warning("Audio delta event with no audio bytes", extra={

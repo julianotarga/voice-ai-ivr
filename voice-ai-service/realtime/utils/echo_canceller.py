@@ -166,8 +166,8 @@ class EchoCancellerWrapper:
             self.speaker_buffer.append(delayed_frame)
             frames_moved += 1
         
-        # Log apenas nas primeiras 2 chamadas e a cada 100 (reduzir ruído)
-        if self._speaker_calls <= 2 or self._speaker_calls % 100 == 0:
+        # Log apenas na primeira chamada e a cada 100 (reduzir ruído)
+        if self._speaker_calls == 1 or self._speaker_calls % 100 == 0:
             logger.info(
                 f"🔊 [AEC] speaker #{self._speaker_calls}: "
                 f"+{frames_added} frames, buf={len(self.speaker_buffer)}"
