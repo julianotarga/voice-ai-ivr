@@ -59,6 +59,7 @@ from .handlers.transfer_manager import (
     get_offline_message,
     get_no_answer_message,
     get_busy_message,
+    get_rejected_message,
 )
 from .handlers.transfer_destination_loader import TransferDestination
 
@@ -4618,8 +4619,11 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 contextual_message = get_busy_message(destination_name)
             elif result.status == TransferStatus.NO_ANSWER:
                 contextual_message = get_no_answer_message(destination_name)
+            elif result.status == TransferStatus.REJECTED:
+                # Atendente rejeitou ativamente (clicou em reject no softphone)
+                contextual_message = get_rejected_message(destination_name)
             else:
-                # Fallback para outros status (REJECTED, FAILED, etc.)
+                # Fallback para outros status (FAILED, etc.)
                 contextual_message = get_no_answer_message(destination_name)
             
             # Construir instrução concisa para o OpenAI

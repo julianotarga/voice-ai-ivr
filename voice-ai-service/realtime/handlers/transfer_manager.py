@@ -88,6 +88,14 @@ BUSY_MESSAGES = [
     "Posso tentar novamente ou criar um protocolo?",
 ]
 
+# Mensagens quando destino rejeitou a chamada ativamente
+REJECTED_MESSAGES = [
+    "{destination} não pôde atender no momento. "
+    "Quer deixar um recado para retornarem?",
+    "A chamada não foi atendida por {destination}. "
+    "Posso anotar uma mensagem?",
+]
+
 
 def get_transfer_announcement(destination: str) -> str:
     """
@@ -130,6 +138,19 @@ def get_busy_message(destination: str) -> str:
         destination: Nome do destino (pessoa ou departamento)
     """
     msg = random.choice(BUSY_MESSAGES)
+    return msg.format(destination=destination)
+
+
+def get_rejected_message(destination: str) -> str:
+    """
+    Retorna mensagem aleatória para chamada rejeitada.
+    
+    Usado quando o atendente clica em "reject" no softphone.
+    
+    Args:
+        destination: Nome do destino (pessoa ou departamento)
+    """
+    msg = random.choice(REJECTED_MESSAGES)
     return msg.format(destination=destination)
 
 # Configurações padrão (usadas se não houver config do banco)
