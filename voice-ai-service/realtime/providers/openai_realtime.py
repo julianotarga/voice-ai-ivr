@@ -796,6 +796,44 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             "domain_uuid": self.config.domain_uuid,
         })
     
+    async def send_instruction(self, instruction: str) -> None:
+        """
+        Envia instrução para a IA executar e gerar áudio TTS.
+        
+        Diferente de send_text (que envia como input do usuário),
+        este método usa response.create com instruções específicas,
+        fazendo a IA FALAR o texto, não responder a ele.
+        
+        Útil para:
+        - Silence fallback: "Você ainda está aí?"
+        - Avisos do sistema
+        - Mensagens de transição
+        
+        Args:
+            instruction: O que a IA deve DIZER (não uma pergunta para ela responder)
+        """
+        if not self._ws:
+            raise RuntimeError("Not connected")
+        
+        # Interromper resposta ativa se houver
+        if self._response_active:
+            await self.interrupt()
+            await asyncio.sleep(0.1)  # Pequeno delay para garantir interrupção
+        
+        # Usar response.create com instructions específicas
+        # Isso faz a IA gerar áudio TTS com o texto especificado
+        await self._ws.send(json.dumps({
+            "type": "response.create",
+            "response": {
+                "instructions": f"Diga exatamente, de forma natural e amigável: \"{instruction}\""
+            }
+        }))
+        
+        self._response_active = True
+        logger.info(f"Instruction sent to OpenAI: {instruction[:50]}...", extra={
+            "domain_uuid": self.config.domain_uuid,
+        })
+    
     async def interrupt(self) -> None:
         """
         Interrompe resposta atual (barge-in).

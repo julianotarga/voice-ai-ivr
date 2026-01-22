@@ -2859,16 +2859,21 @@ Quando o cliente pedir para falar com humano/setor:
                     extra={"call_uuid": self.call_uuid}
                 )
                 
-                # Enviar prompt para a IA - ela vai falar isso para o usuário
+                # Enviar instrução para a IA FALAR o prompt (não como input do usuário)
+                # Usa send_instruction que faz a IA dizer a frase, não responder a ela
                 try:
-                    await self._send_text_to_provider(prompt)
+                    if self._provider and hasattr(self._provider, 'send_instruction'):
+                        await self._provider.send_instruction(prompt)
+                    else:
+                        # Fallback para providers que não suportam send_instruction
+                        await self._send_text_to_provider(prompt)
                     logger.info(
-                        f"⏰ [SILENCE_FALLBACK] Prompt enviado: '{prompt}'",
+                        f"⏰ [SILENCE_FALLBACK] Instrução enviada: '{prompt}'",
                         extra={"call_uuid": self.call_uuid}
                     )
                 except Exception as e:
                     logger.error(
-                        f"⏰ [SILENCE_FALLBACK] Erro ao enviar prompt: {e}",
+                        f"⏰ [SILENCE_FALLBACK] Erro ao enviar instrução: {e}",
                         extra={"call_uuid": self.call_uuid}
                     )
                 
