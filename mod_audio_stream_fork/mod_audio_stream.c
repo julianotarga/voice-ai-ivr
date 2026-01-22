@@ -96,13 +96,25 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 
                 switch_size_t available = switch_buffer_inuse(tech_pvt->playback_buffer);
                 const switch_size_t l16_frame_size = 320;  /* L16 @ 8kHz, 20ms = 160 samples * 2 bytes */
-                const switch_size_t warmup_threshold = l16_frame_size * 5; /* 100ms warmup */
+                
+                /* NETPLAY v2.5.2: Increased buffer thresholds to reduce audio choppiness
+                 * 
+                 * Problem: With OpenAI Realtime API, audio arrives in bursts with varying latency.
+                 * A 100ms warmup buffer is not enough to smooth out network jitter.
+                 * 
+                 * Solution:
+                 * - Warmup threshold: 400ms (20 frames) - wait for more data before starting
+                 * - Low water mark: 160ms (8 frames) - only pause if buffer gets critically low
+                 * - This creates a "buffer zone" that absorbs latency spikes
+                 */
+                const switch_size_t warmup_threshold = l16_frame_size * 20; /* 400ms warmup for smoother start */
+                const switch_size_t low_water_mark = l16_frame_size * 8;    /* 160ms - only pause if critically low */
                 
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {
                     tech_pvt->playback_active = 1;
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                        "🔊 Streaming started (buffer: %zu bytes)\n", available);
+                        "🔊 Streaming started (buffer: %zu bytes, %zums)\n", available, available / 16);
                 }
                 
                 if (tech_pvt->playback_active && available >= l16_frame_size) {
@@ -131,11 +143,11 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                         
                         switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
                     }
-                } else if (tech_pvt->playback_active && available == 0) {
-                    /* Buffer empty - pause playback */
+                } else if (tech_pvt->playback_active && available < low_water_mark) {
+                    /* Buffer critically low - pause playback to allow refill */
                     tech_pvt->playback_active = 0;
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                        "⏸️ Buffer empty, pausing\n");
+                        "⏸️ Buffer low (%zu bytes), pausing to refill\n", available);
                 }
                 
                 switch_mutex_unlock(tech_pvt->playback_mutex);
