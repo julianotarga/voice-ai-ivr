@@ -1120,17 +1120,23 @@ class ConferenceTransferManager:
         caller_info = ""
         if caller_name:
             caller_info = f"""
-INFORMAÇÕES DO CLIENTE (USE ESTAS INFORMAÇÕES, NÃO INVENTE):
+INFORMAÇÕES DO CLIENTE (USE EXATAMENTE ESTAS INFORMAÇÕES):
 - Nome do cliente: {caller_name}
+- Motivo da ligação: {context}
 - Se perguntarem "como a pessoa se chama?", diga EXATAMENTE: "{caller_name}"
-- NUNCA invente nomes. Se não souber, diga: "O cliente não informou o nome"
+- Se perguntarem "qual o assunto?" ou "sobre o que?", diga EXATAMENTE: "{context}"
+- IMPORTANTE: Use as PALAVRAS EXATAS acima, não resuma nem interprete
+- NUNCA invente informações!
 """
         else:
-            caller_info = """
+            caller_info = f"""
 INFORMAÇÕES DO CLIENTE:
 - Nome do cliente: Não informado
+- Motivo da ligação: {context}
 - Se perguntarem "como a pessoa se chama?", diga: "O cliente não informou o nome"
-- NUNCA invente nomes!
+- Se perguntarem "qual o assunto?", diga EXATAMENTE: "{context}"
+- IMPORTANTE: Use as PALAVRAS EXATAS acima, não resuma nem interprete
+- NUNCA invente informações!
 """
         
         # PRIORIDADE: Usar prompt do banco de dados se disponível
@@ -1182,8 +1188,9 @@ ATENÇÃO - Expressões IRÔNICAS no Brasil (indicam impaciência/recusa educada
 Após saudação ou resposta ambígua: REPITA seu anúncio e pergunte novamente.
 
 ## Quando Perguntar Algo
-- "Quem é?" / "Como se chama?" → Use o nome das INFORMAÇÕES acima
-- "Qual o assunto?" → Diga o contexto
+- "Quem é?" / "Como se chama?" → Diga EXATAMENTE o nome das INFORMAÇÕES acima
+- "Qual o assunto?" / "Sobre o que?" → Diga EXATAMENTE o motivo das INFORMAÇÕES acima
+  (use as PALAVRAS EXATAS do cliente, não resuma nem interprete)
 - Após responder: "Pode atendê-lo agora?"
 
 # Tools

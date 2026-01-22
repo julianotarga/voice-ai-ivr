@@ -86,11 +86,12 @@ HANDOFF_FUNCTION_DEFINITION = {
     "type": "function",
     "name": "request_handoff",
     "description": (
-        "Transfere a chamada para atendente, departamento ou pessoa. "
-        "ANTES de chamar, você DEVE ter coletado o nome do cliente e entendido o assunto. "
-        "O telefone do cliente já está no sistema (não precisa perguntar). "
-        "Esses dados são usados para anunciar ao atendente quem está na linha. "
-        "Se a transferência falhar, use os dados para oferecer deixar recado."
+        "Transfere a chamada para atendente. "
+        "REGRAS OBRIGATÓRIAS - NÃO CHAME ESTA FUNÇÃO SE: "
+        "1) Você NÃO perguntou o NOME do cliente; "
+        "2) Você NÃO perguntou o MOTIVO detalhado da ligação. "
+        "PRIMEIRO colete nome e motivo, DEPOIS chame esta função. "
+        "O reason deve conter as PALAVRAS EXATAS do cliente, não um resumo."
     ),
     "parameters": {
         "type": "object",
@@ -104,11 +105,20 @@ HANDOFF_FUNCTION_DEFINITION = {
             },
             "reason": {
                 "type": "string",
-                "description": "Assunto/motivo do cliente (extraído da conversa)"
+                "description": (
+                    "Motivo da ligação nas PALAVRAS EXATAS do cliente. "
+                    "NÃO resuma, NÃO interprete, NÃO abrevie. "
+                    "Copie literalmente o que o cliente disse. "
+                    "Exemplo: se cliente disse 'minha internet está caindo toda hora desde ontem', "
+                    "use EXATAMENTE 'minha internet está caindo toda hora desde ontem'."
+                )
             },
             "caller_name": {
                 "type": "string",
-                "description": "Nome do cliente (você DEVE ter perguntado antes)"
+                "description": (
+                    "Nome do cliente. OBRIGATÓRIO - você DEVE ter perguntado antes. "
+                    "Se não perguntou ainda, NÃO chame esta função."
+                )
             }
         },
         "required": ["destination", "reason", "caller_name"]
@@ -1230,26 +1240,49 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if self.config.intelligent_handoff_enabled:
             base_prompt += """
 
-## TRANSFERÊNCIA (OBRIGATÓRIA)
-Quando o cliente pedir para falar com humano/setor:
+## TRANSFERÊNCIA - REGRAS OBRIGATÓRIAS
 
-1. **ANTES de transferir, colete:**
-   - Nome do cliente (pergunte: "Posso saber seu nome?")
-   - Assunto/motivo (pergunte: "Qual o assunto?" ou use o contexto da conversa)
-   - O telefone você JÁ TEM no sistema (não precisa perguntar)
+### PROIBIDO fazer ANTES de coletar informações:
+- NÃO diga "vou transferir", "vou passar", "vou encaminhar"
+- NÃO mencione que vai transferir de nenhuma forma
+- NÃO chame request_handoff
 
-2. **Após coletar, chame `request_handoff`** com:
-   - destination: setor/pessoa (ex: "suporte", "financeiro")
-   - reason: assunto do cliente
-   - caller_name: nome do cliente
+### OBRIGATÓRIO - Coletar ANTES de qualquer menção a transferência:
 
-3. **Se a transferência falhar** (atendente ocupado, não atendeu):
-   - Você já tem nome + telefone + assunto
-   - Ofereça: "Posso anotar um recado para retorno?"
-   - Se sim: use `take_message` e encerre
-   - Se não: agradeça e use `end_call`
+**PASSO 1 - Pergunte o NOME:**
+- "Posso saber seu nome, por favor?"
+- Aguarde a resposta e ANOTE o nome exato
 
-**IMPORTANTE:** Só transfira DEPOIS de saber nome e assunto. Isso melhora o atendimento.
+**PASSO 2 - Pergunte o MOTIVO com DETALHES:**
+- "E qual seria o motivo do contato?" ou "Pode me explicar a situação?"
+- Deixe o cliente explicar COM SUAS PRÓPRIAS PALAVRAS
+- ANOTE as palavras exatas que o cliente usar (serão repassadas ao atendente)
+- Se for vago, peça mais detalhes: "Pode me dar mais detalhes para eu informar ao atendente?"
+
+**PASSO 3 - SÓ ENTÃO transfira:**
+- Diga: "Um momento [NOME], vou transferir para [DESTINO]."
+- Chame `request_handoff` com:
+  - caller_name: nome EXATO do cliente
+  - reason: motivo nas PALAVRAS EXATAS do cliente (não resuma, não interprete)
+  - destination: setor/pessoa solicitada
+
+### Se a transferência falhar:
+- Ofereça: "Posso anotar um recado para retorno?"
+- Se sim: use `take_message` com o motivo EXATO
+- Se não: agradeça e use `end_call`
+
+### EXEMPLO CORRETO:
+Cliente: "Quero falar com suporte"
+IA: "Claro! Posso saber seu nome, por favor?"
+Cliente: "João Silva"
+IA: "João, e qual seria o motivo do contato?"
+Cliente: "Minha internet está caindo toda hora desde ontem"
+IA: "Entendi, João. Um momento, vou transferir para o suporte."
+[chama request_handoff com reason="Minha internet está caindo toda hora desde ontem"]
+
+### EXEMPLO ERRADO (NÃO FAÇA):
+Cliente: "Quero falar com suporte"
+IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem motivo!
 """
         
         if not self.config.guardrails_enabled:
@@ -5017,59 +5050,53 @@ Quando o cliente pedir para falar com humano/setor:
     
     def _extract_call_reason(self, handoff_reason: str) -> Optional[str]:
         """
-        Extrai motivo da ligação.
+        Extrai motivo da ligação - PRESERVANDO AS PALAVRAS EXATAS do cliente.
         
-        Usa o motivo do request_handoff ou tenta extrair do transcript.
+        IMPORTANTE: O motivo deve ser repassado IPSIS LITTERIS ao atendente.
+        NÃO resuma, NÃO interprete, NÃO abrevie.
         
         Args:
-            handoff_reason: Motivo passado no request_handoff
+            handoff_reason: Motivo passado no request_handoff (deve ser as palavras do cliente)
         
         Returns:
-            Motivo resumido ou None
+            Motivo nas palavras exatas do cliente
         """
-        # Se o handoff_reason tem conteúdo útil, usar (com limpeza)
-        if handoff_reason and handoff_reason not in ("llm_intent", "user_request", "solicitação do cliente"):
-            import re
-            cleaned = handoff_reason.strip()
-            # Remover frases genéricas para soar mais natural no anúncio
-            cleaned = re.sub(
-                r"cliente\s+solicitou\s+transfer[eê]ncia\s+para\s+(o\s+)?(setor|departamento)\s+de\s+",
-                "",
-                cleaned,
-                flags=re.IGNORECASE
+        # PRIORIDADE 1: Usar o reason do request_handoff (já deve estar nas palavras do cliente)
+        # NÃO modificar, NÃO limpar - usar EXATAMENTE como veio
+        if handoff_reason and handoff_reason.strip():
+            # Apenas ignorar valores genéricos que não foram preenchidos pelo cliente
+            generic_values = (
+                "llm_intent", 
+                "user_request", 
+                "solicitação do cliente",
+                "não informado",
+                "não especificado"
             )
-            cleaned = re.sub(
-                r"cliente\s+solicitou\s+transfer[eê]ncia\s+para\s+",
-                "",
-                cleaned,
-                flags=re.IGNORECASE
-            )
-            cleaned = cleaned.strip()
-            # Limitar tamanho
-            if len(cleaned) > 50:
-                return cleaned[:50]
-            return cleaned or handoff_reason[:50]
+            if handoff_reason.strip().lower() not in generic_values:
+                # MANTER PALAVRAS EXATAS - sem limpeza, sem resumo
+                # Apenas um limite máximo para evitar textos muito longos
+                text = handoff_reason.strip()
+                if len(text) > 150:
+                    # Se muito longo, truncar mas indicar
+                    return text[:147] + "..."
+                return text
         
-        # Tentar extrair das últimas mensagens do usuário
-        user_messages = [e.text for e in self._transcript if e.role == "user"][-3:]
+        # PRIORIDADE 2: Tentar extrair das últimas mensagens do usuário
+        # Isso é fallback - o ideal é a IA ter coletado o motivo explicitamente
+        user_messages = [e.text for e in self._transcript if e.role == "user"]
         
         if user_messages:
-            # Pegar a última mensagem do usuário (provavelmente contém o motivo)
-            last_message = user_messages[-1]
-            
-            # Remover frases comuns de transferência
-            import re
-            cleaned = re.sub(
-                r"(me transfere?|quero falar|pode me passar|me conecta?|liga|ligar|por favor)",
-                "",
-                last_message.lower()
-            ).strip()
-            
-            if cleaned and len(cleaned) > 5:
-                # Limitar tamanho
-                if len(cleaned) > 50:
-                    return cleaned[:50]
-                return cleaned
+            # Pegar a última mensagem substancial do usuário (não saudação)
+            saudacoes = {"oi", "olá", "bom dia", "boa tarde", "boa noite", "alô", "sim", "não"}
+            for msg in reversed(user_messages):
+                msg_lower = msg.lower().strip()
+                # Pular saudações e respostas curtas
+                if msg_lower in saudacoes or len(msg_lower) < 10:
+                    continue
+                # Esta parece ser uma mensagem com conteúdo - usar EXATAMENTE
+                if len(msg) > 150:
+                    return msg[:147] + "..."
+                return msg
         
         return None
     
