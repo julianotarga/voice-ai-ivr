@@ -25,6 +25,7 @@ PONTOS DE ATENÇÃO:
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -169,12 +170,17 @@ class BridgeTransferManager:
         """Emite evento no EventBus."""
         if self.event_bus:
             try:
-                await self.event_bus.emit(
-                    event_type.value,
+                # Criar VoiceEvent com dados
+                event = VoiceEvent(
+                    type=event_type,
                     call_uuid=self.a_leg_uuid,
-                    state=self._state.value,
-                    **kwargs
+                    data={
+                        "state": self._state.value,
+                        **kwargs
+                    },
+                    source="bridge_transfer"
                 )
+                await self.event_bus.emit(event)
             except Exception as e:
                 logger.debug(f"Could not emit event {event_type}: {e}")
     
@@ -407,21 +413,56 @@ class BridgeTransferManager:
         self._b_leg_uuid = b_leg_uuid
         
         # Determinar dial string
+        # PRIORIDADE: Usar contact direto se disponível (evita lookup que pode causar loop)
         if direct_contact:
-            contact = direct_contact.replace("sip:", "").replace("<", "").replace(">", "").strip()
-            dial_string = f"sofia/internal/{contact}"
+            # Limpar contact SIP
+            # Formatos possíveis:
+            #   "sip:1000@177.72.14.10:59339"
+            #   "<sip:1000@177.72.14.10:59339>"
+            #   "sip:1000@177.72.14.10:59339;transport=UDP"
+            contact_clean = direct_contact
+            
+            # Remover < > se existir
+            if '<' in contact_clean:
+                match = re.search(r'<([^>]+)>', contact_clean)
+                if match:
+                    contact_clean = match.group(1)
+            
+            # Remover prefixo sip: ou sips:
+            contact_clean = contact_clean.replace('sips:', '').replace('sip:', '')
+            
+            # Remover parâmetros após ; (ex: ;transport=UDP;rinstance=abc)
+            if ';' in contact_clean:
+                contact_clean = contact_clean.split(';')[0]
+            
+            contact_clean = contact_clean.strip()
+            dial_string = f"sofia/internal/{contact_clean}"
+            logger.info(f"{self._elapsed()} ✅ Usando DIRECT contact: {dial_string}")
+            
+            # Variáveis do originate (direct contact)
+            originate_vars = (
+                f"origination_uuid={b_leg_uuid},"
+                f"origination_caller_id_number={self.caller_id},"
+                f"origination_caller_id_name=Secretaria_Virtual,"
+                f"originate_timeout={self.config.originate_timeout},"
+                f"ignore_early_media=true,"
+                f"hangup_after_bridge=true"
+            )
         else:
-            dial_string = f"sofia/internal/{destination}"
-        
-        # Variáveis do originate
-        originate_vars = (
-            f"origination_uuid={b_leg_uuid},"
-            f"origination_caller_id_number={self.caller_id},"
-            f"origination_caller_id_name=Secretaria_Virtual,"
-            f"originate_timeout={self.config.originate_timeout},"
-            f"ignore_early_media=true,"
-            f"hangup_after_bridge=true"
-        )
+            # Fallback: user lookup (usa domain para resolver)
+            dial_string = f"sofia/internal/{destination}@{self.domain}"
+            logger.info(f"{self._elapsed()} 📞 Usando user lookup: {dial_string}")
+            
+            # Variáveis do originate (com sip_invite_params para evitar loop)
+            originate_vars = (
+                f"origination_uuid={b_leg_uuid},"
+                f"origination_caller_id_number={self.caller_id},"
+                f"origination_caller_id_name=Secretaria_Virtual,"
+                f"originate_timeout={self.config.originate_timeout},"
+                f"ignore_early_media=true,"
+                f"hangup_after_bridge=true,"
+                f"sip_invite_params=user={destination}"
+            )
         
         cmd = f"bgapi originate {{{originate_vars}}}{dial_string} 'answer:,park:' inline"
         
@@ -659,9 +700,47 @@ class BridgeTransferManager:
                     final_state=self._state
                 )
             
+            # STEP 2.5: Verificar se ramal está registrado
+            logger.info(f"{self._elapsed()} 📍 STEP 2.5: Verificando registro de {destination}...")
+            
+            # Obter direct_contact se não fornecido
+            checked_contact = direct_contact
+            if not checked_contact and hasattr(self.esl, 'check_extension_registered'):
+                try:
+                    is_registered, contact, check_ok = await asyncio.wait_for(
+                        self.esl.check_extension_registered(destination, self.domain),
+                        timeout=5.0
+                    )
+                    logger.info(f"{self._elapsed()} Ramal registrado: {is_registered}, contact: {contact}")
+                    
+                    if check_ok and not is_registered:
+                        logger.warning(f"{self._elapsed()} ❌ Ramal {destination} não está registrado/online")
+                        await self._rollback("Ramal offline")
+                        await self._emit_event(
+                            VoiceEventType.TRANSFER_REJECTED,
+                            reason="destination_offline",
+                            destination=destination
+                        )
+                        return BridgeTransferResult(
+                            success=False,
+                            decision=TransferDecision.ERROR,
+                            error="Ramal não está disponível",
+                            final_state=self._state
+                        )
+                    
+                    # Guardar contact direto para usar no originate
+                    if is_registered and contact:
+                        checked_contact = contact
+                        logger.info(f"{self._elapsed()} 📍 Direct contact: {checked_contact}")
+                        
+                except asyncio.TimeoutError:
+                    logger.warning(f"{self._elapsed()} ⚠️ Timeout verificando ramal, continuando...")
+                except Exception as e:
+                    logger.warning(f"{self._elapsed()} ⚠️ Erro verificando ramal: {e}, continuando...")
+            
             # STEP 3: Originar B-leg
             logger.info(f"{self._elapsed()} 📍 STEP 3: Originando B-leg...")
-            b_leg_uuid = await self._originate_b_leg(destination, direct_contact)
+            b_leg_uuid = await self._originate_b_leg(destination, checked_contact)
             
             if not b_leg_uuid:
                 # B-leg não atendeu - ROLLBACK
