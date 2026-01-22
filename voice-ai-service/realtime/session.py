@@ -2848,6 +2848,14 @@ Quando o cliente pedir para falar com humano/setor:
                         f"⏰ [SILENCE_FALLBACK] Encerrando após {self._silence_fallback_count} tentativas sem resposta",
                         extra={"call_uuid": self.call_uuid}
                     )
+                    # Se a IA está falando, aguardar terminar antes de encerrar
+                    if self._assistant_speaking:
+                        logger.info("⏰ [SILENCE_FALLBACK] Aguardando IA terminar de falar...")
+                        await self._wait_for_audio_playback(
+                            min_wait=1.0,
+                            max_wait=8.0,
+                            context="silence_fallback_max"
+                        )
                     await self.stop("silence_fallback_max_retries")
                     return
 
@@ -2860,6 +2868,14 @@ Quando o cliente pedir para falar com humano/setor:
                         f"⏰ [SILENCE_FALLBACK] Encerrando por silêncio (action=hangup)",
                         extra={"call_uuid": self.call_uuid}
                     )
+                    # Se a IA está falando, aguardar terminar antes de encerrar
+                    if self._assistant_speaking:
+                        logger.info("⏰ [SILENCE_FALLBACK] Aguardando IA terminar de falar...")
+                        await self._wait_for_audio_playback(
+                            min_wait=1.0,
+                            max_wait=8.0,
+                            context="silence_fallback_hangup"
+                        )
                     await self.stop("silence_fallback_hangup")
                     return
 
@@ -2898,6 +2914,14 @@ Quando o cliente pedir para falar com humano/setor:
                     f"⏰ [IDLE_TIMEOUT] Encerrando por inatividade: {idle_time:.1f}s > {self.config.idle_timeout_seconds}s",
                     extra={"call_uuid": self.call_uuid}
                 )
+                # Se a IA está falando, aguardar terminar antes de encerrar
+                if self._assistant_speaking:
+                    logger.info("⏰ [IDLE_TIMEOUT] Aguardando IA terminar de falar...")
+                    await self._wait_for_audio_playback(
+                        min_wait=1.0,
+                        max_wait=8.0,
+                        context="idle_timeout"
+                    )
                 await self.stop("idle_timeout")
                 return
             
@@ -2926,6 +2950,14 @@ Quando o cliente pedir para falar com humano/setor:
                         f"⏰ [MAX_DURATION] Encerrando por duração máxima: {duration:.1f}s > {self.config.max_duration_seconds}s",
                         extra={"call_uuid": self.call_uuid}
                     )
+                    # Se a IA está falando, aguardar terminar antes de encerrar
+                    if self._assistant_speaking:
+                        logger.info("⏰ [MAX_DURATION] Aguardando IA terminar de falar...")
+                        await self._wait_for_audio_playback(
+                            min_wait=1.0,
+                            max_wait=10.0,
+                            context="max_duration"
+                        )
                     await self.stop("max_duration")
                     return
 

@@ -51,7 +51,7 @@ TRANSFER_TOOLS = [
             "Chamado SOMENTE quando o atendente ACEITA EXPLICITAMENTE a transferência. "
             "Use APENAS quando ouvir confirmação INEQUÍVOCA como: "
             "'pode passar', 'pode conectar', 'manda', 'ok pode', 'coloca na linha', 'pode colocar'. "
-            "NÃO use para saudações (alô, oi, meu querido, bom dia) nem para perguntas (quem é?)."
+            "NÃO use para saudações (alô, oi, bom dia) nem para perguntas (quem é?) nem para expressões irônicas (meu querido)."
         ),
         "parameters": {
             "type": "object",
@@ -66,7 +66,7 @@ TRANSFER_TOOLS = [
             "Chamado SOMENTE quando o atendente RECUSA EXPLICITAMENTE a transferência. "
             "Use APENAS quando ouvir recusa CLARA como: "
             "'não posso', 'estou ocupado', 'agora não', 'não dá', 'depois', 'liga mais tarde'. "
-            "NÃO use para saudações (alô, oi, meu querido, bom dia) nem para perguntas (quem é?)."
+            "NÃO use para saudações (alô, oi, bom dia) nem para perguntas (quem é?) nem para expressões irônicas (meu querido)."
         ),
         "parameters": {
             "type": "object",
@@ -1067,7 +1067,7 @@ class ConferenceAnnouncementSession:
                     "bom dia", "boa tarde", "boa noite", "tudo bem", "como vai",
                     "fala aí", "fala ai", "e aí", "e ai", "opa", "beleza",
                     "pode falar", "estou ouvindo", "ouvindo", "presente",
-                    "sim", "sim?", "diga", "fale", "pronto"
+                    "sim", "sim?", "diga", "fale", "pronto", "quem", "quem?"
                 ]
                 
                 # Expressões ambíguas no Brasil (irônicas/sarcásticas) - NÃO são recusa explícita
@@ -1077,21 +1077,22 @@ class ConferenceAnnouncementSession:
                     "querido", "querida", "amigo", "amiga"
                 ]
                 
-                # Verificar se é saudação genuína
-                is_only_greeting = False
-                for pattern in greeting_patterns:
-                    if combined_transcript == pattern or combined_transcript.startswith(pattern + " ") or combined_transcript.endswith(" " + pattern):
-                        is_only_greeting = True
-                        logger.warning(f"⚠️ Safety check: reject_transfer called but transcript looks like greeting: '{combined_transcript}'")
+                # Verificar se é expressão ambígua (irônica) PRIMEIRO
+                # Isso tem prioridade porque "oi meu querido" ainda é ambíguo
+                is_ambiguous = False
+                for pattern in ambiguous_patterns:
+                    if pattern in combined_transcript:
+                        is_ambiguous = True
+                        logger.warning(f"⚠️ Safety check: reject_transfer called but transcript is ambiguous/ironic: '{combined_transcript}'")
                         break
                 
-                # Verificar se é expressão ambígua (irônica)
-                is_ambiguous = False
-                if not is_only_greeting:
-                    for pattern in ambiguous_patterns:
-                        if pattern in combined_transcript:
-                            is_ambiguous = True
-                            logger.warning(f"⚠️ Safety check: reject_transfer called but transcript is ambiguous/ironic: '{combined_transcript}'")
+                # Verificar se é APENAS saudação genuína (sem expressão ambígua)
+                is_only_greeting = False
+                if not is_ambiguous:
+                    for pattern in greeting_patterns:
+                        if combined_transcript == pattern or combined_transcript.startswith(pattern + " ") or combined_transcript.endswith(" " + pattern):
+                            is_only_greeting = True
+                            logger.warning(f"⚠️ Safety check: reject_transfer called but transcript looks like greeting: '{combined_transcript}'")
                             break
                 
                 logger.info(f"🔍 Safety check (reject): combined = '{combined_transcript}', is_greeting = {is_only_greeting}, is_ambiguous = {is_ambiguous}")
