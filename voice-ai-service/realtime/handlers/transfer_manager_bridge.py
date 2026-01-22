@@ -193,10 +193,34 @@ class BridgeTransferManager:
             return False
     
     async def _resume_a_leg_audio(self) -> bool:
-        """Resume o audio stream do A-leg."""
+        """
+        Resume o audio stream do A-leg.
+        
+        IMPORTANTE: Durante o HOLD, o WebSocket pode ter fechado por timeout.
+        Por isso tentamos:
+        1. resume - se WebSocket ainda está aberto, funciona
+        2. start - reconecta WebSocket se fechou
+        
+        O RealtimeServer é projetado para REUTILIZAR a sessão existente
+        quando uma nova conexão chega para o mesmo call_uuid.
+        """
         logger.info(f"{self._elapsed()} Resumindo audio do A-leg...")
+        
+        # Primeiro verificar se A-leg ainda existe
         try:
-            # Tentar resume primeiro
+            a_exists = await asyncio.wait_for(
+                self.esl.uuid_exists(self.a_leg_uuid),
+                timeout=2.0
+            )
+            if not a_exists:
+                logger.error(f"{self._elapsed()} ❌ A-leg não existe mais!")
+                return False
+        except Exception as e:
+            logger.warning(f"{self._elapsed()} ⚠️ Não foi possível verificar A-leg: {e}")
+            # Continuar mesmo assim
+        
+        try:
+            # Tentar resume primeiro (mais rápido se WebSocket ainda está aberto)
             result = await asyncio.wait_for(
                 self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} resume"),
                 timeout=3.0
@@ -204,17 +228,32 @@ class BridgeTransferManager:
             result_str = result if isinstance(result, str) else str(result)
             
             if "+OK" in result_str or "Success" in result_str:
-                logger.info(f"{self._elapsed()} ✅ A-leg audio resumido")
+                logger.info(f"{self._elapsed()} ✅ A-leg audio resumido via RESUME")
                 return True
             
-            # Se resume falhou, tentar reconectar com start
-            logger.warning(f"{self._elapsed()} Resume falhou ({result_str}), tentando start...")
+            # Resume falhou - WebSocket pode ter fechado
+            # Tentar reconectar com start
+            logger.warning(f"{self._elapsed()} Resume falhou ({result_str}), tentando START...")
             
+            # Construir URL do WebSocket
             ws_host = os.getenv("REALTIME_WS_HOST", "127.0.0.1")
             ws_port = os.getenv("REALTIME_WS_PORT", "8085")
             sec_uuid = self.secretary_uuid or "unknown"
             ws_url = f"ws://{ws_host}:{ws_port}/stream/{sec_uuid}/{self.a_leg_uuid}/{self.caller_id}"
             
+            logger.info(f"{self._elapsed()} Reconectando: {ws_url}")
+            
+            # Parar stream anterior (pode estar em estado inconsistente)
+            try:
+                await asyncio.wait_for(
+                    self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} stop"),
+                    timeout=2.0
+                )
+                await asyncio.sleep(0.1)  # Pequeno delay
+            except Exception:
+                pass  # Ignorar erros no stop
+            
+            # Iniciar nova conexão
             result = await asyncio.wait_for(
                 self.esl.execute_api(f"uuid_audio_stream {self.a_leg_uuid} start {ws_url} mono 8k"),
                 timeout=5.0
@@ -222,12 +261,18 @@ class BridgeTransferManager:
             result_str = result if isinstance(result, str) else str(result)
             
             if "+OK" in result_str or "Success" in result_str:
-                logger.info(f"{self._elapsed()} ✅ A-leg audio reconectado via start")
+                logger.info(f"{self._elapsed()} ✅ A-leg audio reconectado via START")
+                
+                # Aguardar conexão estabelecer
+                await asyncio.sleep(0.3)
                 return True
             else:
-                logger.error(f"{self._elapsed()} ❌ Start também falhou: {result_str}")
+                logger.error(f"{self._elapsed()} ❌ START também falhou: {result_str}")
                 return False
                 
+        except asyncio.TimeoutError:
+            logger.error(f"{self._elapsed()} ❌ Timeout ao resumir A-leg")
+            return False
         except Exception as e:
             logger.error(f"{self._elapsed()} ❌ Erro ao resumir A-leg: {e}")
             return False
