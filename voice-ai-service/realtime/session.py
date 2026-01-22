@@ -1850,7 +1850,7 @@ Quando o cliente pedir para falar com humano/setor:
                     
                     # Aguardar a resposta do assistente antes de encerrar
                     asyncio.create_task(self._delayed_stop(5.0, "user_farewell"))
-                    return
+                    return "continue"
                 
                 # Check for handoff keyword
                 # IMPORTANTE: Não processar keywords se já houver transferência em andamento
@@ -1916,7 +1916,7 @@ Quando o cliente pedir para falar com humano/setor:
                         "protection_remaining_ms": int((self._interrupt_protected_until - now) * 1000)
                     }
                 )
-                return  # Ignorar este evento de fala
+                return "continue"  # Ignorar este evento de fala
             
             # Se o usuário começou a falar, tentar interromper e limpar playback pendente.
             # (Mesmo que _assistant_speaking esteja brevemente fora de sincronia.)
@@ -2852,6 +2852,24 @@ Quando o cliente pedir para falar com humano/setor:
                 )
                 await self.stop("idle_timeout")
                 return
+            
+            # Proteção contra IA "presa" em SPEAKING - resposta muito longa (>60s)
+            # Isso pode acontecer se o provider não enviar AUDIO_DONE
+            if (
+                self._assistant_speaking
+                and self._response_audio_start_time > 0
+                and not self._transfer_in_progress
+            ):
+                response_duration = time.time() - self._response_audio_start_time
+                if response_duration > 60.0:  # Máximo 60s por resposta
+                    logger.warning(
+                        f"⏰ [RESPONSE_TIMEOUT] Resposta da IA muito longa: {response_duration:.1f}s, forçando LISTENING",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                    self._assistant_speaking = False
+                    self._set_call_state(CallState.LISTENING, "response_timeout")
+                    # Resetar para evitar disparos repetidos
+                    self._response_audio_start_time = 0
             
             if self._started_at and not self._transfer_in_progress:
                 duration = (datetime.now() - self._started_at).total_seconds()
