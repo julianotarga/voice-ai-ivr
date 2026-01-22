@@ -820,12 +820,17 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             await self.interrupt()
             await asyncio.sleep(0.1)  # Pequeno delay para garantir interrupção
         
-        # Usar response.create com instructions específicas
-        # Isso faz a IA gerar áudio TTS com o texto especificado
+        # Usar response.create com instructions claras
+        # O instructions sobrescreve as instruções da sessão APENAS para esta resposta
+        # Isso faz a IA responder com o texto especificado
         await self._ws.send(json.dumps({
             "type": "response.create",
             "response": {
-                "instructions": f"Diga exatamente, de forma natural e amigável: \"{instruction}\""
+                "instructions": (
+                    f"O usuário ficou em silêncio. "
+                    f"Você DEVE perguntar exatamente: \"{instruction}\" "
+                    f"Não diga mais nada, apenas essa pergunta."
+                )
             }
         }))
         
