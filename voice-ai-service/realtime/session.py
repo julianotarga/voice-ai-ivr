@@ -2805,6 +2805,25 @@ Quando o cliente pedir para falar com humano/setor:
             await asyncio.sleep(5)
             
             idle_time = time.time() - self._last_activity
+            
+            # Debug: logar condições do silence_fallback quando há silêncio significativo
+            if idle_time > 8.0 and idle_time < 12.0:  # Entre 8-12s de idle
+                can_silence_fallback = (
+                    self.config.silence_fallback_enabled
+                    and not self._transfer_in_progress
+                    and not self._ending_call
+                    and self._call_state == CallState.LISTENING
+                )
+                if not can_silence_fallback:
+                    logger.debug(
+                        f"⏰ [TIMEOUT_MONITOR] silence_fallback bloqueado: "
+                        f"enabled={self.config.silence_fallback_enabled}, "
+                        f"transfer={self._transfer_in_progress}, "
+                        f"ending={self._ending_call}, "
+                        f"state={self._call_state.value} (precisa LISTENING)",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+            
             # Fallback de silêncio (state machine)
             if (
                 self.config.silence_fallback_enabled
@@ -2836,10 +2855,23 @@ Quando o cliente pedir para falar com humano/setor:
                 # Default: reprompt - perguntar se o usuário ainda está aí
                 prompt = self.config.silence_fallback_prompt or "Você ainda está aí?"
                 logger.info(
-                    f"⏰ [SILENCE_FALLBACK] Silêncio detectado ({idle_time:.1f}s), tentativa {self._silence_fallback_count}/{self.config.silence_fallback_max_retries}: '{prompt}'",
+                    f"⏰ [SILENCE_FALLBACK] Silêncio detectado ({idle_time:.1f}s), tentativa {self._silence_fallback_count}/{self.config.silence_fallback_max_retries}",
                     extra={"call_uuid": self.call_uuid}
                 )
-                await self._send_text_to_provider(prompt)
+                
+                # Enviar prompt para a IA - ela vai falar isso para o usuário
+                try:
+                    await self._send_text_to_provider(prompt)
+                    logger.info(
+                        f"⏰ [SILENCE_FALLBACK] Prompt enviado: '{prompt}'",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"⏰ [SILENCE_FALLBACK] Erro ao enviar prompt: {e}",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                
                 # Evitar disparos consecutivos imediatos
                 self._last_activity = time.time()
 
