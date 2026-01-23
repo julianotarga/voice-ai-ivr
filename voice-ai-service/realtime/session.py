@@ -63,6 +63,10 @@ from .handlers.transfer_manager import (
 )
 from .handlers.transfer_destination_loader import TransferDestination
 
+# FASE 2: Root Cause Analysis - Logging estruturado
+# Ref: openspec/changes/add-voice-ai-enhancements
+from .logging import CallLogger, EventType
+
 # FASE 2: Transferência via Conferência (mod_conference) - LEGADO
 # Ref: voice-ai-ivr/docs/announced-transfer-conference.md
 from .handlers.transfer_manager_conference import (
@@ -664,6 +668,18 @@ class RealtimeSession:
         self._pacing_applied_this_turn = False  # Evita aplicar delay múltiplas vezes
         
         # ========================================
+        # RCA - Call Logger para Root Cause Analysis
+        # Ref: openspec/changes/add-voice-ai-enhancements
+        # ========================================
+        self._call_logger = CallLogger(
+            call_uuid=config.call_uuid,
+            webhook_url=f"{config.omniplay_webhook_url.rstrip('/webhook')}/webhook/logs" if config.omniplay_webhook_url else None,
+            company_id=config.omniplay_company_id,
+            secretary_id=config.secretary_uuid,
+            caller_id=config.caller_id
+        )
+        
+        # ========================================
         # Core - Sistema de controle interno
         # Ref: voice-ai-ivr/docs/PLANO-ARQUITETURA-INTERNA.md
         # ========================================
@@ -1052,6 +1068,12 @@ class RealtimeSession:
             
             self._event_task = asyncio.create_task(self._event_loop())
             self._timeout_task = asyncio.create_task(self._timeout_monitor())
+            
+            # RCA: Log início da sessão
+            self._call_logger.log_event(EventType.SESSION_START, {
+                "provider": self.config.provider_name,
+                "intelligent_handoff": self.config.intelligent_handoff_enabled
+            })
             
             logger.info("Realtime session started", extra={
                 "call_uuid": self.call_uuid,
@@ -3631,6 +3653,32 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 "final_state": self.state_machine.state.value if self.state_machine else "unknown",
             }
         )
+        
+        # ========================================
+        # RCA: Enviar logs estruturados ao backend
+        # Ref: openspec/changes/add-voice-ai-enhancements
+        # ========================================
+        try:
+            self._call_logger.set_final_state(reason)
+            self._call_logger.log_metric("duration_seconds", duration_seconds)
+            
+            # Determinar outcome baseado no reason
+            if reason == "transfer_success":
+                self._call_logger.set_outcome("transferred")
+            elif reason.startswith("take_message"):
+                self._call_logger.set_outcome("message_taken")
+            elif reason.startswith("error"):
+                self._call_logger.set_outcome("error")
+                self._call_logger.set_error(reason)
+            else:
+                self._call_logger.set_outcome("hangup")
+            
+            # Enviar logs em background (não bloqueia)
+            asyncio.create_task(self._call_logger.flush())
+        except Exception as e:
+            logger.warning(f"📝 [RCA] Erro ao enviar logs: {e}", extra={
+                "call_uuid": self.call_uuid
+            })
     
     # =========================================================================
     # MODO DUAL: ESL Event Handlers
