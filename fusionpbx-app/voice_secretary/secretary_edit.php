@@ -100,6 +100,7 @@
 		'announcement_tts_provider' => 'elevenlabs',
 		'unbridge_behavior' => 'hangup',
 		'unbridge_resume_message' => '',
+		'hold_return_message' => 'Obrigado por aguardar.',
 		'handoff_enabled' => 'true',
 		'handoff_keywords' => 'atendente,humano,pessoa,operador',
 		'handoff_timeout' => 30,
@@ -188,6 +189,8 @@
 			'announcement_tts_provider' => $_POST['announcement_tts_provider'] ?? 'elevenlabs',
 			'unbridge_behavior' => $_POST['unbridge_behavior'] ?? 'hangup',
 			'unbridge_resume_message' => str_replace("\r\n", "\n", trim($_POST['unbridge_resume_message'] ?? '')),
+			// Hold return message (migration 032)
+			'hold_return_message' => trim($_POST['hold_return_message'] ?? 'Obrigado por aguardar.'),
 			// Input Normalization
 			'input_normalize_enabled' => isset($_POST['input_normalize_enabled']) ? 'true' : 'false',
 			'input_target_rms' => intval($_POST['input_target_rms'] ?? 2000),
@@ -287,6 +290,8 @@
 			$array['voice_secretaries'][0]['announcement_tts_provider'] = $form_data['announcement_tts_provider'] ?: 'elevenlabs';
 			$array['voice_secretaries'][0]['unbridge_behavior'] = $form_data['unbridge_behavior'] ?: 'hangup';
 			$array['voice_secretaries'][0]['unbridge_resume_message'] = $form_data['unbridge_resume_message'] ?: null;
+			// Hold return message (migration 032)
+			$array['voice_secretaries'][0]['hold_return_message'] = $form_data['hold_return_message'] ?: 'Obrigado por aguardar.';
 			// Input Normalization
 			$array['voice_secretaries'][0]['input_normalize_enabled'] = $form_data['input_normalize_enabled'];
 			$array['voice_secretaries'][0]['input_target_rms'] = $form_data['input_target_rms'] ?: 2000;
@@ -1087,6 +1092,16 @@
 	echo "	<td class='vtable' align='left'>\n";
 	$unbridge_msg = str_replace("\r\n", "\n", str_replace("\r", "", $data['unbridge_resume_message'] ?? ''));
 	echo "		<textarea class='formfld' name='unbridge_resume_message' rows='2' style='width: 100%;' placeholder='A ligação com o atendente foi encerrada. Posso ajudar?'>".escape(trim($unbridge_msg))."</textarea>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Hold return message (migration 032)
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Mensagem ao Retornar do Hold</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	$hold_return_msg = escape($data['hold_return_message'] ?? 'Obrigado por aguardar.');
+	echo "		<input class='formfld' type='text' name='hold_return_message' value='".$hold_return_msg."' style='width: 100%;' placeholder='Obrigado por aguardar.'>\n";
+	echo "		<br /><span class='text-muted'>Mensagem que a IA fala quando o cliente sai da espera (ex: após tentativa de transferência).</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

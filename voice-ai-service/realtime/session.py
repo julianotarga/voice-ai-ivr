@@ -446,6 +446,8 @@ class RealtimeSessionConfig:
     # Unbridge behavior (quando atendente desliga após bridge)
     unbridge_behavior: str = "hangup"  # hangup | resume
     unbridge_resume_message: Optional[str] = None
+    # Hold return message (quando cliente sai do hold)
+    hold_return_message: Optional[str] = "Obrigado por aguardar."
     # Audio Configuration (per-secretary)
     # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
@@ -4162,7 +4164,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             logger.error(f"Error placing call on hold: {e}")
             return False
     
-    async def unhold_call(self, timeout: float = 5.0) -> bool:
+    async def unhold_call(self, timeout: float = 5.0, speak_return_message: bool = True) -> bool:
         """
         Retira o cliente da espera.
         
@@ -4176,6 +4178,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         Args:
             timeout: Timeout em segundos (default 5s para não travar o fluxo)
+            speak_return_message: Se True, fala mensagem de retorno (ex: "Obrigado por aguardar")
         
         Returns:
             True se sucesso
@@ -4198,6 +4201,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 if "+OK" in result_str:
                     self._on_hold = False
                     logger.info("Call taken off hold (resume)", extra={"call_uuid": self.call_uuid})
+                    await self._speak_hold_return_message(speak_return_message)
                     return True
                 elif "-ERR" in result_str:
                     # Resume falhou - provavelmente porque a conexão foi fechada
@@ -4208,17 +4212,20 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                         extra={"call_uuid": self.call_uuid}
                     )
                     self._on_hold = False
+                    await self._speak_hold_return_message(speak_return_message)
                     return True
                 else:
                     # Resposta ambígua - assumir sucesso
                     self._on_hold = False
                     logger.info(f"Call taken off hold (result: {result_str})", extra={"call_uuid": self.call_uuid})
+                    await self._speak_hold_return_message(speak_return_message)
                     return True
                     
             except asyncio.TimeoutError:
                 logger.warning(f"unhold_call timeout after {timeout}s - continuing anyway")
                 # Marcar como não em hold mesmo se timeout (evitar estado inconsistente)
                 self._on_hold = False
+                await self._speak_hold_return_message(speak_return_message)
                 return True
             
         except Exception as e:
@@ -4226,6 +4233,32 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # Marcar como não em hold para não ficar em estado inconsistente
             self._on_hold = False
             return False
+    
+    async def _speak_hold_return_message(self, should_speak: bool = True) -> None:
+        """
+        Fala a mensagem de retorno do hold (ex: "Obrigado por aguardar").
+        
+        Args:
+            should_speak: Se False, não fala (permite desativar)
+        """
+        if not should_speak:
+            return
+        
+        message = self.config.hold_return_message
+        if not message or not self._provider:
+            return
+        
+        try:
+            logger.info(
+                f"🎙️ [HOLD_RETURN] Falando: '{message}'",
+                extra={"call_uuid": self.call_uuid}
+            )
+            await self._send_text_to_provider(
+                f"[SISTEMA] Diga APENAS e EXATAMENTE: '{message}' - "
+                "Esta é uma frase curta de cortesia. Depois continue a conversa naturalmente."
+            )
+        except Exception as e:
+            logger.debug(f"Could not send hold return message: {e}")
     
     async def check_extension_available(self, extension: str) -> dict:
         """
@@ -4905,10 +4938,11 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 logger.info(f"📋 [INTELLIGENT_HANDOFF] Error recovery: {current_state} -> listening")
             
             # Se erro, garantir que cliente sai do hold
+            # Não fala "Obrigado por aguardar" pois logo vem mensagem de erro
             if client_on_hold:
                 logger.info("Error during handoff, removing client from hold")
                 try:
-                    await self.unhold_call()
+                    await self.unhold_call(speak_return_message=False)
                 except Exception:
                     pass
             

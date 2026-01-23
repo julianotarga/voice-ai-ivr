@@ -734,6 +734,8 @@ class RealtimeServer:
                     -- Unbridge behavior
                     COALESCE(s.unbridge_behavior, 'hangup') as unbridge_behavior,
                     s.unbridge_resume_message,
+                    -- Hold return message (migration 032)
+                    COALESCE(s.hold_return_message, 'Obrigado por aguardar.') as hold_return_message,
                     -- Silence Fallback
                     COALESCE(s.silence_fallback_enabled, false) as silence_fallback_enabled,
                     COALESCE(s.silence_fallback_seconds, 10) as silence_fallback_seconds,
@@ -1139,6 +1141,8 @@ class RealtimeServer:
             # Unbridge behavior
             unbridge_behavior=row.get("unbridge_behavior") or "hangup",
             unbridge_resume_message=row.get("unbridge_resume_message"),
+            # Hold return message
+            hold_return_message=row.get("hold_return_message") or "Obrigado por aguardar.",
             # Silence Fallback
             silence_fallback_enabled=_parse_bool(row.get("silence_fallback_enabled"), default=False),
             silence_fallback_seconds=int(row.get("silence_fallback_seconds") or 10),
