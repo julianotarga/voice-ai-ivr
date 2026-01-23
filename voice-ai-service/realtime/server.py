@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
@@ -117,6 +117,36 @@ def _parse_guardrails_topics(value) -> Optional[List[str]]:
         return topics if topics else None
     
     return None
+
+
+def _parse_business_info(value) -> Dict[str, str]:
+    """
+    Converte business_info do banco para dict.
+    
+    O banco PostgreSQL retorna JSONB como:
+    - dict (asyncpg nativo)
+    - str JSON (alguns drivers)
+    
+    Args:
+        value: JSONB do banco (dict, str, ou None)
+        
+    Returns:
+        Dict com informações da empresa
+    """
+    if value is None:
+        return {}
+    
+    if isinstance(value, dict):
+        return value
+    
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    
+    return {}
 
 
 # 20ms @ 16kHz PCM16 mono:
@@ -1045,7 +1075,7 @@ class RealtimeServer:
             secretary_uuid=secretary_uuid,
             secretary_name=row["name"] or "Voice Secretary",
             company_name=row.get("company_name"),
-            business_info=row.get("business_info") or {},
+            business_info=_parse_business_info(row.get("business_info")),
             provider_name=row["provider_name"] or "elevenlabs_conversational",
             system_prompt=final_system_prompt,
             greeting=row["greeting"],
