@@ -44,6 +44,14 @@ struct private_data {
     int rtp_packets;
     int audio_format;           /* AUDIO_FORMAT_L16, AUDIO_FORMAT_PCMU, AUDIO_FORMAT_PCMA */
     switch_codec_t write_codec; /* Codec for encoding L16 to PCMU/PCMA */
+    switch_size_t playback_buflen;       /* Playback buffer size in bytes */
+    switch_size_t warmup_threshold;      /* Warmup threshold in bytes */
+    switch_size_t low_water_mark;        /* Low water mark in bytes */
+    uint64_t first_audio_ts;             /* Timestamp of first streamAudio chunk */
+    uint64_t playback_start_ts;          /* Timestamp when playback starts */
+    uint32_t buffer_overruns;            /* Buffer overrun counter */
+    uint32_t buffer_underruns;           /* Buffer underrun counter */
+    switch_size_t buffer_max_used;       /* Max buffered bytes observed */
 };
 
 typedef struct private_data private_t;

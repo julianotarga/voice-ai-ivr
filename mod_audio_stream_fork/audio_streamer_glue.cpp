@@ -13,6 +13,47 @@
 
 #define FRAME_SIZE_8000  320 /* 1000x0.02 (20ms)= 160 x(16bit= 2 bytes) 320 frame size*/
 
+static switch_log_level_t get_stream_log_level(switch_core_session_t *session, switch_log_level_t default_level) {
+    switch_channel_t *channel = switch_core_session_get_channel(session);
+    const char *level = switch_channel_get_variable(channel, "STREAM_LOG_LEVEL");
+    if (!level || !*level) return default_level;
+    if (!strcasecmp(level, "ERROR")) return SWITCH_LOG_ERROR;
+    if (!strcasecmp(level, "WARNING")) return SWITCH_LOG_WARNING;
+    if (!strcasecmp(level, "INFO")) return SWITCH_LOG_INFO;
+    if (!strcasecmp(level, "DEBUG")) return SWITCH_LOG_DEBUG;
+    return default_level;
+}
+
+static inline uint8_t linear_to_ulaw(int16_t pcm_val) {
+    static const int16_t BIAS = 0x84;
+    static const int16_t CLIP = 32635;
+    static const uint8_t exp_lut[256] = {
+        0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+        5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+    };
+    int sign = (pcm_val >> 8) & 0x80;
+    if (sign) pcm_val = -pcm_val;
+    if (pcm_val > CLIP) pcm_val = CLIP;
+    pcm_val = pcm_val + BIAS;
+    int exponent = exp_lut[(pcm_val >> 7) & 0xFF];
+    int mantissa = (pcm_val >> (exponent + 3)) & 0x0F;
+    return (uint8_t)~(sign | (exponent << 4) | mantissa);
+}
+
 class AudioStreamer {
 public:
 
@@ -215,8 +256,8 @@ public:
                 switch_buffer_zero(tech_pvt->playback_buffer);
                 tech_pvt->playback_active = 0;
                 switch_mutex_unlock(tech_pvt->playback_mutex);
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, 
-                    "(%s) 🛑 Playback stopped (barge-in)\n", m_sessionId.c_str());
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+                    "(%s) [PLAYBACK] stopped (barge-in)\n", m_sessionId.c_str());
             }
             status = SWITCH_TRUE;
         }
@@ -239,14 +280,41 @@ public:
                         return status;
                     }
                     
+                    if (rawAudio.size() < 2) {
+                        cJSON_Delete(jsonAudio);
+                        cJSON_Delete(json);
+                        return status;
+                    }
+                    if (rawAudio.size() % 2 != 0) {
+                        rawAudio.pop_back();
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                            get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                            "(%s) [BUFFER] ajuste: payload com tamanho ímpar, truncando 1B\n",
+                            m_sessionId.c_str());
+                    }
+
                     switch_mutex_lock(tech_pvt->playback_mutex);
+                    if (tech_pvt->first_audio_ts == 0) {
+                        tech_pvt->first_audio_ts = switch_micro_time_now();
+                    }
                     
                     /* Check for buffer overrun - if near full, discard oldest data */
-                    const switch_size_t buffer_capacity = 32000;  /* 2 seconds @ 8kHz L16 */
-                    const switch_size_t high_water_mark = buffer_capacity - rawAudio.size();
+                    const switch_size_t buffer_capacity = tech_pvt->playback_buflen ? tech_pvt->playback_buflen : 32000;
+                    const switch_size_t high_water_mark = buffer_capacity > rawAudio.size()
+                        ? (buffer_capacity - rawAudio.size())
+                        : 0;
                     switch_size_t current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
                     
-                    if (current_size > high_water_mark) {
+                    if (rawAudio.size() > buffer_capacity) {
+                        switch_buffer_zero(tech_pvt->playback_buffer);
+                        const size_t offset = rawAudio.size() - buffer_capacity;
+                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data() + offset, buffer_capacity);
+                        tech_pvt->buffer_overruns++;
+                        current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                            "(%s) [BUFFER] overrun: payload %zuB > buffer %zuB, truncating\n",
+                            m_sessionId.c_str(), rawAudio.size(), buffer_capacity);
+                    } else if (current_size > high_water_mark) {
                         /* Buffer nearly full - discard oldest data to make room */
                         switch_size_t to_discard = current_size - high_water_mark + rawAudio.size();
                         char discard_buf[1024];
@@ -255,21 +323,30 @@ public:
                             switch_buffer_read(tech_pvt->playback_buffer, discard_buf, chunk);
                             to_discard -= chunk;
                         }
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, 
-                            "(%s) ⚠️ Buffer overrun - discarded old data\n", m_sessionId.c_str());
+                        tech_pvt->buffer_overruns++;
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                            "(%s) [BUFFER] overrun: discarded %zuB (capacity=%zuB, used=%zuB)\n",
+                            m_sessionId.c_str(), (size_t)(current_size - high_water_mark + rawAudio.size()),
+                            buffer_capacity, current_size);
                     }
                     
                     /* Write new audio to buffer */
-                    switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
+                    if (rawAudio.size() <= buffer_capacity) {
+                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
+                    }
                     
                     switch_size_t buffered = switch_buffer_inuse(tech_pvt->playback_buffer);
+                    if (buffered > tech_pvt->buffer_max_used) {
+                        tech_pvt->buffer_max_used = buffered;
+                    }
                     switch_mutex_unlock(tech_pvt->playback_mutex);
                     
                     /* Log every 50 chunks or on significant events */
                     static int chunk_count = 0;
                     if (++chunk_count % 50 == 1 || buffered < 1000) {
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, 
-                            "(%s) 📝 Buffer: +%zu bytes (total: %zu, active: %d)\n", 
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                            get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                            "(%s) [BUFFER] +%zuB (total=%zuB, active=%d)\n",
                             m_sessionId.c_str(), rawAudio.size(), buffered, tech_pvt->playback_active);
                     }
                     
@@ -393,8 +470,21 @@ namespace {
         }
         
         /* NETPLAY: Create playback buffer for streaming audio from WebSocket */
-        /* Buffer size: 2 seconds of L16 audio @ 8kHz = 8000 * 2 * 2 = 32000 bytes */
-        const size_t playback_buflen = 32000;
+        /* Buffer size default: 2 seconds of L16 audio @ 8kHz = 32000 bytes */
+        switch_channel_t *channel = switch_core_session_get_channel(session);
+        const char *buffer_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_BUFFER_MS");
+        const char *warmup_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_WARMUP_MS");
+        const char *low_water_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_LOW_WATER_MS");
+        int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 2000;
+        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 400;
+        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 160;
+        if (buffer_ms < 200) buffer_ms = 200;
+        if (buffer_ms > 10000) buffer_ms = 10000;
+        if (warmup_ms < 40) warmup_ms = 40;
+        if (low_water_ms < 40) low_water_ms = 40;
+        if (warmup_ms >= buffer_ms) warmup_ms = buffer_ms / 2;
+        if (low_water_ms >= buffer_ms) low_water_ms = buffer_ms / 4;
+        const size_t playback_buflen = (size_t)buffer_ms * 16; /* 8kHz L16 = 16 bytes/ms */
         if (switch_buffer_create(pool, &tech_pvt->playback_buffer, playback_buflen) != SWITCH_STATUS_SUCCESS) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                 "%s: Error creating playback buffer.\n", tech_pvt->sessionId);
@@ -402,8 +492,17 @@ namespace {
         }
         switch_mutex_init(&tech_pvt->playback_mutex, SWITCH_MUTEX_NESTED, pool);
         tech_pvt->playback_active = 0;
+        tech_pvt->playback_buflen = playback_buflen;
+        tech_pvt->warmup_threshold = (switch_size_t)warmup_ms * 16;
+        tech_pvt->low_water_mark = (switch_size_t)low_water_ms * 16;
+        tech_pvt->first_audio_ts = 0;
+        tech_pvt->playback_start_ts = 0;
+        tech_pvt->buffer_overruns = 0;
+        tech_pvt->buffer_underruns = 0;
+        tech_pvt->buffer_max_used = 0;
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-            "(%s) Streaming playback buffer created (%zu bytes)\n", tech_pvt->sessionId, playback_buflen);
+            "(%s) [PLAYBACK] buffer created (%zuB, warmup=%dms, low_water=%dms)\n",
+            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms);
 
         if (desiredSampling != sampling) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) resampling from %u to %u\n", tech_pvt->sessionId, sampling, desiredSampling);
@@ -485,6 +584,14 @@ namespace {
         if (tech_pvt->mutex) {
             switch_mutex_destroy(tech_pvt->mutex);
             tech_pvt->mutex = nullptr;
+        }
+        if (tech_pvt->playback_buffer) {
+            switch_buffer_destroy(&tech_pvt->playback_buffer);
+            tech_pvt->playback_buffer = nullptr;
+        }
+        if (tech_pvt->playback_mutex) {
+            switch_mutex_destroy(tech_pvt->playback_mutex);
+            tech_pvt->playback_mutex = nullptr;
         }
         /*if (tech_pvt->pAudioStreamer) {
             auto* as = (AudioStreamer *) tech_pvt->pAudioStreamer;
@@ -712,12 +819,32 @@ extern "C" {
             return 0;
         }
         
+        if (pcm_len % 2 != 0) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                "encode_g711: odd PCM length %zu\n", pcm_len);
+            return 0;
+        }
+        
+        if (tech_pvt->rtp_packets == 1 && (pcm_len % 320 != 0)) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+                "encode_g711: non-20ms PCM length %zu\n", pcm_len);
+        }
+        
         /* Validate buffer size: G.711 output is half the size of L16 input */
         size_t expected_output = pcm_len / 2;
         if (g711_buflen < expected_output) {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, 
                 "encode_g711: output buffer too small (%zu < %zu)\n", g711_buflen, expected_output);
             return 0;
+        }
+        
+        if (tech_pvt->audio_format == AUDIO_FORMAT_PCMU) {
+            const int16_t *samples = (const int16_t *)pcm_data;
+            const size_t sample_count = pcm_len / 2;
+            for (size_t i = 0; i < sample_count; ++i) {
+                g711_data[i] = linear_to_ulaw(samples[i]);
+            }
+            return sample_count;
         }
         
         uint32_t encoded_len = (uint32_t)g711_buflen;

@@ -19,6 +19,17 @@ static void responseHandler(switch_core_session_t* session, const char* eventNam
     switch_event_fire(&event);
 }
 
+static switch_log_level_t get_stream_log_level(switch_core_session_t *session, switch_log_level_t default_level) {
+    switch_channel_t *channel = switch_core_session_get_channel(session);
+    const char *level = switch_channel_get_variable(channel, "STREAM_LOG_LEVEL");
+    if (zstr(level)) return default_level;
+    if (!strcasecmp(level, "ERROR")) return SWITCH_LOG_ERROR;
+    if (!strcasecmp(level, "WARNING")) return SWITCH_LOG_WARNING;
+    if (!strcasecmp(level, "INFO")) return SWITCH_LOG_INFO;
+    if (!strcasecmp(level, "DEBUG")) return SWITCH_LOG_DEBUG;
+    return default_level;
+}
+
 /*
  * Linear 16-bit PCM to μ-law conversion
  * Standard ITU-T G.711 algorithm
@@ -76,6 +87,13 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
         case SWITCH_ABC_TYPE_CLOSE:
             {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Got SWITCH_ABC_TYPE_CLOSE.\n");
+                if (tech_pvt) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+                        "[BUFFER] stats: overruns=%u underruns=%u max_used=%zuB\n",
+                        tech_pvt->buffer_overruns,
+                        tech_pvt->buffer_underruns,
+                        tech_pvt->buffer_max_used);
+                }
                 // Check if this is a normal channel closure or a requested closure
                 channel_closing = tech_pvt->close_requested ? 0 : 1;
                 stream_session_cleanup(session, NULL, channel_closing);
@@ -107,14 +125,22 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                  * - Low water mark: 160ms (8 frames) - only pause if buffer gets critically low
                  * - This creates a "buffer zone" that absorbs latency spikes
                  */
-                const switch_size_t warmup_threshold = l16_frame_size * 20; /* 400ms warmup for smoother start */
-                const switch_size_t low_water_mark = l16_frame_size * 8;    /* 160ms - only pause if critically low */
+                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (l16_frame_size * 20);
+                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (l16_frame_size * 8);
                 
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {
                     tech_pvt->playback_active = 1;
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                        "🔊 Streaming started (buffer: %zu bytes, %zums)\n", available, available / 16);
+                    tech_pvt->playback_start_ts = switch_micro_time_now();
+                    if (tech_pvt->first_audio_ts > 0) {
+                        uint64_t latency_ms = (tech_pvt->playback_start_ts - tech_pvt->first_audio_ts) / 1000;
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_INFO),
+                            "[PLAYBACK] started buffer=%zu bytes, latency=%" SWITCH_UINT64_T_FMT "ms\n",
+                            available, latency_ms);
+                    } else {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_INFO),
+                            "[PLAYBACK] started buffer=%zu bytes\n", available);
+                    }
                 }
                 
                 if (tech_pvt->playback_active && available >= l16_frame_size) {
@@ -146,8 +172,13 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 } else if (tech_pvt->playback_active && available < low_water_mark) {
                     /* Buffer critically low - pause playback to allow refill */
                     tech_pvt->playback_active = 0;
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                        "⏸️ Buffer low (%zu bytes), pausing to refill\n", available);
+                    tech_pvt->buffer_underruns++;
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                        "[BUFFER] low (%zu bytes), pausing to refill\n", available);
+                }
+                
+                if (available > tech_pvt->buffer_max_used) {
+                    tech_pvt->buffer_max_used = available;
                 }
                 
                 switch_mutex_unlock(tech_pvt->playback_mutex);
