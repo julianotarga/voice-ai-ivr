@@ -386,7 +386,7 @@ class RealtimeSessionConfig:
     secretary_uuid: str
     secretary_name: str
     company_name: Optional[str] = None  # Nome da empresa
-    business_info: Optional[Dict[str, str]] = None  # Informações da empresa (servicos, horarios, precos, etc.)
+    business_info: Dict[str, str] = field(default_factory=dict)  # Informações da empresa (servicos, horarios, precos, etc.)
     provider_name: str = "openai"
     system_prompt: str = ""
     greeting: Optional[str] = None
@@ -2504,7 +2504,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             logger.info(f"📋 [GET_BUSINESS_INFO] Buscando info: {topic}")
             
             # Buscar do config (vem do banco de dados)
-            business_info = self.config.business_info or {}
+            business_info = self.config.business_info
             
             # Fallback para valores padrão se não configurado no banco
             default_info = {
