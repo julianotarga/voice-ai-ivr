@@ -574,6 +574,7 @@ class RealtimeSession:
         self._last_audio_delta_ts = 0.0
         self._local_barge_hits = 0
         self._tts_start_ts = 0.0  # Timestamp quando TTS iniciou (para initial_protection_ms)
+        self._tts_end_ts = 0.0    # Timestamp quando TTS terminou (para post_tts_protection_ms)
         self._barge_noise_floor = 0.0
         self._pending_audio_bytes = 0  # Audio bytes da resposta ATUAL (reset a cada nova resposta)
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
@@ -1516,46 +1517,53 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 # ========================================
                 # PROTEÇÃO INICIAL: Evitar self-echo
                 # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent
-                # Ignora input nos primeiros ms após TTS iniciar
+                # Ignora BARGE-IN nos primeiros ms após TTS iniciar
                 # para evitar que o eco do agente dispare barge-in
+                # 
+                # IMPORTANTE: NÃO usar return aqui! O áudio ainda precisa ser
+                # processado pelo AEC e enviado para o provider. Apenas a
+                # lógica de barge-in deve ser ignorada.
                 # ========================================
-                time_since_tts_start = (now - self._tts_start_ts) * 1000  # em ms
-                if time_since_tts_start < self.config.initial_protection_ms:
-                    # Ainda em período de proteção - não processar barge-in
-                    # Mas continuar acumulando frames silenciosamente
-                    return
+                time_since_tts_start = (now - self._tts_start_ts) * 1000 if self._tts_start_ts > 0 else float('inf')
+                in_initial_protection = time_since_tts_start < self.config.initial_protection_ms
                 
-                # Calcular RMS usando numpy (substituiu audioop deprecated)
-                samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
-                rms = int(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0
-                rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "1200"))
-                cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "1.0"))
-                required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "15"))
-                
-                if rms >= rms_threshold:
-                    self._local_barge_hits += 1
-                else:
-                    # Resetar apenas se cair muito abaixo do threshold (histerese)
-                    if rms < rms_threshold * 0.5:
-                        self._local_barge_hits = 0
-                
-                if (
-                    self._local_barge_hits >= required_hits and
-                    (now - self._last_barge_in_ts) >= cooldown_s
-                ):
+                # Se em proteção inicial, resetar hits e pular barge-in
+                # mas NÃO retornar - o áudio ainda será processado normalmente
+                if in_initial_protection:
                     self._local_barge_hits = 0
-                    self._last_barge_in_ts = now
-                    logger.info(
-                        f"Local barge-in triggered: rms={rms}, protection_elapsed={time_since_tts_start:.0f}ms",
-                        extra={"call_uuid": self.call_uuid}
-                    )
-                    await self.interrupt()
-                    if self._on_barge_in:
-                        try:
-                            await self._on_barge_in(self.call_uuid)
-                            self._metrics.record_barge_in(self.call_uuid)
-                        except Exception:
-                            pass
+                else:
+                    # Fora da proteção - processar barge-in normalmente
+                    # Calcular RMS usando numpy (substituiu audioop deprecated)
+                    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                    rms = int(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0
+                    rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "1200"))
+                    cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "1.0"))
+                    required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "15"))
+                    
+                    if rms >= rms_threshold:
+                        self._local_barge_hits += 1
+                    else:
+                        # Resetar apenas se cair muito abaixo do threshold (histerese)
+                        if rms < rms_threshold * 0.5:
+                            self._local_barge_hits = 0
+                    
+                    if (
+                        self._local_barge_hits >= required_hits and
+                        (now - self._last_barge_in_ts) >= cooldown_s
+                    ):
+                        self._local_barge_hits = 0
+                        self._last_barge_in_ts = now
+                        logger.info(
+                            f"Local barge-in triggered: rms={rms}, protection_elapsed={time_since_tts_start:.0f}ms",
+                            extra={"call_uuid": self.call_uuid}
+                        )
+                        await self.interrupt()
+                        if self._on_barge_in:
+                            try:
+                                await self._on_barge_in(self.call_uuid)
+                                self._metrics.record_barge_in(self.call_uuid)
+                            except Exception:
+                                pass
             except Exception:
                 pass
         
@@ -1957,6 +1965,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         elif event.type == ProviderEventType.AUDIO_DONE:
             self._assistant_speaking = False
+            self._tts_end_ts = time.time()  # Registrar fim do TTS para post_tts_protection_ms
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "audio_done")
                 # Transição de estado: speaking -> listening
@@ -2108,6 +2117,18 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                     }
                 )
                 return "continue"  # Ignorar este evento de fala
+            
+            # Proteção pós-TTS: Ignorar fala muito próxima ao fim do TTS
+            # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent - post_tts_end_protection_ms
+            # Isso evita cortar o início da fala real do caller (eco residual)
+            if self._tts_end_ts > 0:
+                time_since_tts_end = (now - self._tts_end_ts) * 1000  # em ms
+                if time_since_tts_end < self.config.post_tts_protection_ms:
+                    logger.debug(
+                        f"🛡️ Barge-in ignorado (post_tts_protection): {time_since_tts_end:.0f}ms < {self.config.post_tts_protection_ms}ms",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                    return "continue"  # Ignorar - pode ser eco residual
             
             # Se o usuário começou a falar, tentar interromper e limpar playback pendente.
             # (Mesmo que _assistant_speaking esteja brevemente fora de sincronia.)
