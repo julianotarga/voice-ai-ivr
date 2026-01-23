@@ -52,6 +52,8 @@ struct private_data {
     uint32_t buffer_overruns;            /* Buffer overrun counter */
     uint32_t buffer_underruns;           /* Buffer underrun counter */
     switch_size_t buffer_max_used;       /* Max buffered bytes observed */
+    uint32_t underrun_streak;            /* Consecutive underrun frames */
+    uint32_t underrun_grace_frames;      /* Grace frames before pausing */
 };
 
 typedef struct private_data private_t;

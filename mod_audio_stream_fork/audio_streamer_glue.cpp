@@ -475,13 +475,16 @@ namespace {
         const char *buffer_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_BUFFER_MS");
         const char *warmup_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_WARMUP_MS");
         const char *low_water_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_LOW_WATER_MS");
+        const char *underrun_grace_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_UNDERRUN_GRACE_MS");
         int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 2000;
         int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 400;
         int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 160;
+        int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 60;
         if (buffer_ms < 200) buffer_ms = 200;
         if (buffer_ms > 10000) buffer_ms = 10000;
         if (warmup_ms < 40) warmup_ms = 40;
         if (low_water_ms < 40) low_water_ms = 40;
+        if (underrun_grace_ms < 0) underrun_grace_ms = 0;
         if (warmup_ms >= buffer_ms) warmup_ms = buffer_ms / 2;
         if (low_water_ms >= buffer_ms) low_water_ms = buffer_ms / 4;
         const size_t playback_buflen = (size_t)buffer_ms * 16; /* 8kHz L16 = 16 bytes/ms */
@@ -500,9 +503,11 @@ namespace {
         tech_pvt->buffer_overruns = 0;
         tech_pvt->buffer_underruns = 0;
         tech_pvt->buffer_max_used = 0;
+        tech_pvt->underrun_streak = 0;
+        tech_pvt->underrun_grace_frames = (uint32_t)(underrun_grace_ms / 20);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-            "(%s) [PLAYBACK] buffer created (%zuB, warmup=%dms, low_water=%dms)\n",
-            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms);
+            "(%s) [PLAYBACK] buffer created (%zuB, warmup=%dms, low_water=%dms, underrun_grace=%dms)\n",
+            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms, underrun_grace_ms);
 
         if (desiredSampling != sampling) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) resampling from %u to %u\n", tech_pvt->sessionId, sampling, desiredSampling);

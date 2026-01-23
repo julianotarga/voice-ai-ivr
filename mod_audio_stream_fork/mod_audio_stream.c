@@ -131,6 +131,7 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {
                     tech_pvt->playback_active = 1;
+                    tech_pvt->underrun_streak = 0;
                     tech_pvt->playback_start_ts = switch_micro_time_now();
                     if (tech_pvt->first_audio_ts > 0) {
                         uint64_t latency_ms = (tech_pvt->playback_start_ts - tech_pvt->first_audio_ts) / 1000;
@@ -169,12 +170,35 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                         
                         switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
                     }
-                } else if (tech_pvt->playback_active && available < low_water_mark) {
-                    /* Buffer critically low - pause playback to allow refill */
-                    tech_pvt->playback_active = 0;
+                    tech_pvt->underrun_streak = 0;
+                } else if (tech_pvt->playback_active && available < l16_frame_size) {
+                    /* Underrun - opcionalmente injeta silêncio antes de pausar */
                     tech_pvt->buffer_underruns++;
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_DEBUG),
-                        "[BUFFER] low (%zu bytes), pausing to refill\n", available);
+                    tech_pvt->underrun_streak++;
+                    if (tech_pvt->underrun_streak <= tech_pvt->underrun_grace_frames) {
+                        int16_t silence_l16[160] = {0};
+                        uint8_t silence_pcmu[160];
+                        int i;
+                        for (i = 0; i < 160; i++) {
+                            silence_pcmu[i] = linear_to_ulaw(silence_l16[i]);
+                        }
+                        switch_codec_t *write_codec = switch_core_session_get_write_codec(session);
+                        if (write_codec) {
+                            switch_frame_t write_frame = { 0 };
+                            write_frame.data = silence_pcmu;
+                            write_frame.datalen = 160;
+                            write_frame.samples = 160;
+                            write_frame.rate = 8000;
+                            write_frame.codec = write_codec;
+                            switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
+                        }
+                    } else if (available < low_water_mark) {
+                        /* Buffer critically low - pause playback to allow refill */
+                        tech_pvt->playback_active = 0;
+                        tech_pvt->underrun_streak = 0;
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                            "[BUFFER] low (%zu bytes), pausing to refill\n", available);
+                    }
                 }
                 
                 if (available > tech_pvt->buffer_max_used) {
@@ -441,8 +465,8 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.6.0-netplay"
-#define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-22"
+#define MOD_AUDIO_STREAM_VERSION "2.6.1-netplay"
+#define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-23"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
 {
