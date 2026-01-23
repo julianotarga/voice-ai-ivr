@@ -29,7 +29,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Callable, Awaitable, Any
+from typing import Optional, Callable, Awaitable, Any, Tuple
 from uuid import uuid4
 
 from .esl_client import AsyncESLClient
@@ -62,6 +62,16 @@ class TransferState(Enum):
     ROLLING_BACK = "rolling_back"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class OriginateResult(Enum):
+    """Resultado do originate do B-leg."""
+    ANSWERED = "answered"           # Atendente atendeu
+    REJECTED = "rejected"           # Atendente rejeitou (clicou em recusar)
+    TIMEOUT = "timeout"             # Timeout esperando atender
+    A_LEG_HANGUP = "a_leg_hangup"   # A-leg desligou durante o originate
+    B_LEG_HANGUP = "b_leg_hangup"   # B-leg recebeu hangup event
+    ERROR = "error"                 # Erro no originate
 
 
 @dataclass
@@ -549,12 +559,21 @@ class BridgeTransferManager:
         self,
         destination: str,
         direct_contact: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], OriginateResult]:
         """
         Origina B-leg (atendente) para park.
         
         PROTEÇÃO: Verifica hangup do A-leg durante o polling.
         CLEANUP: Mata B-leg se A-leg desligar.
+        
+        Returns:
+            Tuple[uuid ou None, OriginateResult]
+            - (uuid, ANSWERED): Atendente atendeu
+            - (None, REJECTED): Atendente rejeitou rapidamente
+            - (None, TIMEOUT): Timeout aguardando atender
+            - (None, A_LEG_HANGUP): Cliente desligou
+            - (None, B_LEG_HANGUP): B-leg recebeu hangup
+            - (None, ERROR): Erro no originate
         """
         self._log_state_change(TransferState.B_LEG_RINGING, f"destination={destination}")
         
@@ -623,7 +642,7 @@ class BridgeTransferManager:
         success, result = await self._esl_command(cmd, timeout=5.0, description="ORIGINATE_B")
         if not success and "Job-UUID" not in result:
             logger.error(f"{self._elapsed()} ❌ Originate falhou")
-            return None
+            return None, OriginateResult.ERROR
         
         # Polling para aguardar atendimento
         # IMPORTANTE: Precisamos esperar o canal estar ANSWERED, não apenas existir!
@@ -632,39 +651,62 @@ class BridgeTransferManager:
         max_attempts = int(self.config.originate_timeout / self.config.originate_poll_interval)
         
         channel_exists = False  # Flag para saber se já detectamos que o canal existe
+        channel_existed_at_least_once = False  # Flag para detectar rejeição rápida
+        consecutive_missing = 0  # Contador de polling consecutivo sem canal
+        REJECTION_THRESHOLD = 3  # Após N polls sem canal (após ter existido), considera rejeitado
         
         for attempt in range(max_attempts):
             # CLEANUP: Verificar hangup do A-leg
             if self._a_leg_hangup_event.is_set():
                 logger.warning(f"{self._elapsed()} 🔴 A-leg desligou durante originate")
                 await self._kill_b_leg_safe()
-                return None
+                return None, OriginateResult.A_LEG_HANGUP
             
             # Verificar hangup do B-leg (rejeitou antes de atender)
             if self._b_leg_hangup_event.is_set():
-                logger.warning(f"{self._elapsed()} 🔴 B-leg rejeitou/não atendeu")
-                return None
+                logger.warning(f"{self._elapsed()} 🔴 B-leg rejeitou/não atendeu (hangup event)")
+                return None, OriginateResult.B_LEG_HANGUP
             
-            # PRIMEIRO: Verificar se canal existe (indica que está tocando)
-            if not channel_exists:
-                channel_exists = await self._verify_channel_exists(b_leg_uuid, "B-leg")
-                if channel_exists:
+            # Verificar se canal existe
+            current_exists = await self._verify_channel_exists(b_leg_uuid, "B-leg")
+            
+            if current_exists:
+                # Canal existe
+                consecutive_missing = 0  # Reset contador
+                
+                if not channel_existed_at_least_once:
+                    channel_existed_at_least_once = True
+                    channel_exists = True
                     logger.info(f"{self._elapsed()} 📞 B-leg {b_leg_uuid[:8]}... está TOCANDO (channel criado)")
-            
-            # SEGUNDO: Se canal existe, verificar se está ANSWERED
-            if channel_exists:
+                
+                # Verificar se está ANSWERED
                 if await self._verify_channel_answered(b_leg_uuid, "B-leg"):
                     logger.info(f"{self._elapsed()} ✅ B-leg {b_leg_uuid[:8]}... ATENDEU! (channel answered)")
                     self._log_state_change(TransferState.B_LEG_ANSWERED)
                     # Pequeno delay para estabilização após answer
                     await asyncio.sleep(0.2)
-                    return b_leg_uuid
+                    return b_leg_uuid, OriginateResult.ANSWERED
+            else:
+                # Canal não existe
+                channel_exists = False
+                consecutive_missing += 1
+                
+                # DETECÇÃO DE REJEIÇÃO RÁPIDA:
+                # Se o canal existiu antes (estava tocando) mas agora não existe mais,
+                # isso significa que o atendente rejeitou a chamada.
+                if channel_existed_at_least_once and consecutive_missing >= REJECTION_THRESHOLD:
+                    logger.warning(
+                        f"{self._elapsed()} 🚫 B-leg REJEITADO - canal desapareceu após "
+                        f"{consecutive_missing} polls ({consecutive_missing * self.config.originate_poll_interval:.1f}s)"
+                    )
+                    # Não precisa chamar kill porque o canal já não existe
+                    return None, OriginateResult.REJECTED
             
             await asyncio.sleep(self.config.originate_poll_interval)
         
         logger.warning(f"{self._elapsed()} ⏰ Timeout aguardando B-leg")
         await self._kill_b_leg_safe()
-        return None
+        return None, OriginateResult.TIMEOUT
     
     async def _kill_b_leg_safe(self) -> None:
         """Desliga B-leg se existir (com timeout e sem exceções)."""
@@ -977,17 +1019,43 @@ Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a liga
             
             # STEP 3: Originar B-leg
             logger.info(f"{self._elapsed()} 📍 STEP 3: Originando B-leg...")
-            b_leg_uuid = await self._originate_b_leg(destination, checked_contact)
+            b_leg_uuid, originate_result = await self._originate_b_leg(destination, checked_contact)
             
-            if not b_leg_uuid:
+            if originate_result != OriginateResult.ANSWERED:
                 # B-leg não atendeu - ROLLBACK
-                logger.warning(f"{self._elapsed()} ❌ B-leg não atendeu - ROLLBACK")
-                await self._rollback("B-leg não atendeu")
-                await self._emit_event(VoiceEventType.TRANSFER_TIMEOUT, reason="no_answer")
+                # Determinar mensagem e decisão baseado no resultado
+                if originate_result == OriginateResult.REJECTED:
+                    error_msg = "Ramal rejeitou a chamada"
+                    decision = TransferDecision.REJECTED
+                    event_reason = "rejected_by_attendant"
+                    logger.warning(f"{self._elapsed()} 🚫 B-leg REJEITOU - ROLLBACK")
+                elif originate_result == OriginateResult.A_LEG_HANGUP:
+                    error_msg = "Cliente desligou"
+                    decision = TransferDecision.HANGUP
+                    event_reason = "caller_hangup"
+                    logger.warning(f"{self._elapsed()} 🔴 A-leg desligou durante originate - ROLLBACK")
+                elif originate_result == OriginateResult.B_LEG_HANGUP:
+                    error_msg = "Ramal desligou/rejeitou"
+                    decision = TransferDecision.REJECTED
+                    event_reason = "b_leg_hangup"
+                    logger.warning(f"{self._elapsed()} 🔴 B-leg hangup - ROLLBACK")
+                elif originate_result == OriginateResult.ERROR:
+                    error_msg = "Erro ao originar chamada"
+                    decision = TransferDecision.ERROR
+                    event_reason = "originate_error"
+                    logger.error(f"{self._elapsed()} ❌ Originate erro - ROLLBACK")
+                else:  # TIMEOUT
+                    error_msg = "Ramal não atendeu"
+                    decision = TransferDecision.TIMEOUT
+                    event_reason = "no_answer"
+                    logger.warning(f"{self._elapsed()} ⏰ B-leg timeout - ROLLBACK")
+                
+                await self._rollback(f"originate={originate_result.value}")
+                await self._emit_event(VoiceEventType.TRANSFER_TIMEOUT, reason=event_reason)
                 return BridgeTransferResult(
                     success=False,
-                    decision=TransferDecision.TIMEOUT,
-                    error="Ramal não atendeu",
+                    decision=decision,
+                    error=error_msg,
                     final_state=self._state
                 )
             
