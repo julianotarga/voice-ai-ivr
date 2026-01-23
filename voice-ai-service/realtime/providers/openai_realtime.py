@@ -264,9 +264,6 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         self._session_start_time: Optional[float] = None
         self._max_session_duration_seconds: int = 55 * 60  # 55 min (5 min de margem)
         self._response_active: bool = False
-        # Flag para indicar que há resultado de função pendente aguardando processamento
-        # Se True, quando _response_active se tornar False, solicitar nova resposta
-        self._pending_function_result: bool = False
         
         # Contadores para agregação de logs de áudio (reduzir ruído)
         self._audio_chunks_sent: int = 0
@@ -918,21 +915,23 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         }))
         
         # Solicitar nova resposta após enviar resultado da função
-        # APENAS se request_response=True (default)
+        # APENAS se request_response=True (default) E não há resposta ativa
         if request_response:
             if not self._response_active:
                 await self._ws.send(json.dumps({"type": "response.create"}))
-                self._pending_function_result = False
+                logger.debug(f"Response requested after function: {function_name}", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "call_id": call_id,
+                })
             else:
-                # Marcar que há resultado pendente - será processado quando response.done chegar
-                self._pending_function_result = True
-                logger.debug("Response already active; marking pending function result", extra={
+                # Resposta já ativa - OpenAI Realtime API incorpora o resultado automaticamente
+                # NÃO pedir nova resposta para evitar duplicação
+                logger.debug(f"Response already active; OpenAI will use result in current response: {function_name}", extra={
                     "domain_uuid": self.config.domain_uuid,
                     "call_id": call_id,
                 })
         else:
             # Não solicitar resposta - a função já cuidou disso
-            self._pending_function_result = False
             logger.debug(f"Function result sent (no response requested): {function_name}", extra={
                 "domain_uuid": self.config.domain_uuid,
             })
@@ -1197,15 +1196,9 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 "status": status,
             })
             
-            # Se há resultado de função pendente, solicitar nova resposta para processá-lo
-            # Isso acontece quando a IA chamou função DURANTE uma resposta ativa
-            if self._pending_function_result and self._ws:
-                self._pending_function_result = False
-                logger.info("Requesting response for pending function result", extra={
-                    "domain_uuid": self.config.domain_uuid,
-                })
-                # Usar create_task para não bloquear o event loop
-                asyncio.create_task(self._ws.send(json.dumps({"type": "response.create"})))
+            # NOTA: Removida lógica de _pending_function_result que causava respostas duplicadas.
+            # Quando uma função é chamada durante uma resposta ativa, a OpenAI Realtime API
+            # já incorpora o resultado na resposta atual. Pedir nova resposta causava duplicação.
             
             return ProviderEvent(
                 type=ProviderEventType.RESPONSE_DONE,
