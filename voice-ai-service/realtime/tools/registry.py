@@ -38,17 +38,13 @@ class ToolRegistry:
     """
     
     _instance: Optional["ToolRegistry"] = None
-    # NOTA: _tools e _initialized são inicializados no __new__ 
-    # para evitar compartilhamento entre instâncias em testes
-    _tools: Dict[str, VoiceAITool]
-    _initialized: bool
+    # Inicializar diretamente na classe para que @classmethod funcione
+    _tools: Dict[str, VoiceAITool] = {}
+    _initialized: bool = False
     
     def __new__(cls) -> "ToolRegistry":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            # Inicializar atributos apenas na primeira criação
-            cls._tools = {}
-            cls._initialized = False
         return cls._instance
     
     @classmethod
