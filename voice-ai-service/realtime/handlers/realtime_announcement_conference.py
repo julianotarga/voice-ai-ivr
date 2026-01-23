@@ -930,6 +930,14 @@ class ConferenceAnnouncementSession:
             except Exception as e:
                 logger.debug(f"Could not cancel previous response: {e}")
             
+            # Se ainda há resposta ativa, não solicitar nova para evitar
+            # "conversation_already_has_active_response" e sobreposição de fala.
+            if self._response_active or self._response_audio_generating:
+                logger.warning(
+                    "⚠️ [COURTESY] Resposta ativa ainda em andamento - cortesia ignorada para evitar overlap"
+                )
+                return
+            
             # PASSO 2: Enviar instrução de cortesia
             await self._ws.send(json.dumps({
                 "type": "conversation.item.create",

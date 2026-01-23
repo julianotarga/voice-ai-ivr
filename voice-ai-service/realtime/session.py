@@ -1964,6 +1964,11 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # Verificar se é a primeira resposta (saudação) - não aplicar
             is_first_response = not self._first_response_done
             
+            # Durante o período de proteção pós-transferência, não cancelar respostas
+            # para evitar cortar mensagens como "Obrigado por aguardar".
+            protection_until = getattr(self, '_interrupt_protected_until', 0)
+            in_protection_period = now < protection_until
+            
             # Falso positivo: speech_started recente MAS sem speech_stopped
             # Isso indica que o VAD começou a detectar algo mas abortou (ruído curto)
             # NOTA: A transcrição pode chegar DEPOIS do response_started, então não usamos ela
@@ -1976,7 +1981,8 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             )
             
             if (
-                not is_first_response
+                not in_protection_period
+                and not is_first_response
                 and has_recent_speech_start
                 and not has_speech_stopped_after_start  # VAD não confirmou fim da fala
             ):
@@ -2424,6 +2430,12 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         elif name == "end_call":
             self._ending_call = True
+            self._farewell_response_started = False
+            sent_farewell = await self._send_farewell_if_needed()
+            if sent_farewell:
+                # Resetar contadores para medir apenas o áudio de despedida
+                self._pending_audio_bytes = 0
+                self._response_audio_start_time = time.time()
             asyncio.create_task(self._delayed_stop(2.0, "function_end"))
             return {"status": "ending"}
         
@@ -4215,7 +4227,9 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 if "+OK" in result_str:
                     self._on_hold = False
                     logger.info("Call taken off hold (resume)", extra={"call_uuid": self.call_uuid})
-                    await self._speak_hold_return_message(speak_return_message)
+                    await self._speak_hold_return_message(
+                        speak_return_message and not self._transfer_in_progress
+                    )
                     return True
                 elif "-ERR" in result_str:
                     # Resume falhou - provavelmente porque a conexão foi fechada
@@ -4226,20 +4240,26 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                         extra={"call_uuid": self.call_uuid}
                     )
                     self._on_hold = False
-                    await self._speak_hold_return_message(speak_return_message)
+                    await self._speak_hold_return_message(
+                        speak_return_message and not self._transfer_in_progress
+                    )
                     return True
                 else:
                     # Resposta ambígua - assumir sucesso
                     self._on_hold = False
                     logger.info(f"Call taken off hold (result: {result_str})", extra={"call_uuid": self.call_uuid})
-                    await self._speak_hold_return_message(speak_return_message)
+                    await self._speak_hold_return_message(
+                        speak_return_message and not self._transfer_in_progress
+                    )
                     return True
                     
             except asyncio.TimeoutError:
                 logger.warning(f"unhold_call timeout after {timeout}s - continuing anyway")
                 # Marcar como não em hold mesmo se timeout (evitar estado inconsistente)
                 self._on_hold = False
-                await self._speak_hold_return_message(speak_return_message)
+                await self._speak_hold_return_message(
+                    speak_return_message and not self._transfer_in_progress
+                )
                 return True
             
         except Exception as e:
@@ -4273,6 +4293,39 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             )
         except Exception as e:
             logger.debug(f"Could not send hold return message: {e}")
+
+    async def _send_farewell_if_needed(self) -> bool:
+        """
+        Garante despedida antes de end_call quando o LLM não falou.
+        
+        Returns:
+            True se enviou despedida automaticamente.
+        """
+        if not self._provider:
+            return False
+        
+        # Se a IA já está falando, assumir que a despedida já foi dita.
+        if self._assistant_speaking or self._response_active:
+            return False
+        
+        farewell_message = (self.config.farewell or "").strip()
+        if not farewell_message:
+            farewell_message = "Obrigado por ligar, até logo!"
+        
+        try:
+            logger.info(
+                f"🎙️ [FAREWELL] Falando despedida automática: '{farewell_message}'",
+                extra={"call_uuid": self.call_uuid}
+            )
+            await self._send_text_to_provider(
+                f"[SISTEMA] Diga APENAS e EXATAMENTE: '{farewell_message}' - "
+                "Esta é uma despedida curta e educada.",
+                request_response=True
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Could not send farewell message: {e}")
+            return False
     
     async def check_extension_available(self, extension: str) -> dict:
         """
@@ -4927,6 +4980,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             
             # 4. Processar resultado
             # Se o cliente ainda estiver em hold e a transferência não foi sucesso, fazer unhold
+            should_prepend_hold_return = False
             if client_on_hold and result.status != TransferStatus.SUCCESS:
                 elapsed = asyncio.get_event_loop().time() - hold_start_time
                 logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: Tempo em hold: {elapsed:.1f}s")
@@ -4934,12 +4988,18 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 # Remover do hold imediatamente - sem delay artificial
                 # O tempo real da tentativa de transferência já é suficiente
                 logger.info("📞 [INTELLIGENT_HANDOFF] Step 4: Transferência não sucedida, removendo do HOLD...")
-                unhold_result = await self.unhold_call()
+                unhold_result = await self.unhold_call(speak_return_message=False)
                 logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: unhold_call retornou: {unhold_result}")
                 client_on_hold = False
+                hold_return_message = (self.config.hold_return_message or "").strip()
+                should_prepend_hold_return = bool(unhold_result) and bool(hold_return_message)
             
             logger.info("📞 [INTELLIGENT_HANDOFF] Step 5: Chamando _handle_transfer_result...")
-            await self._handle_transfer_result(result, reason)
+            await self._handle_transfer_result(
+                result,
+                reason,
+                prepend_hold_return=should_prepend_hold_return
+            )
             logger.info("📞 [INTELLIGENT_HANDOFF] ========== FIM ==========")
             
         except Exception as e:
@@ -4969,7 +5029,8 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
     async def _handle_transfer_result(
         self,
         result: TransferResult,
-        original_reason: str
+        original_reason: str,
+        prepend_hold_return: bool = False
     ) -> None:
         """
         Processa resultado da transferência.
@@ -5155,11 +5216,20 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 # Fallback para outros status (FAILED, etc.)
                 contextual_message = get_no_answer_message(destination_name)
             
+            # Se o cliente estava em hold, juntar "Obrigado por aguardar" na mesma fala
+            # para evitar sobreposição de respostas.
+            hold_return_message = (self.config.hold_return_message or "").strip()
+            hold_return_prefix = ""
+            if prepend_hold_return and hold_return_message:
+                hold_return_prefix = f"{hold_return_message} "
+            
+            spoken_message = f"{hold_return_prefix}{contextual_message}".strip()
+            
             # Construir instrução clara para o OpenAI
             # IMPORTANTE: Ser explícito sobre não mentir para o cliente
             # IMPORTANTE: Ser MUITO explícito sobre falar despedida ANTES de end_call
             openai_instruction = (
-                f"[SISTEMA] Fale ao cliente: '{contextual_message}' "
+                f"[SISTEMA] Fale ao cliente: '{spoken_message}' "
                 "REGRAS OBRIGATÓRIAS: "
                 "1) Se cliente quiser deixar recado: PRIMEIRO chame take_message para coletar os dados. "
                 "2) NUNCA diga que a mensagem foi anotada sem ter chamado take_message. "
