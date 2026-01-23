@@ -226,6 +226,14 @@
 			'jitter_buffer_max' => intval($_POST['jitter_buffer_max'] ?? 300),
 			'jitter_buffer_step' => intval($_POST['jitter_buffer_step'] ?? 40),
 			'stream_buffer_size' => intval($_POST['stream_buffer_size'] ?? 20),  // 20ms default (milliseconds!)
+			// Business Info (migration 031)
+			'business_info_servicos' => str_replace("\r\n", "\n", trim($_POST['business_info_servicos'] ?? '')),
+			'business_info_precos' => str_replace("\r\n", "\n", trim($_POST['business_info_precos'] ?? '')),
+			'business_info_horarios' => str_replace("\r\n", "\n", trim($_POST['business_info_horarios'] ?? '')),
+			'business_info_localizacao' => str_replace("\r\n", "\n", trim($_POST['business_info_localizacao'] ?? '')),
+			'business_info_contato' => str_replace("\r\n", "\n", trim($_POST['business_info_contato'] ?? '')),
+			'business_info_promocoes' => str_replace("\r\n", "\n", trim($_POST['business_info_promocoes'] ?? '')),
+			'business_info_sobre' => str_replace("\r\n", "\n", trim($_POST['business_info_sobre'] ?? '')),
 		];
 		
 		//validate
