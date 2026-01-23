@@ -2178,12 +2178,15 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # Evitar StopAudio quando não há playback ativo
             # Se a fala começou após o fim do áudio e não há resposta em andamento,
             # isso é muito provavelmente eco/ruído residual detectado pelo VAD.
-            playback_recent_ms = (
-                (now - self._last_audio_delta_ts) * 1000
-                if self._last_audio_delta_ts > 0
-                else float("inf")
+            if self._last_audio_delta_ts > 0:
+                playback_recent_ms = (now - self._last_audio_delta_ts) * 1000
+            else:
+                playback_recent_ms = -1  # Nunca houve áudio de playback
+            
+            # Se nunca houve playback (-1) ou foi há muito tempo, não há playback ativo
+            playback_active = self._assistant_speaking or (
+                playback_recent_ms >= 0 and playback_recent_ms < self.config.post_tts_protection_ms
             )
-            playback_active = self._assistant_speaking or playback_recent_ms < self.config.post_tts_protection_ms
             if not playback_active:
                 logger.debug(
                     "🛡️ Barge-in ignorado (sem playback ativo)",
