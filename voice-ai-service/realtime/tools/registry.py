@@ -38,12 +38,17 @@ class ToolRegistry:
     """
     
     _instance: Optional["ToolRegistry"] = None
-    _tools: Dict[str, VoiceAITool] = {}
-    _initialized: bool = False
+    # NOTA: _tools e _initialized são inicializados no __new__ 
+    # para evitar compartilhamento entre instâncias em testes
+    _tools: Dict[str, VoiceAITool]
+    _initialized: bool
     
     def __new__(cls) -> "ToolRegistry":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            # Inicializar atributos apenas na primeira criação
+            cls._tools = {}
+            cls._initialized = False
         return cls._instance
     
     @classmethod
@@ -179,9 +184,11 @@ class ToolRegistry:
             
             result = await tool.execute(context, **kwargs)
             
-            # Herdar configuração de resposta do tool
-            if result.should_respond is True:  # Só sobrescrever se não foi explicitamente setado
-                result.should_respond = tool.requires_response
+            # Herdar configuração de resposta do tool se não foi explicitamente setado
+            # O ToolResult.ok() default é should_respond=True, então verificamos
+            # se o tool deve sobrescrever esse default
+            if not tool.requires_response and result.should_respond:
+                result.should_respond = False
             
             logger.info(f"🔧 Tool {name} concluído: success={result.success}", extra={
                 "call_uuid": context.call_uuid,

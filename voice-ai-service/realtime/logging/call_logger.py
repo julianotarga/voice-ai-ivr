@@ -166,18 +166,24 @@ class CallLogger:
         """
         Registra um evento na timeline.
         
+        Thread-safe: usa lista que é thread-safe para appends em Python.
+        
         Args:
             event_type: Tipo do evento
             data: Dados adicionais do evento
         """
-        event = CallEvent(type=event_type, data=data)
-        self._events.append(event)
-        
-        logger.debug(f"📝 [RCA] Event: {event_type.value}", extra={
-            "call_uuid": self.call_uuid,
-            "event_type": event_type.value,
-            "data": data
-        })
+        try:
+            event = CallEvent(type=event_type, data=data)
+            self._events.append(event)
+            
+            logger.debug(f"📝 [RCA] Event: {event_type.value}", extra={
+                "call_uuid": self.call_uuid,
+                "event_type": event_type.value,
+                "data": data
+            })
+        except Exception as e:
+            # Nunca falhar por causa de logging
+            logger.warning(f"📝 [RCA] Erro ao registrar evento: {e}")
     
     def log_metric(self, name: str, value: float, aggregate: str = "last") -> None:
         """
@@ -188,21 +194,24 @@ class CallLogger:
             value: Valor numérico
             aggregate: Como agregar valores repetidos ("last", "sum", "max", "min", "avg")
         """
-        if aggregate == "last":
-            self._metrics[name] = value
-        elif aggregate == "sum":
-            self._metrics[name] = self._metrics.get(name, 0) + value
-        elif aggregate == "max":
-            self._metrics[name] = max(self._metrics.get(name, float('-inf')), value)
-        elif aggregate == "min":
-            self._metrics[name] = min(self._metrics.get(name, float('inf')), value)
-        elif aggregate == "avg":
-            # Para avg, armazenamos soma e contagem
-            sum_key = f"__{name}_sum"
-            count_key = f"__{name}_count"
-            self._metrics[sum_key] = self._metrics.get(sum_key, 0) + value
-            self._metrics[count_key] = self._metrics.get(count_key, 0) + 1
-            self._metrics[name] = self._metrics[sum_key] / self._metrics[count_key]
+        try:
+            if aggregate == "last":
+                self._metrics[name] = value
+            elif aggregate == "sum":
+                self._metrics[name] = self._metrics.get(name, 0) + value
+            elif aggregate == "max":
+                self._metrics[name] = max(self._metrics.get(name, float('-inf')), value)
+            elif aggregate == "min":
+                self._metrics[name] = min(self._metrics.get(name, float('inf')), value)
+            elif aggregate == "avg":
+                # Para avg, armazenamos soma e contagem
+                sum_key = f"__{name}_sum"
+                count_key = f"__{name}_count"
+                self._metrics[sum_key] = self._metrics.get(sum_key, 0) + value
+                self._metrics[count_key] = self._metrics.get(count_key, 0) + 1
+                self._metrics[name] = self._metrics[sum_key] / self._metrics[count_key]
+        except Exception as e:
+            logger.warning(f"📝 [RCA] Erro ao registrar métrica {name}: {e}")
     
     def log_tool(
         self,
@@ -222,21 +231,49 @@ class CallLogger:
             duration_ms: Duração da execução em ms
             success: Se foi bem-sucedido
         """
-        execution = ToolExecution(
-            name=name,
-            input=input_args,
-            output=output,
-            duration_ms=duration_ms,
-            timestamp=datetime.utcnow().isoformat(),
-            success=success
-        )
-        self._tools.append(execution)
+        try:
+            # Sanitizar input/output para evitar dados sensíveis
+            safe_input = self._sanitize_data(input_args)
+            safe_output = self._sanitize_data(output)
+            
+            execution = ToolExecution(
+                name=name,
+                input=safe_input,
+                output=safe_output,
+                duration_ms=duration_ms,
+                timestamp=datetime.utcnow().isoformat(),
+                success=success
+            )
+            self._tools.append(execution)
+            
+            # Também registrar como evento
+            self.log_event(
+                EventType.TOOL_CALLED if success else EventType.TOOL_ERROR,
+                {"tool": name, "success": success, "duration_ms": duration_ms}
+            )
+        except Exception as e:
+            logger.warning(f"📝 [RCA] Erro ao registrar tool {name}: {e}")
+    
+    def _sanitize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove dados sensíveis de dicts para logging."""
+        if not data:
+            return {}
         
-        # Também registrar como evento
-        self.log_event(
-            EventType.TOOL_CALLED if success else EventType.TOOL_ERROR,
-            {"tool": name, "success": success, "duration_ms": duration_ms}
-        )
+        sensitive_keys = {"password", "token", "secret", "api_key", "authorization"}
+        result = {}
+        
+        for key, value in data.items():
+            if key.lower() in sensitive_keys:
+                result[key] = "[REDACTED]"
+            elif isinstance(value, dict):
+                result[key] = self._sanitize_data(value)
+            elif isinstance(value, str) and len(value) > 1000:
+                # Truncar strings muito longas
+                result[key] = value[:1000] + "...[truncated]"
+            else:
+                result[key] = value
+        
+        return result
     
     def set_caller_name(self, name: str) -> None:
         """Define o nome do cliente."""
