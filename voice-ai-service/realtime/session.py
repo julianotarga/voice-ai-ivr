@@ -3198,20 +3198,42 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 # Enviar instrução para a IA FALAR o prompt (não como input do usuário)
                 # Usa send_instruction que faz a IA dizer a frase, não responder a ela
                 try:
-                    if self._provider and hasattr(self._provider, 'send_instruction'):
+                    # Verificar se provider está conectado antes de tentar enviar
+                    if not self._provider:
+                        logger.warning(
+                            "⏰ [SILENCE_FALLBACK] Provider não disponível, ignorando",
+                            extra={"call_uuid": self.call_uuid}
+                        )
+                    elif hasattr(self._provider, 'is_connected') and not self._provider.is_connected:
+                        logger.warning(
+                            "⏰ [SILENCE_FALLBACK] Provider desconectado, ignorando",
+                            extra={"call_uuid": self.call_uuid}
+                        )
+                    elif hasattr(self._provider, 'send_instruction'):
                         await self._provider.send_instruction(prompt)
+                        logger.info(
+                            f"⏰ [SILENCE_FALLBACK] Instrução enviada: '{prompt}'",
+                            extra={"call_uuid": self.call_uuid}
+                        )
                     else:
                         # Fallback para providers que não suportam send_instruction
                         await self._send_text_to_provider(prompt)
-                    logger.info(
-                        f"⏰ [SILENCE_FALLBACK] Instrução enviada: '{prompt}'",
-                        extra={"call_uuid": self.call_uuid}
-                    )
+                        logger.info(
+                            f"⏰ [SILENCE_FALLBACK] Instrução enviada via fallback: '{prompt}'",
+                            extra={"call_uuid": self.call_uuid}
+                        )
                 except Exception as e:
-                    logger.error(
-                        f"⏰ [SILENCE_FALLBACK] Erro ao enviar instrução: {e}",
-                        extra={"call_uuid": self.call_uuid}
-                    )
+                    # Não logar como ERROR se for "Not connected" - é esperado durante desconexão
+                    if "not connected" in str(e).lower():
+                        logger.warning(
+                            f"⏰ [SILENCE_FALLBACK] Provider desconectado durante envio: {e}",
+                            extra={"call_uuid": self.call_uuid}
+                        )
+                    else:
+                        logger.error(
+                            f"⏰ [SILENCE_FALLBACK] Erro ao enviar instrução: {e}",
+                            extra={"call_uuid": self.call_uuid}
+                        )
                 
                 # Evitar disparos consecutivos imediatos
                 self._last_activity = time.time()

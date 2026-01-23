@@ -298,6 +298,11 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             return 8000  # G.711 é sempre 8kHz
         return 24000  # PCM16 @ 24kHz
     
+    @property
+    def is_connected(self) -> bool:
+        """Retorna True se o WebSocket está conectado."""
+        return self._connected and self._ws is not None
+    
     async def connect(self) -> None:
         """Conecta ao OpenAI Realtime API."""
         if self._connected:
