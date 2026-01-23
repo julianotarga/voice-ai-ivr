@@ -40,13 +40,14 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================================================
--- Habilitar Gemini Live para TODOS os domínios que têm secretárias
+-- Habilitar Gemini Live para TODOS os domínios que já têm o provider
 -- =====================================================================
 
 DO $$
 DECLARE
     d RECORD;
     count_updated INTEGER := 0;
+    secretaries_exist BOOLEAN := false;
 BEGIN
     -- Atualizar para domínios que já têm o provider (apenas habilitar)
     UPDATE v_voice_ai_providers 
@@ -58,20 +59,30 @@ BEGIN
     GET DIAGNOSTICS count_updated = ROW_COUNT;
     RAISE NOTICE 'Gemini Live habilitado para % domínios existentes', count_updated;
     
-    -- Criar para domínios que têm secretárias mas não têm o provider
-    FOR d IN 
-        SELECT DISTINCT s.domain_uuid 
-        FROM v_voice_ai_secretaries s
-        WHERE NOT EXISTS (
-            SELECT 1 FROM v_voice_ai_providers p 
-            WHERE p.domain_uuid = s.domain_uuid 
-              AND p.provider_name = 'gemini_live'
-              AND p.provider_type = 'realtime'
-        )
-    LOOP
-        PERFORM create_or_enable_gemini_live(d.domain_uuid);
-        count_updated := count_updated + 1;
-    END LOOP;
+    -- Verificar se tabela de secretárias existe antes de tentar usá-la
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_name = 'v_voice_ai_secretaries'
+    ) INTO secretaries_exist;
+    
+    IF secretaries_exist THEN
+        -- Criar para domínios que têm secretárias mas não têm o provider
+        FOR d IN 
+            SELECT DISTINCT s.domain_uuid 
+            FROM v_voice_ai_secretaries s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM v_voice_ai_providers p 
+                WHERE p.domain_uuid = s.domain_uuid 
+                  AND p.provider_name = 'gemini_live'
+                  AND p.provider_type = 'realtime'
+            )
+        LOOP
+            PERFORM create_or_enable_gemini_live(d.domain_uuid);
+            count_updated := count_updated + 1;
+        END LOOP;
+    ELSE
+        RAISE NOTICE 'Tabela v_voice_ai_secretaries não existe, pulando criação para novos domínios';
+    END IF;
     
     RAISE NOTICE 'Total: Gemini Live configurado para % domínios', count_updated;
 END $$;
