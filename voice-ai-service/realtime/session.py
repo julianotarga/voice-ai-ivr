@@ -671,9 +671,22 @@ class RealtimeSession:
         # RCA - Call Logger para Root Cause Analysis
         # Ref: openspec/changes/add-voice-ai-enhancements
         # ========================================
+        # Construir URL de logs RCA
+        # Se webhook_url termina com /webhook, substituir por /webhook/logs
+        # Se não, adicionar /logs
+        rca_webhook_url = None
+        if config.omniplay_webhook_url:
+            base_url = config.omniplay_webhook_url
+            if base_url.endswith('/webhook'):
+                rca_webhook_url = base_url + '/logs'
+            elif base_url.endswith('/'):
+                rca_webhook_url = base_url + 'webhook/logs'
+            else:
+                rca_webhook_url = base_url + '/logs'
+        
         self._call_logger = CallLogger(
             call_uuid=config.call_uuid,
-            webhook_url=f"{config.omniplay_webhook_url.rstrip('/webhook')}/webhook/logs" if config.omniplay_webhook_url else None,
+            webhook_url=rca_webhook_url,
             company_id=config.omniplay_company_id,
             secretary_id=config.secretary_uuid,
             caller_id=config.caller_id
