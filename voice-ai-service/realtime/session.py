@@ -447,6 +447,7 @@ class RealtimeSessionConfig:
     unbridge_behavior: str = "hangup"  # hangup | resume
     unbridge_resume_message: Optional[str] = None
     # Audio Configuration (per-secretary)
+    # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
     audio_warmup_ms: int = 200  # buffer de warmup em ms (aumentado para evitar stuttering)
     audio_adaptive_warmup: bool = True  # ajuste automático de warmup
@@ -455,8 +456,11 @@ class RealtimeSessionConfig:
     jitter_buffer_step: int = 40  # FreeSWITCH jitter buffer step (ms)
     stream_buffer_size: int = 20  # mod_audio_stream buffer in MILLISECONDS (not samples!)
     
+    # Streaming Tuning (baseado em Asterisk-AI-Voice-Agent)
+    provider_grace_ms: int = 500  # Absorver chunks atrasados do provider (evita tail-chop artifacts)
+    low_watermark_ms: int = 180   # Guard band - pausa breve se buffer cair abaixo disso
+    
     # Barge-in Protection (evita self-echo e falsos barge-ins)
-    # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
     initial_protection_ms: int = 350  # Ignorar input nos primeiros ms após TTS iniciar (evita self-echo)
     post_tts_protection_ms: int = 250  # Proteção adicional após TTS terminar (evita cortar início da fala do caller)
 
