@@ -3371,6 +3371,9 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
     async def _try_fallback(self, reason: str) -> bool:
         """
         Tenta alternar para um provider fallback, se configurado.
+        
+        Se todos os fallbacks falharem, retorna False para que o caller
+        possa encerrar a sessão graciosamente.
         """
         if self._fallback_active or not self.config.fallback_providers:
             return False
@@ -3397,19 +3400,35 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 except Exception:
                     pass
 
-                self.config.provider_name = next_provider
-                await self._create_provider()
-                self._setup_resampler()
-                self._assistant_speaking = False
-                self._user_speaking = False
-                self._metrics.update_provider(self.call_uuid, next_provider)
+                try:
+                    self.config.provider_name = next_provider
+                    await self._create_provider()
+                    self._setup_resampler()
+                    self._assistant_speaking = False
+                    self._user_speaking = False
+                    self._metrics.update_provider(self.call_uuid, next_provider)
 
-                logger.info("Fallback provider activated", extra={
-                    "call_uuid": self.call_uuid,
-                    "provider": next_provider,
-                })
-                return True
+                    logger.info("Fallback provider activated", extra={
+                        "call_uuid": self.call_uuid,
+                        "provider": next_provider,
+                    })
+                    return True
+                except Exception as e:
+                    # Provider falhou (não configurado, credenciais inválidas, etc)
+                    # Continuar tentando próximo fallback
+                    logger.error(f"Fallback provider '{next_provider}' failed: {e}", extra={
+                        "call_uuid": self.call_uuid,
+                        "provider": next_provider,
+                        "error": str(e),
+                    })
+                    continue
 
+            # Todos os fallbacks falharam
+            logger.error("All fallback providers exhausted", extra={
+                "call_uuid": self.call_uuid,
+                "attempted_providers": self.config.fallback_providers[:self._fallback_index],
+                "reason": reason,
+            })
             return False
         finally:
             self._fallback_active = False
