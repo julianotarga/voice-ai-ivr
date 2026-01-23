@@ -287,6 +287,31 @@
 			// Push-to-talk
 			$array['voice_secretaries'][0]['ptt_rms_threshold'] = $form_data['ptt_rms_threshold'] ?: null;
 			$array['voice_secretaries'][0]['ptt_hits'] = $form_data['ptt_hits'] ?: null;
+			
+			// Business Info (migration 031)
+			$business_info = [];
+			if (!empty($form_data['business_info_servicos'])) {
+				$business_info['servicos'] = $form_data['business_info_servicos'];
+			}
+			if (!empty($form_data['business_info_precos'])) {
+				$business_info['precos'] = $form_data['business_info_precos'];
+			}
+			if (!empty($form_data['business_info_horarios'])) {
+				$business_info['horarios'] = $form_data['business_info_horarios'];
+			}
+			if (!empty($form_data['business_info_localizacao'])) {
+				$business_info['localizacao'] = $form_data['business_info_localizacao'];
+			}
+			if (!empty($form_data['business_info_contato'])) {
+				$business_info['contato'] = $form_data['business_info_contato'];
+			}
+			if (!empty($form_data['business_info_promocoes'])) {
+				$business_info['promocoes'] = $form_data['business_info_promocoes'];
+			}
+			if (!empty($form_data['business_info_sobre'])) {
+				$business_info['sobre'] = $form_data['business_info_sobre'];
+			}
+			$array['voice_secretaries'][0]['business_info'] = !empty($business_info) ? json_encode($business_info) : null;
 			// Call State logging/metrics
 			$array['voice_secretaries'][0]['call_state_log_enabled'] = $form_data['call_state_log_enabled'];
 			$array['voice_secretaries'][0]['call_state_metrics_enabled'] = $form_data['call_state_metrics_enabled'];
@@ -676,6 +701,91 @@
 	echo "	<td class='vtable' align='left'>\n";
 	echo "		<textarea class='formfld' name='outside_hours_message' rows='3' style='width: 100%;' placeholder='Nosso horário de atendimento é de segunda a sexta, das 8h às 18h...'>".escape(trim($outside_hours_msg))."</textarea>\n";
 	echo "		<br /><span class='text-muted'>".($text['description-outside_hours_message'] ?? 'Mensagem reproduzida quando o cliente liga fora do horário configurado.')."</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// ========================================
+	// Business Info Section (migration 031)
+	// ========================================
+	echo "<tr>\n";
+	echo "	<td colspan='2' style='padding: 12px 10px; background: #e8f5e9; border-bottom: 1px solid #4CAF50;'>\n";
+	echo "		<b>🏢 Informações da Empresa</b>\n";
+	echo "		<span style='font-size: 0.85em; color: #2E7D32; margin-left: 10px;'>"
+		. "Dados que a IA usa para responder perguntas sobre a empresa"
+		. "</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Decode business_info JSON
+	$business_info = [];
+	if (!empty($data['business_info'])) {
+		if (is_string($data['business_info'])) {
+			$business_info = json_decode($data['business_info'], true) ?: [];
+		} else {
+			$business_info = $data['business_info'];
+		}
+	}
+
+	// Serviços
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Serviços</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_servicos' rows='3' style='width: 100%;' placeholder='Ex: Internet fibra 100MB, 200MB, 500MB. TV por assinatura. Telefonia fixa.'>".escape($business_info['servicos'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'>Descreva os serviços oferecidos pela empresa.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Preços
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Preços</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_precos' rows='3' style='width: 100%;' placeholder='Ex: 100MB: R$99/mês. 200MB: R$149/mês. 500MB: R$199/mês.'>".escape($business_info['precos'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'>Lista de preços dos serviços/produtos.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Horários
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Horários</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_horarios' rows='2' style='width: 100%;' placeholder='Ex: Segunda a sexta: 8h às 18h. Sábados: 8h às 12h.'>".escape($business_info['horarios'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'>Horários de atendimento.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Localização
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Localização</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_localizacao' rows='2' style='width: 100%;' placeholder='Ex: Rua Example, 123 - Bairro - São Paulo/SP. CEP: 01234-567.'>".escape($business_info['localizacao'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'>Endereço e informações de localização.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Contato
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Contato</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_contato' rows='2' style='width: 100%;' placeholder='Ex: WhatsApp: (11) 99999-9999. Email: contato@empresa.com.br'>".escape($business_info['contato'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'>Formas de contato (WhatsApp, email, etc.).</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Promoções (opcional)
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Promoções</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_promocoes' rows='2' style='width: 100%;' placeholder='Ex: Primeira mensalidade grátis para novos clientes!'>".escape($business_info['promocoes'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'><b>Opcional:</b> Promoções ativas.</span>\n";
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	// Sobre (opcional)
+	echo "<tr>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap='nowrap'>Sobre a Empresa</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	echo "		<textarea class='formfld' name='business_info_sobre' rows='2' style='width: 100%;' placeholder='Ex: Empresa fundada em 2010, líder em telecomunicações na região.'>".escape($business_info['sobre'] ?? '')."</textarea>\n";
+	echo "		<br /><span class='text-muted'><b>Opcional:</b> Breve descrição da empresa.</span>\n";
 	echo "	</td>\n";
 	echo "</tr>\n";
 

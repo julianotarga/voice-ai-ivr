@@ -726,7 +726,9 @@ class RealtimeServer:
                     COALESCE(s.transfer_announce_enabled, true) as transfer_announce_enabled,
                     COALESCE(s.transfer_realtime_enabled, false) as transfer_realtime_enabled,
                     s.transfer_realtime_prompt,
-                    COALESCE(s.transfer_realtime_timeout, 15) as transfer_realtime_timeout
+                    COALESCE(s.transfer_realtime_timeout, 15) as transfer_realtime_timeout,
+                    -- Business Info (migration 031)
+                    COALESCE(s.business_info, '{}'::jsonb) as business_info
                 FROM v_voice_secretaries s
                 LEFT JOIN v_voice_ai_providers p ON p.voice_ai_provider_uuid = s.realtime_provider_uuid
                 WHERE s.voice_secretary_uuid = $1::uuid
@@ -1043,6 +1045,7 @@ class RealtimeServer:
             secretary_uuid=secretary_uuid,
             secretary_name=row["name"] or "Voice Secretary",
             company_name=row.get("company_name"),
+            business_info=row.get("business_info") or {},
             provider_name=row["provider_name"] or "elevenlabs_conversational",
             system_prompt=final_system_prompt,
             greeting=row["greeting"],

@@ -386,6 +386,7 @@ class RealtimeSessionConfig:
     secretary_uuid: str
     secretary_name: str
     company_name: Optional[str] = None  # Nome da empresa
+    business_info: Optional[Dict[str, str]] = None  # Informações da empresa (servicos, horarios, precos, etc.)
     provider_name: str = "openai"
     system_prompt: str = ""
     greeting: Optional[str] = None
@@ -2498,20 +2499,34 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             }
         
         elif name == "get_business_info":
-            # Função do prompt do FusionPBX para informações da empresa
+            # Função para informações da empresa - busca do banco de dados
             topic = args.get("topic", "geral")
             logger.info(f"📋 [GET_BUSINESS_INFO] Buscando info: {topic}")
             
-            # Retornar informações básicas (pode ser expandido)
-            info_map = {
-                "servicos": "Oferecemos soluções de telefonia fixa, móvel, internet fibra óptica e integração WhatsApp Business.",
-                "horarios": "Nosso horário de atendimento é de segunda a sexta, das 8h às 18h.",
-                "localizacao": "Estamos localizados em São Paulo. Para endereço completo, consulte nosso site.",
-                "contato": "Nosso WhatsApp é o mesmo número desta ligação. Email: contato@netplay.com.br",
+            # Buscar do config (vem do banco de dados)
+            business_info = self.config.business_info or {}
+            
+            # Fallback para valores padrão se não configurado no banco
+            default_info = {
+                "servicos": "Consulte nosso site para informações sobre serviços.",
+                "horarios": "Entre em contato para verificar nossos horários de atendimento.",
+                "localizacao": "Consulte nosso site para informações de localização.",
+                "contato": "Ligue para este número ou acesse nosso site.",
+                "precos": "Os preços variam conforme o serviço. Posso anotar sua dúvida para retorno.",
+                "geral": "Posso anotar sua dúvida para que um atendente retorne com mais detalhes.",
             }
+            
+            # Prioridade: banco > fallback
+            info = business_info.get(topic) or default_info.get(topic, default_info["geral"])
+            
+            # Log se está usando dados do banco ou fallback
+            source = "banco" if topic in business_info else "fallback"
+            logger.debug(f"📋 [GET_BUSINESS_INFO] Fonte: {source}, topic: {topic}")
+            
             return {
                 "status": "success",
-                "info": info_map.get(topic, "Informação não disponível. Posso anotar sua dúvida para retorno.")
+                "info": info,
+                "source": source
             }
         
         elif name == "request_handoff":
