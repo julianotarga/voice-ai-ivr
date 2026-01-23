@@ -9,6 +9,7 @@ Referências:
 """
 
 import asyncio
+import contextlib
 import base64
 import json
 import logging
@@ -250,6 +251,7 @@ class RealtimeServer:
         manager = get_session_manager()
         metrics = get_metrics()
         session = None
+        cleanup_playback = None
 
         # Reusar sessão se já existir (reconexão do WS durante transfer)
         existing = manager.get_session(call_uuid)
@@ -259,7 +261,7 @@ class RealtimeServer:
                 "secretary_uuid": secretary_uuid,
             })
             session = existing
-            send_audio, clear_playback, flush_audio = self._build_audio_handlers(websocket, call_uuid)
+            send_audio, clear_playback, flush_audio, cleanup_playback = self._build_audio_handlers(websocket, call_uuid)
             session.update_audio_handlers(
                 on_audio_output=send_audio,
                 on_barge_in=clear_playback,
@@ -270,7 +272,7 @@ class RealtimeServer:
             # Criar sessão imediatamente (mod_audio_stream não envia metadata)
             # caller_id agora é recebido via URL
             try:
-                session = await self._create_session_from_db(
+                session, cleanup_playback = await self._create_session_from_db(
                     secretary_uuid=secretary_uuid,
                     call_uuid=call_uuid,
                     caller_id=caller_id,
@@ -371,6 +373,9 @@ class RealtimeServer:
                 "message_count": message_count,
                 "audio_bytes_total": audio_bytes_total,
             })
+
+            if cleanup_playback:
+                await cleanup_playback()
             
             if session and session.is_active:
                 if getattr(session, "in_transfer", False):
@@ -393,6 +398,7 @@ class RealtimeServer:
         audio_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
         pending = bytearray()
         sender_task: Optional[asyncio.Task] = None
+        cleanup_started = False
         format_sent = False
         playback_generation = 0
         playback_lock = asyncio.Lock()
@@ -544,6 +550,8 @@ class RealtimeServer:
                             _metrics.update_health_score(call_uuid, health_score)
                         last_health_update = now
 
+            except asyncio.CancelledError:
+                logger.debug("Playback sender loop cancelled", extra={"call_uuid": call_uuid})
             except websockets.exceptions.ConnectionClosed:
                 logger.debug("WebSocket closed during audio playback", extra={"call_uuid": call_uuid})
             except Exception as e:
@@ -596,7 +604,32 @@ class RealtimeServer:
         async def flush_audio():
             await audio_out_queue.put(("FLUSH", playback_generation))
 
-        return send_audio, clear_playback, flush_audio
+        async def cleanup_playback() -> None:
+            nonlocal sender_task, cleanup_started
+            if cleanup_started:
+                return
+            cleanup_started = True
+
+            if sender_task is None:
+                return
+
+            try:
+                await audio_out_queue.put(None)
+            except Exception:
+                pass
+
+            try:
+                await asyncio.wait_for(sender_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                sender_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sender_task
+            except Exception:
+                pass
+            finally:
+                sender_task = None
+
+        return send_audio, clear_playback, flush_audio, cleanup_playback
     
     async def _create_session_from_db(
         self,
@@ -1105,7 +1138,7 @@ class RealtimeServer:
         })
         
         # Handlers de áudio para este WebSocket
-        send_audio, clear_playback, flush_audio = self._build_audio_handlers(websocket, call_uuid)
+        send_audio, clear_playback, flush_audio, cleanup_playback = self._build_audio_handlers(websocket, call_uuid)
         
         # Criar sessão via manager
         manager = get_session_manager()
@@ -1117,7 +1150,7 @@ class RealtimeServer:
             on_audio_done=flush_audio,
         )
         
-        return session
+        return session, cleanup_playback
 
 
 async def run_server(host: str = "0.0.0.0", port: int = 8085) -> None:

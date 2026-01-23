@@ -560,6 +560,8 @@ class RealtimeSession:
         
         self._provider: Optional[BaseRealtimeProvider] = None
         self._resampler: Optional[ResamplerPair] = None
+        self._g711_output_decoder: Optional[G711Codec] = None
+        self._g711_output_codec_type: Optional[str] = None
         
         self._started = False
         self._ended = False
@@ -1710,11 +1712,12 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                     "call_uuid": self.call_uuid,
                 })
             
-            # Decodificar G.711 → L16 PCM
-            from .utils.audio_codec import G711Codec
+            # Decodificar G.711 → L16 PCM (reutiliza decoder por sessão)
             codec_type = "ulaw" if self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw") else "alaw"
-            codec = G711Codec(codec_type)
-            audio_bytes = codec.decode(audio_bytes)
+            if self._g711_output_decoder is None or self._g711_output_codec_type != codec_type:
+                self._g711_output_decoder = G711Codec(codec_type)
+                self._g711_output_codec_type = codec_type
+            audio_bytes = self._g711_output_decoder.decode(audio_bytes)
             
             if self._output_frame_count == 1:
                 logger.info(f"🔊 [OUTPUT] G.711 → L16: {original_len}B → {len(audio_bytes)}B", extra={
@@ -2129,6 +2132,25 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                         extra={"call_uuid": self.call_uuid}
                     )
                     return "continue"  # Ignorar - pode ser eco residual
+            
+            # Evitar StopAudio quando não há playback ativo
+            # Se a fala começou após o fim do áudio e não há resposta em andamento,
+            # isso é muito provavelmente eco/ruído residual detectado pelo VAD.
+            playback_recent_ms = (
+                (now - self._last_audio_delta_ts) * 1000
+                if self._last_audio_delta_ts > 0
+                else float("inf")
+            )
+            playback_active = self._assistant_speaking or playback_recent_ms < self.config.post_tts_protection_ms
+            if not playback_active:
+                logger.debug(
+                    "🛡️ Barge-in ignorado (sem playback ativo)",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "playback_recent_ms": int(playback_recent_ms),
+                    }
+                )
+                return "continue"
             
             # Se o usuário começou a falar, tentar interromper e limpar playback pendente.
             # (Mesmo que _assistant_speaking esteja brevemente fora de sincronia.)
