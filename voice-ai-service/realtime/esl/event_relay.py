@@ -522,11 +522,29 @@ class DualModeEventRelay:
             self._dispatch_to_session("handle_bridge", other_uuid)
     
     def _on_channel_unbridge_raw(self, event: Any) -> None:
-        """Handler para CHANNEL_UNBRIDGE."""
+        """
+        Handler para CHANNEL_UNBRIDGE.
+        
+        Quando o atendente desliga após um bridge bem-sucedido,
+        precisamos desligar o cliente também (comportamento padrão).
+        
+        IMPORTANTE: Se a sessão Voice AI já encerrou (transfer_success),
+        precisamos desligar via ESL diretamente, pois não há mais sessão
+        para receber o dispatch.
+        """
         logger.info(f"[{self._uuid}] CHANNEL_UNBRIDGE")
         
         if self._realtime_session:
+            # Sessão ativa - delegar para ela decidir (resume ou hangup)
             self._dispatch_to_session("handle_unbridge", None)
+        else:
+            # Sessão já encerrou (provavelmente após bridge bem-sucedido)
+            # Comportamento padrão: desligar o leg A
+            logger.info(
+                f"[{self._uuid}] CHANNEL_UNBRIDGE: Session ended, hanging up leg A",
+                extra={"call_uuid": self._uuid}
+            )
+            self._hangup_leg_a_after_unbridge()
     
     def _on_channel_hold_raw(self, event: Any) -> None:
         """Handler para CHANNEL_HOLD."""
@@ -824,6 +842,37 @@ class DualModeEventRelay:
                 
         except Exception as e:
             logger.error(f"[{self._uuid}] Error dispatching {method_name}: {e}")
+    
+    def _hangup_leg_a_after_unbridge(self) -> None:
+        """
+        Desliga o leg A após CHANNEL_UNBRIDGE quando a sessão já encerrou.
+        
+        Isso acontece quando:
+        1. Transferência foi bem-sucedida (bridge estabelecido)
+        2. Sessão Voice AI encerrou (reason: transfer_success)
+        3. Atendente desligou (CHANNEL_UNBRIDGE)
+        4. Cliente ainda está na linha - precisa desligar
+        """
+        try:
+            # Enviar comando de hangup via ESL
+            if hasattr(self, 'session') and self.session:
+                # Usar uuid_kill para garantir hangup
+                cmd = f"uuid_kill {self._uuid}"
+                logger.info(f"[{self._uuid}] Sending hangup after unbridge: {cmd}")
+                
+                try:
+                    result = self.session.execute("api", cmd)
+                    logger.info(
+                        f"[{self._uuid}] Hangup result: {result}",
+                        extra={"call_uuid": self._uuid}
+                    )
+                except Exception as e:
+                    logger.warning(f"[{self._uuid}] Hangup command failed: {e}")
+            else:
+                logger.warning(f"[{self._uuid}] No ESL session available for hangup")
+                
+        except Exception as e:
+            logger.error(f"[{self._uuid}] Error hanging up after unbridge: {e}")
     
     def _cleanup(self) -> None:
         """Cleanup ao encerrar."""
