@@ -5,11 +5,12 @@ Coleta eventos, métricas e execuções de tools durante uma chamada
 para análise posterior (Root Cause Analysis).
 """
 
-from .call_logger import CallLogger, CallEvent, CallMetric, ToolExecution
+from .call_logger import CallLogger, CallEvent, CallMetric, ToolExecution, EventType
 
 __all__ = [
     "CallLogger",
     "CallEvent",
     "CallMetric",
     "ToolExecution",
+    "EventType",
 ]
