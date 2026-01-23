@@ -595,9 +595,10 @@ class RealtimeSession:
         self._ptt_voice_hits = 0
         
         # Proteção contra falsos positivos do VAD
-        # Quando VAD detecta "fala" mas não há transcrição, é ruído
+        # Quando VAD detecta speech_started mas não speech_stopped, pode ser ruído
         self._last_user_transcript_ts: float = 0.0  # Última transcrição real do usuário
         self._last_speech_started_ts: float = 0.0   # Último VAD speech_started
+        self._last_speech_stopped_ts: float = 0.0   # Último VAD speech_stopped (usuário terminou de falar)
         self._response_without_transcript: bool = False  # Resposta iniciou sem transcrição
         
         self._transcript: List[TranscriptEntry] = []
@@ -1951,27 +1952,36 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             
             # ========================================
             # DETECÇÃO DE FALSO POSITIVO DO VAD
-            # Se VAD detectou fala mas não houve transcrição, é ruído
+            # Critério: speech_started sem speech_stopped = ruído (VAD abortou)
+            # Se houve speech_stopped, o usuário realmente falou algo
             # ========================================
             now = time.time()
             # Verificar se é a primeira resposta (saudação) - não aplicar
             is_first_response = not self._first_response_done
             
-            # Verificar se houve transcrição real após o último speech_started
-            # Se VAD detectou fala há menos de 5s mas não houve transcrição, é falso positivo
+            # Falso positivo: speech_started recente MAS sem speech_stopped
+            # Isso indica que o VAD começou a detectar algo mas abortou (ruído curto)
+            # NOTA: A transcrição pode chegar DEPOIS do response_started, então não usamos ela
+            has_recent_speech_start = (
+                self._last_speech_started_ts > 0
+                and (now - self._last_speech_started_ts) < 5.0  # Últimos 5s
+            )
+            has_speech_stopped_after_start = (
+                self._last_speech_stopped_ts >= self._last_speech_started_ts
+            )
+            
             if (
                 not is_first_response
-                and self._last_speech_started_ts > 0
-                and (now - self._last_speech_started_ts) < 5.0  # Speech recente (últimos 5s)
-                and self._last_user_transcript_ts < self._last_speech_started_ts  # Sem transcrição depois
+                and has_recent_speech_start
+                and not has_speech_stopped_after_start  # VAD não confirmou fim da fala
             ):
                 self._response_without_transcript = True
                 logger.warning(
-                    "🚫 [VAD FALSE POSITIVE] Resposta iniciada sem transcrição - será ignorada",
+                    "🚫 [VAD FALSE POSITIVE] speech_started sem speech_stopped - ignorando",
                     extra={
                         "call_uuid": self.call_uuid,
-                        "last_speech_ms_ago": int((now - self._last_speech_started_ts) * 1000),
-                        "last_transcript_ms_ago": int((now - self._last_user_transcript_ts) * 1000) if self._last_user_transcript_ts > 0 else -1,
+                        "last_speech_start_ms_ago": int((now - self._last_speech_started_ts) * 1000),
+                        "last_speech_stop_ms_ago": int((now - self._last_speech_stopped_ts) * 1000) if self._last_speech_stopped_ts > 0 else -1,
                     }
                 )
                 # Cancelar a resposta se possível
@@ -2255,6 +2265,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         elif event.type == ProviderEventType.SPEECH_STOPPED:
             self._user_speaking = False
+            self._last_speech_stopped_ts = time.time()  # Usuário terminou de falar (VAD confirmou)
             # Marcar timestamp para pacing (breathing room)
             self._pacing.mark_user_speech_ended()
             self._pacing_applied_this_turn = False  # Reset para próximo turno
