@@ -607,12 +607,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         # Se houver first_message (saudação), enviar como texto e solicitar resposta
         if self.config.first_message:
             logger.debug(f"Sending first message: {self.config.first_message[:50]}...")
-            await self.send_text(self.config.first_message)
-            # Solicitar resposta do modelo
-            if not self._response_active:
-                await self._ws.send(json.dumps({"type": "response.create"}))
-            else:
-                logger.debug("Response already active; skipping response.create for first_message")
+            # send_text já faz response.create quando request_response=True
+            await self.send_text(self.config.first_message, request_response=True)
     
     def _build_vad_config(self) -> Optional[Dict[str, Any]]:
         """
