@@ -2511,10 +2511,12 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # Fallback para valores padrão se não configurado no banco
             default_info = {
                 "servicos": "Consulte nosso site para informações sobre serviços.",
+                "precos": "Os preços variam conforme o serviço. Posso anotar sua dúvida para retorno.",
+                "promocoes": "Consulte nosso site ou fale com um atendente para saber sobre promoções.",
                 "horarios": "Entre em contato para verificar nossos horários de atendimento.",
                 "localizacao": "Consulte nosso site para informações de localização.",
                 "contato": "Ligue para este número ou acesse nosso site.",
-                "precos": "Os preços variam conforme o serviço. Posso anotar sua dúvida para retorno.",
+                "sobre": "Somos uma empresa focada em soluções de qualidade.",
                 "geral": "Posso anotar sua dúvida para que um atendente retorne com mais detalhes.",
             }
             

@@ -146,6 +146,7 @@ from .base import (
     RealtimeConfig,
 )
 from ..config.prompts import get_enhanced_prompt
+from ..tools import get_openai_tools_with_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -428,8 +429,8 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         vad_type = vad_config.get("type") if vad_config else "disabled"
         vad_eagerness = vad_config.get("eagerness") if vad_config else None
         
-        # Preparar tools
-        tools = self.config.tools or DEFAULT_TOOLS
+        # Preparar tools - combina Registry (get_business_info, etc.) + customizados
+        tools = get_openai_tools_with_defaults(self.config.tools)
         tools_names = [t.get("name") for t in tools]
         
         # Enriquecer prompt com regras conversacionais

@@ -81,12 +81,17 @@ class GetBusinessInfoTool(VoiceAITool):
     Tool para obter informações do negócio.
     
     Usado para responder perguntas sobre a empresa.
+    Os dados são configurados no FusionPBX (Informações da Empresa).
     """
     
     name = "get_business_info"
     description = (
         "Obtém informações sobre a empresa. "
-        "Use para responder perguntas sobre: serviços, horários, localização, contato."
+        "SEMPRE use esta função para responder perguntas sobre: "
+        "serviços oferecidos, preços/valores/planos, promoções/descontos, "
+        "horários de atendimento, localização/endereço, formas de contato, "
+        "ou informações gerais sobre a empresa. "
+        "NÃO invente informações - use sempre esta função para obter dados corretos."
     )
     
     parameters = {
@@ -94,8 +99,8 @@ class GetBusinessInfoTool(VoiceAITool):
         "properties": {
             "topic": {
                 "type": "string",
-                "enum": ["servicos", "horarios", "localizacao", "contato", "geral"],
-                "description": "Tópico da informação desejada"
+                "enum": ["servicos", "precos", "promocoes", "horarios", "localizacao", "contato", "sobre", "geral"],
+                "description": "Tópico: servicos, precos (valores/planos), promocoes (descontos), horarios, localizacao, contato, sobre (a empresa), geral"
             }
         },
         "required": ["topic"]
@@ -105,13 +110,16 @@ class GetBusinessInfoTool(VoiceAITool):
     requires_response = True
     filler_phrases = ["Um momento...", "Deixa eu verificar..."]
     
-    # Informações padrão - podem ser customizadas por empresa
+    # Informações padrão - sobrescritas pelos dados do banco de dados
     DEFAULT_INFO = {
-        "servicos": "Oferecemos soluções de telefonia fixa, móvel, internet fibra óptica e integração WhatsApp Business.",
-        "horarios": "Nosso horário de atendimento é de segunda a sexta, das 8h às 18h.",
-        "localizacao": "Estamos localizados em São Paulo. Para endereço completo, consulte nosso site.",
-        "contato": "Nosso WhatsApp é o mesmo número desta ligação. Email: contato@empresa.com.br",
-        "geral": "Somos uma empresa de tecnologia focada em soluções de comunicação."
+        "servicos": "Consulte nosso site para informações sobre serviços.",
+        "precos": "Os preços variam conforme o serviço. Posso anotar sua dúvida para retorno.",
+        "promocoes": "Consulte nosso site ou fale com um atendente para saber sobre promoções.",
+        "horarios": "Entre em contato para verificar nossos horários de atendimento.",
+        "localizacao": "Consulte nosso site para informações de localização.",
+        "contato": "Ligue para este número ou acesse nosso site.",
+        "sobre": "Somos uma empresa focada em soluções de qualidade.",
+        "geral": "Posso anotar sua dúvida para que um atendente retorne com mais detalhes."
     }
     
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
