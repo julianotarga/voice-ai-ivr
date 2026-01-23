@@ -1119,6 +1119,8 @@ class RealtimeSession:
                 "domain_uuid": self.domain_uuid,
                 "provider": self.config.provider_name,
                 "intelligent_handoff": self.config.intelligent_handoff_enabled,
+                "business_info_loaded": bool(self.config.business_info),
+                "business_info_keys": list(self.config.business_info.keys()) if self.config.business_info else [],
             })
         except Exception as e:
             logger.error(f"Failed to start session: {e}")
@@ -2503,10 +2505,20 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         elif name == "get_business_info":
             # Função para informações da empresa - busca do banco de dados
             topic = args.get("topic", "geral")
-            logger.info(f"📋 [GET_BUSINESS_INFO] Buscando info: {topic}")
             
             # Buscar do config (vem do banco de dados)
             business_info = self.config.business_info
+            
+            # Log detalhado para diagnóstico
+            logger.info(
+                f"📋 [GET_BUSINESS_INFO] Buscando info: {topic}",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "topic": topic,
+                    "business_info_keys": list(business_info.keys()) if business_info else [],
+                    "has_topic": topic in business_info if business_info else False,
+                }
+            )
             
             # Fallback para valores padrão se não configurado no banco
             default_info = {
