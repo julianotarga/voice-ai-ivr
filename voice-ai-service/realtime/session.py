@@ -594,6 +594,12 @@ class RealtimeSession:
         self._ptt_silence_ms = 0
         self._ptt_voice_hits = 0
         
+        # Proteção contra falsos positivos do VAD
+        # Quando VAD detecta "fala" mas não há transcrição, é ruído
+        self._last_user_transcript_ts: float = 0.0  # Última transcrição real do usuário
+        self._last_speech_started_ts: float = 0.0   # Último VAD speech_started
+        self._response_without_transcript: bool = False  # Resposta iniciou sem transcrição
+        
         self._transcript: List[TranscriptEntry] = []
         self._current_assistant_text = ""
         
@@ -1942,6 +1948,43 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         if event.type == ProviderEventType.RESPONSE_STARTED:
             self._response_active = True
+            
+            # ========================================
+            # DETECÇÃO DE FALSO POSITIVO DO VAD
+            # Se VAD detectou fala mas não houve transcrição, é ruído
+            # ========================================
+            now = time.time()
+            # Verificar se é a primeira resposta (saudação) - não aplicar
+            is_first_response = not self._first_response_done
+            
+            # Verificar se houve transcrição real após o último speech_started
+            # Se VAD detectou fala há menos de 5s mas não houve transcrição, é falso positivo
+            if (
+                not is_first_response
+                and self._last_speech_started_ts > 0
+                and (now - self._last_speech_started_ts) < 5.0  # Speech recente (últimos 5s)
+                and self._last_user_transcript_ts < self._last_speech_started_ts  # Sem transcrição depois
+            ):
+                self._response_without_transcript = True
+                logger.warning(
+                    "🚫 [VAD FALSE POSITIVE] Resposta iniciada sem transcrição - será ignorada",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "last_speech_ms_ago": int((now - self._last_speech_started_ts) * 1000),
+                        "last_transcript_ms_ago": int((now - self._last_user_transcript_ts) * 1000) if self._last_user_transcript_ts > 0 else -1,
+                    }
+                )
+                # Cancelar a resposta se possível
+                if self._provider and hasattr(self._provider, 'interrupt'):
+                    try:
+                        await self._provider.interrupt()
+                        logger.info("🚫 [VAD FALSE POSITIVE] Resposta cancelada")
+                    except Exception as e:
+                        logger.debug(f"🚫 [VAD FALSE POSITIVE] Erro ao cancelar: {e}")
+                return "continue"  # Ignorar esta resposta
+            else:
+                self._response_without_transcript = False
+            
             # Reset buffer e contador para nova resposta
             if self._resampler:
                 # IMPORTANTE: Preservar warmup estendido se foi configurado (após resume)
@@ -2060,6 +2103,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         elif event.type == ProviderEventType.USER_TRANSCRIPT:
             if event.transcript:
+                self._last_user_transcript_ts = time.time()  # Marcar transcrição real recebida
                 self._transcript.append(TranscriptEntry(role="user", text=event.transcript))
                 if self._on_transcript:
                     await self._on_transcript("user", event.transcript)
@@ -2145,6 +2189,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         elif event.type == ProviderEventType.SPEECH_STARTED:
             self._user_speaking = True
             self._speech_start_time = time.time()
+            self._last_speech_started_ts = time.time()  # Rastrear para detecção de falso positivo
             # Resetar fallback de silêncio quando usuário começa a falar (VAD real)
             self._silence_fallback_count = 0
             # Marcar início da fala para pacing (usado para detectar falas longas)
