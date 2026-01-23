@@ -25,7 +25,7 @@ class EndCallTool(VoiceAITool):
     description = (
         "Encerra a chamada. "
         "REGRA CRÍTICA: Você DEVE FALAR uma despedida educada ANTES de chamar esta função! "
-        "Exemplos de despedida: 'Obrigada por ligar, tenha um ótimo dia!', 'Foi um prazer ajudar, até logo!' "
+        "Exemplos de despedida: 'Obrigada por ligar, até logo!', 'Foi um prazer ajudar, até logo!' "
         "NUNCA chame end_call sem ANTES ter falado a despedida em voz alta. "
         "A despedida deve ser a ÚLTIMA coisa que você fala antes de chamar esta função."
     )

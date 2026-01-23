@@ -143,14 +143,13 @@ END_CALL_FUNCTION_DEFINITION = {
     "type": "function",
     "name": "end_call",
     "description": (
-        "Encerra a chamada telefônica IMEDIATAMENTE. "
-        "VOCÊ deve chamar esta função PROATIVAMENTE após: "
-        "1) Resolver o assunto do cliente e se despedir. "
-        "2) Anotar um recado e agradecer. "
-        "3) O cliente dizer que não precisa de mais nada. "
-        "4) Qualquer despedida como 'obrigado, tenha um bom dia'. "
-        "IMPORTANTE: Não espere o cliente dizer 'tchau' - VOCÊ encerra a ligação "
-        "assim que terminar de se despedir. Seja proativo."
+        "Encerra a chamada. "
+        "REGRA CRÍTICA: Você DEVE FALAR uma despedida educada ANTES de chamar esta função! "
+        "Exemplos: 'Obrigada por ligar, até logo!', 'Foi um prazer ajudar, até logo!' "
+        "NUNCA chame end_call sem ANTES ter falado a despedida em voz alta. "
+        "A despedida deve ser a ÚLTIMA coisa que você fala antes de chamar esta função. "
+        "Use após: 1) Resolver o assunto e falar despedida. 2) Anotar recado e agradecer. "
+        "3) Cliente recusar deixar recado - agradeça e despeça-se."
     ),
     "parameters": {
         "type": "object",
@@ -5002,7 +5001,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 "1) Se cliente quiser deixar recado: PRIMEIRO chame take_message para coletar os dados. "
                 "2) NUNCA diga que a mensagem foi anotada sem ter chamado take_message. "
                 "3) Se cliente NÃO quiser deixar recado: "
-                "   PRIMEIRO você DEVE FALAR uma despedida educada como 'Tudo bem! Obrigada por ligar, tenha um ótimo dia!' "
+                "   PRIMEIRO você DEVE FALAR uma despedida educada como 'Tudo bem! Obrigada por ligar, até logo!' "
                 "   e SOMENTE DEPOIS de falar a despedida, chame end_call. "
                 "   NUNCA chame end_call sem antes ter falado a despedida em voz alta."
             )
