@@ -23,12 +23,11 @@ class EndCallTool(VoiceAITool):
     
     name = "end_call"
     description = (
-        "Encerra a chamada de forma educada. "
-        "Use quando o cliente: "
-        "1) Disser 'obrigado, é só isso' ou similar "
-        "2) Indicar que não precisa de mais ajuda "
-        "3) Pedir para desligar "
-        "SEMPRE agradeça antes de encerrar."
+        "Encerra a chamada. "
+        "REGRA CRÍTICA: Você DEVE FALAR uma despedida educada ANTES de chamar esta função! "
+        "Exemplos de despedida: 'Obrigada por ligar, tenha um ótimo dia!', 'Foi um prazer ajudar, até logo!' "
+        "NUNCA chame end_call sem ANTES ter falado a despedida em voz alta. "
+        "A despedida deve ser a ÚLTIMA coisa que você fala antes de chamar esta função."
     )
     
     parameters = {

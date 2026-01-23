@@ -4995,12 +4995,16 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             
             # Construir instrução clara para o OpenAI
             # IMPORTANTE: Ser explícito sobre não mentir para o cliente
+            # IMPORTANTE: Ser MUITO explícito sobre falar despedida ANTES de end_call
             openai_instruction = (
                 f"[SISTEMA] Fale ao cliente: '{contextual_message}' "
                 "REGRAS OBRIGATÓRIAS: "
                 "1) Se cliente quiser deixar recado: PRIMEIRO chame take_message para coletar os dados. "
                 "2) NUNCA diga que a mensagem foi anotada sem ter chamado take_message. "
-                "3) Se cliente não quiser deixar recado: agradeça e use end_call."
+                "3) Se cliente NÃO quiser deixar recado: "
+                "   PRIMEIRO você DEVE FALAR uma despedida educada como 'Tudo bem! Obrigada por ligar, tenha um ótimo dia!' "
+                "   e SOMENTE DEPOIS de falar a despedida, chame end_call. "
+                "   NUNCA chame end_call sem antes ter falado a despedida em voz alta."
             )
             
             logger.info(
