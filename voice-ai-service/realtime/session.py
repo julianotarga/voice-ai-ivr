@@ -1649,13 +1649,53 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         
         original_len = len(audio_bytes)
         
-        # Log do primeiro frame de output
+        # ========================================
+        # DECODIFICAR G.711 OUTPUT (se configurado)
+        # ========================================
+        # Quando o OpenAI está configurado para retornar G.711, precisamos
+        # decodificar para L16 PCM antes de enviar ao mod_audio_stream
+        # ========================================
+        is_g711_output = self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw", 
+                                                        "pcma", "g711a", "alaw", "g711_alaw")
+        
+        if is_g711_output:
+            # Detectar se realmente é G.711 baseado no tamanho
+            # G.711 @ 8kHz: 1 byte por sample (160B = 20ms)
+            # L16 @ 8kHz: 2 bytes por sample (320B = 20ms)
+            # Se o frame for "pequeno demais" para L16, é G.711
+            bytes_per_sample_l16 = 2
+            bytes_per_sample_g711 = 1
+            
+            # Heurística: se frame_size indica ~8kHz G.711 (não L16), decodificar
+            # Frame G.711 típico: 160B (20ms), 800B (100ms)
+            # Frame L16 típico: 320B (20ms), 960B (24kHz 20ms)
+            expected_l16_size = original_len * bytes_per_sample_l16 // bytes_per_sample_g711
+            
+            if self._output_frame_count == 1:
+                logger.info(f"🔊 [OUTPUT] G.711 configurado, decodificando: {original_len}B → ~{expected_l16_size}B", extra={
+                    "call_uuid": self.call_uuid,
+                })
+            
+            # Decodificar G.711 → L16 PCM
+            from .utils.audio_codec import G711Codec
+            codec_type = "ulaw" if self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw") else "alaw"
+            codec = G711Codec(codec_type)
+            audio_bytes = codec.decode(audio_bytes)
+            
+            if self._output_frame_count == 1:
+                logger.info(f"🔊 [OUTPUT] G.711 → L16: {original_len}B → {len(audio_bytes)}B", extra={
+                    "call_uuid": self.call_uuid,
+                })
+        
+        # Log do primeiro frame de output (após decodificação se houver)
         if self._output_frame_count == 1:
             # Detectar formato baseado no tamanho do frame
             # G.711 @ 8kHz/20ms = 160 bytes (1 byte/sample)
             # PCM16 @ 24kHz/20ms = 960 bytes (2 bytes/sample)
-            if original_len <= 200:
-                output_format_log = "G.711 @ 8kHz"
+            if original_len <= 200 and not is_g711_output:
+                output_format_log = "G.711 @ 8kHz (raw)"
+            elif is_g711_output:
+                output_format_log = f"G.711 → L16 ({original_len}B → {len(audio_bytes)}B)"
             else:
                 output_format_log = "PCM16 @ 24kHz"
             logger.info(f"🔊 [OUTPUT] Primeiro frame do OpenAI: {original_len}B ({output_format_log})", extra={
