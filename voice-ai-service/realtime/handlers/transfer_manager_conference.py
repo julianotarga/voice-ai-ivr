@@ -63,6 +63,9 @@ class ConferenceTransferConfig:
     openai_model: str = "gpt-realtime"
     openai_voice: str = "marin"
     
+    # Warmup do anúncio (ms) - opcional (usa valor do banco quando disponível)
+    announcement_warmup_ms: Optional[int] = None
+    
     # Comportamento
     # IMPORTANTE: accept_on_timeout=False para evitar conectar quando atendente recusa
     # mas a IA não chama reject_transfer(). Melhor rejeitar por timeout do que conectar errado.
@@ -1129,6 +1132,7 @@ class ConferenceTransferManager:
                 voice=self.config.openai_voice,
                 courtesy_message=self.config.courtesy_message,
                 a_leg_hangup_event=self._a_leg_hangup_event,
+                warmup_ms=self.config.announcement_warmup_ms,
             )
             
             # Executar anúncio

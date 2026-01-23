@@ -568,6 +568,7 @@ class RealtimeSession:
         self._ending_call = False  # True quando detectamos farewell, bloqueia novo áudio
         self._user_speaking = False
         self._assistant_speaking = False
+        self._response_active = False
         self._call_state = CallState.LISTENING
         self._last_barge_in_ts = 0.0
         self._interrupt_protected_until = 0.0  # Timestamp até quando interrupções são ignoradas
@@ -582,6 +583,9 @@ class RealtimeSession:
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
         self._farewell_response_started = False  # True quando o áudio de despedida começou
         self._input_audio_buffer = bytearray()
+        self._pre_greeting_frames: List[bytes] = []
+        self._pre_greeting_bytes = 0
+        self._pre_greeting_dropped = False
         self._silence_fallback_count = 0
         self._last_silence_fallback_ts = 0.0
         self._handoff_fallback_task: Optional[asyncio.Task] = None
@@ -1635,9 +1639,9 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                             self._ptt_silence_ms = 0
                             await self._commit_ptt_audio()
 
-            # ========================================
-            # ENVIO AO OPENAI - baseado no formato DETECTADO (não configurado)
-            # ========================================
+        # ========================================
+        # ENVIO AO OPENAI - baseado no formato DETECTADO (não configurado)
+        # ========================================
             pre_convert_len = len(frame)
             
             if self._detected_input_format == "g711":
@@ -1661,7 +1665,25 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                             "call_uuid": self.call_uuid,
                         })
 
-            await self._provider.send_audio(frame)
+        # Evitar enviar áudio durante a saudação inicial enquanto há resposta ativa
+        # Isso previne "conversation_already_has_active_response" no início.
+        if not self._first_response_done and self._response_active:
+            max_buffer_ms = int(os.getenv("REALTIME_PRE_GREETING_BUFFER_MS", "1200"))
+            input_rate = self._provider.input_sample_rate or self.config.freeswitch_sample_rate
+            bytes_per_sample = 1 if self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw", "pcma", "g711a", "alaw", "g711_alaw") else 2
+            max_buffer_bytes = int(max_buffer_ms * (input_rate * bytes_per_sample / 1000))
+            if self._pre_greeting_bytes + len(frame) <= max_buffer_bytes:
+                self._pre_greeting_frames.append(frame)
+                self._pre_greeting_bytes += len(frame)
+            elif not self._pre_greeting_dropped:
+                self._pre_greeting_dropped = True
+                logger.warning(
+                    f"🎤 [INPUT] Buffer pré-saudação cheio ({self._pre_greeting_bytes}B), descartando áudio inicial",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            return
+
+        await self._provider.send_audio(frame)
     
     async def _handle_audio_output(self, audio_bytes: bytes) -> None:
         """
@@ -1837,6 +1859,26 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             self.heartbeat.update_buffer(self._pending_audio_bytes)
             
             await self._on_audio_output(audio_bytes)
+
+    async def _flush_pre_greeting_audio(self) -> None:
+        """Envia áudio capturado durante a saudação inicial."""
+        if not self._pre_greeting_frames or not self._provider:
+            return
+        total_bytes = self._pre_greeting_bytes
+        frames = self._pre_greeting_frames
+        self._pre_greeting_frames = []
+        self._pre_greeting_bytes = 0
+        self._pre_greeting_dropped = False
+
+        logger.info(
+            f"🎤 [INPUT] Enviando áudio pré-saudação acumulado: {total_bytes}B",
+            extra={"call_uuid": self.call_uuid}
+        )
+        for frame in frames:
+            try:
+                await self._provider.send_audio(frame)
+            except Exception:
+                break
     
     async def interrupt(self) -> None:
         """Barge-in: interrompe resposta."""
@@ -1900,6 +1942,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             self._last_activity = time.time()
         
         if event.type == ProviderEventType.RESPONSE_STARTED:
+            self._response_active = True
             # Reset buffer e contador para nova resposta
             if self._resampler:
                 # IMPORTANTE: Preservar warmup estendido se foi configurado (após resume)
@@ -2173,6 +2216,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             # IMPORTANTE: Marcar que o assistente terminou de falar
             # Isso é usado pelo _delayed_stop() para saber quando pode desligar
             self._assistant_speaking = False
+            self._response_active = False
             if not self._transfer_in_progress:
                 self._set_call_state(CallState.LISTENING, "response_done")
             logger.info("Response done", extra={
@@ -2196,6 +2240,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             
             if not self._first_response_done:
                 self._first_response_done = True
+                await self._flush_pre_greeting_audio()
                 logger.info(
                     f"🔊 Saudação reproduzida: {audio_duration_ms:.0f}ms",
                     extra={"call_uuid": self.call_uuid}
@@ -4625,6 +4670,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
+                                announcement_warmup_ms=self.config.audio_warmup_ms,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -4657,6 +4703,7 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
+                                announcement_warmup_ms=self.config.audio_warmup_ms,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,

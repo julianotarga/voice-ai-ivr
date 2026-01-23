@@ -867,13 +867,17 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         
         Ref: response.cancel event (SDK oficial)
         """
-        if self._ws:
+        if self._ws and self._response_active:
             await self._ws.send(json.dumps({"type": "response.cancel"}))
             logger.debug("Interrupt signal sent to OpenAI", extra={
                 "domain_uuid": self.config.domain_uuid,
             })
             # Otimista: marcar como não ativa para evitar response.create concorrente
             self._response_active = False
+        elif self._ws:
+            logger.debug("Interrupt skipped (no active response)", extra={
+                "domain_uuid": self.config.domain_uuid,
+            })
     
     async def send_function_result(
         self,

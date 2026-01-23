@@ -92,6 +92,9 @@ class BridgeTransferConfig:
     openai_model: str = "gpt-realtime"
     openai_voice: str = "marin"
     
+    # Warmup do anúncio (ms) - opcional (usa valor do banco quando disponível)
+    announcement_warmup_ms: Optional[int] = None
+    
     # Comportamento
     accept_on_timeout: bool = False
     
@@ -719,6 +722,7 @@ NUNCA omita essa pergunta. É essencial para obter uma resposta clara do atenden
             voice=self.config.openai_voice,
             model=self.config.openai_model,
             a_leg_hangup_event=self._a_leg_hangup_event,
+            warmup_ms=self.config.announcement_warmup_ms,
         )
         
         try:

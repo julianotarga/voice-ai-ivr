@@ -110,6 +110,7 @@ class ConferenceAnnouncementSession:
         model: str = OPENAI_REALTIME_MODEL,
         courtesy_message: Optional[str] = None,
         a_leg_hangup_event: Optional[asyncio.Event] = None,
+        warmup_ms: Optional[int] = None,
     ):
         """
         Args:
@@ -161,9 +162,10 @@ class ConferenceAnnouncementSession:
         # IMPORTANTE: mod_audio_stream playback espera L16 @ 8kHz
         # Resample direto 24kHz -> 8kHz (evita artefatos de resampling em cadeia)
         self._resampler_out_8k = Resampler(24000, 8000)
-        # Warmup de 100ms - B-leg já está estável (diferente do A-leg que precisa de mais)
-        # 400ms causava delay de 5+ segundos até o atendente ouvir algo
-        self._fs_audio_buffer = AudioBuffer(warmup_ms=100, sample_rate=8000)
+        # Warmup para B-leg (configurável via banco)
+        # Evita stutter sem adicionar latência excessiva
+        warmup_ms = int(warmup_ms) if warmup_ms is not None else 100
+        self._fs_audio_buffer = AudioBuffer(warmup_ms=warmup_ms, sample_rate=8000)
         
         # Buffer de áudio para fallback TTS
         self._audio_buffer = bytearray()
@@ -177,6 +179,7 @@ class ConferenceAnnouncementSession:
         self._audio_playback_done = asyncio.Event()  # Sinaliza quando todo áudio foi enviado
         self._audio_playback_done.set()  # Inicialmente sem áudio pendente
         self._response_audio_generating = False  # Indica se OpenAI está gerando áudio
+        self._response_active = False
     
     async def _wait_for_audio_complete(
         self,
@@ -895,10 +898,13 @@ class ConferenceAnnouncementSession:
             # PASSO 1: Cancelar qualquer resposta em andamento para evitar
             # receber o response.done da resposta anterior
             try:
-                await self._ws.send(json.dumps({"type": "response.cancel"}))
-                # Aguardar mais tempo para o cancel ser processado
-                # O OpenAI pode levar até 500ms para processar o cancel
-                await asyncio.sleep(0.3)
+                if self._response_active or self._response_audio_generating:
+                    await self._ws.send(json.dumps({"type": "response.cancel"}))
+                    # Aguardar mais tempo para o cancel ser processado
+                    # O OpenAI pode levar até 500ms para processar o cancel
+                    await asyncio.sleep(0.3)
+                else:
+                    logger.debug("⏳ [COURTESY] Sem resposta ativa, cancel não enviado")
                 
                 # Consumir eventos pendentes até encontrar um timeout
                 # Usar timeout maior (100ms) para garantir que não há mais eventos
@@ -1002,7 +1008,9 @@ class ConferenceAnnouncementSession:
                     # Tratar erros
                     if etype == "error":
                         error = event.get("error", {})
-                        logger.warning(f"⚠️ [COURTESY] OpenAI error: {error}")
+                        error_code = error.get("code", "unknown")
+                        if error_code != "response_cancel_not_active":
+                            logger.warning(f"⚠️ [COURTESY] OpenAI error: {error}")
                     
                 except asyncio.TimeoutError:
                     waited += wait_interval
@@ -1031,6 +1039,9 @@ class ConferenceAnnouncementSession:
         """Processa evento do OpenAI Realtime."""
         etype = event.get("type", "")
         
+        if etype == "response.created":
+            self._response_active = True
+
         # Áudio de resposta - enviar para FreeSWITCH
         if etype in ("response.audio.delta", "response.output_audio.delta"):
             audio_b64 = event.get("delta", "")
@@ -1107,6 +1118,7 @@ class ConferenceAnnouncementSession:
         
         # Resposta completa (texto + áudio + function calls)
         elif etype == "response.done":
+            self._response_active = False
             await self._flush_audio_buffer(force=True)
             await self._check_assistant_decision()
         
