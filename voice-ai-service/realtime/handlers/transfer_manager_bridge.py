@@ -693,9 +693,19 @@ class BridgeTransferManager:
         
         # Construir system_prompt para o anúncio
         # Usa o template do config ou um padrão mais completo
-        system_prompt = self.config.announcement_prompt or self._build_default_announcement_prompt(
+        base_prompt = self.config.announcement_prompt or self._build_default_announcement_prompt(
             caller_name, announcement
         )
+        
+        # IMPORTANTE: Adicionar instrução OBRIGATÓRIA para perguntar
+        # Mesmo que o prompt do banco não tenha essa instrução, garantimos aqui
+        mandatory_instruction = """
+
+# REGRA OBRIGATÓRIA
+Ao anunciar a ligação, você DEVE SEMPRE terminar perguntando: "Você pode atender agora?"
+NUNCA omita essa pergunta. É essencial para obter uma resposta clara do atendente."""
+        
+        system_prompt = base_prompt + mandatory_instruction
         
         # IMPORTANTE: Adicionar pergunta ao final do anúncio
         # Sem isso, o atendente não sabe que precisa responder

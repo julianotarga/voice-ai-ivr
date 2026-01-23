@@ -857,7 +857,8 @@ class ConferenceAnnouncementSession:
             }
         }))
         
-        logger.info(f"Initial message sent: {self.initial_message[:50]}...")
+        # Log completo da mensagem (importante para debug)
+        logger.info(f"Initial message sent: {self.initial_message}")
     
     async def _send_courtesy_response(self) -> None:
         """
