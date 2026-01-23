@@ -1,8 +1,6 @@
 # Realtime handlers
 # Conforme openspec/changes/voice-ai-realtime/design.md (Decision 3)
 
-from .freeswitch import FreeSwitchHandler
-from .function_call import FunctionCallHandler
 from .handoff import HandoffHandler, HandoffConfig, HandoffResult, TranscriptEntry
 
 # FASE 1: Handoff Inteligente
@@ -56,9 +54,7 @@ from .realtime_announcement_conference import (
 )
 
 __all__ = [
-    # Legacy handlers
-    "FreeSwitchHandler",
-    "FunctionCallHandler",
+    # Handoff handlers
     "HandoffHandler",
     "HandoffConfig",
     "HandoffResult",

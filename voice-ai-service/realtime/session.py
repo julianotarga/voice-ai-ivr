@@ -2429,9 +2429,71 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             return {"action": "transfer", "destination": args.get("destination", "")}
         
         elif name == "end_call":
+            last_assistant_text = self._get_last_assistant_transcript()
+            has_farewell = False
+            if last_assistant_text:
+                has_farewell = self._check_farewell_keyword(last_assistant_text, "assistant")
+                text_lower = last_assistant_text.lower().strip()
+                hold_return_message = (self.config.hold_return_message or "").lower().strip()
+                # Não considerar "Obrigado por aguardar" como despedida
+                if hold_return_message and hold_return_message in text_lower:
+                    has_farewell = False
+                if "obrigado por aguardar" in text_lower:
+                    has_farewell = False
+                # "Obrigado" sozinho não é despedida
+                if "obrigado" in text_lower or "brigado" in text_lower:
+                    has_farewell = False
+                # Frases de oferta de recado não são despedida
+                if any(phrase in text_lower for phrase in (
+                    "posso anotar uma mensagem",
+                    "posso anotar um recado",
+                    "quer deixar uma mensagem",
+                    "quer deixar recado",
+                    "prefere deixar uma mensagem",
+                    "prefere deixar recado",
+                )):
+                    has_farewell = False
+                # Se terminou com pergunta, não é despedida
+                if text_lower.endswith("?"):
+                    has_farewell = False
+                logger.info(
+                    "📞 [END_CALL] Última fala do assistente antes do end_call | "
+                    f"has_farewell={has_farewell} | text='{last_assistant_text[:200]}'",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            else:
+                logger.warning(
+                    "📞 [END_CALL] Sem transcript do assistente antes do end_call",
+                    extra={"call_uuid": self.call_uuid}
+                )
+
+            last_user_text = self._get_last_user_transcript() or ""
+            user_declined_message = any(
+                phrase in last_user_text.lower()
+                for phrase in (
+                    "não quero deixar recado",
+                    "nao quero deixar recado",
+                    "não quero recado",
+                    "nao quero recado",
+                    "não quero deixar mensagem",
+                    "nao quero deixar mensagem",
+                )
+            )
+            should_force_farewell = (
+                not last_assistant_text
+                or not has_farewell
+                or user_declined_message
+                or (self._pending_audio_bytes == 0 and not self._assistant_speaking)
+            )
+            logger.info(
+                "📞 [END_CALL] force_farewell=%s (user_declined_message=%s)",
+                should_force_farewell,
+                user_declined_message,
+                extra={"call_uuid": self.call_uuid}
+            )
             self._ending_call = True
             self._farewell_response_started = False
-            sent_farewell = await self._send_farewell_if_needed()
+            sent_farewell = await self._send_farewell_if_needed() if should_force_farewell else False
             if sent_farewell:
                 # Resetar contadores para medir apenas o áudio de despedida
                 self._pending_audio_bytes = 0
@@ -4326,6 +4388,20 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         except Exception as e:
             logger.debug(f"Could not send farewell message: {e}")
             return False
+
+    def _get_last_assistant_transcript(self) -> Optional[str]:
+        """Retorna o último texto do assistente no transcript."""
+        for entry in reversed(self._transcript):
+            if entry.role == "assistant" and entry.text:
+                return entry.text
+        return None
+
+    def _get_last_user_transcript(self) -> Optional[str]:
+        """Retorna o último texto do usuário no transcript."""
+        for entry in reversed(self._transcript):
+            if entry.role == "user" and entry.text:
+                return entry.text
+        return None
     
     async def check_extension_available(self, extension: str) -> dict:
         """
