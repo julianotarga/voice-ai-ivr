@@ -448,12 +448,17 @@ class RealtimeSessionConfig:
     unbridge_resume_message: Optional[str] = None
     # Audio Configuration (per-secretary)
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
-    audio_warmup_ms: int = 100  # buffer de warmup em ms (reduzido para menor latência)
+    audio_warmup_ms: int = 200  # buffer de warmup em ms (aumentado para evitar stuttering)
     audio_adaptive_warmup: bool = True  # ajuste automático de warmup
     jitter_buffer_min: int = 100  # FreeSWITCH jitter buffer min (ms)
     jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
     jitter_buffer_step: int = 40  # FreeSWITCH jitter buffer step (ms)
     stream_buffer_size: int = 20  # mod_audio_stream buffer in MILLISECONDS (not samples!)
+    
+    # Barge-in Protection (evita self-echo e falsos barge-ins)
+    # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
+    initial_protection_ms: int = 350  # Ignorar input nos primeiros ms após TTS iniciar (evita self-echo)
+    post_tts_protection_ms: int = 250  # Proteção adicional após TTS terminar (evita cortar início da fala do caller)
 
     # Push-to-talk (VAD disabled) - ajustes de sensibilidade
     ptt_rms_threshold: Optional[int] = None
@@ -564,6 +569,7 @@ class RealtimeSession:
         self._first_response_done = False  # True após a primeira resposta (saudação) terminar
         self._last_audio_delta_ts = 0.0
         self._local_barge_hits = 0
+        self._tts_start_ts = 0.0  # Timestamp quando TTS iniciou (para initial_protection_ms)
         self._barge_noise_floor = 0.0
         self._pending_audio_bytes = 0  # Audio bytes da resposta ATUAL (reset a cada nova resposta)
         self._response_audio_start_time = 0.0  # Quando a resposta atual começou
@@ -1501,13 +1507,26 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
         # - REALTIME_LOCAL_BARGE_COOLDOWN (default 1.0): cooldown entre interrupções
         if self.config.barge_in_enabled and self._assistant_speaking and audio_bytes:
             try:
+                now = time.time()
+                
+                # ========================================
+                # PROTEÇÃO INICIAL: Evitar self-echo
+                # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent
+                # Ignora input nos primeiros ms após TTS iniciar
+                # para evitar que o eco do agente dispare barge-in
+                # ========================================
+                time_since_tts_start = (now - self._tts_start_ts) * 1000  # em ms
+                if time_since_tts_start < self.config.initial_protection_ms:
+                    # Ainda em período de proteção - não processar barge-in
+                    # Mas continuar acumulando frames silenciosamente
+                    return
+                
                 # Calcular RMS usando numpy (substituiu audioop deprecated)
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 rms = int(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0
                 rms_threshold = int(os.getenv("REALTIME_LOCAL_BARGE_RMS", "1200"))
                 cooldown_s = float(os.getenv("REALTIME_LOCAL_BARGE_COOLDOWN", "1.0"))
                 required_hits = int(os.getenv("REALTIME_LOCAL_BARGE_CONSECUTIVE", "15"))
-                now = time.time()
                 
                 if rms >= rms_threshold:
                     self._local_barge_hits += 1
@@ -1522,7 +1541,10 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
                 ):
                     self._local_barge_hits = 0
                     self._last_barge_in_ts = now
-                    logger.info(f"Local barge-in triggered: rms={rms}", extra={"call_uuid": self.call_uuid})
+                    logger.info(
+                        f"Local barge-in triggered: rms={rms}, protection_elapsed={time_since_tts_start:.0f}ms",
+                        extra={"call_uuid": self.call_uuid}
+                    )
                     await self.interrupt()
                     if self._on_barge_in:
                         try:
@@ -1882,6 +1904,11 @@ IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem m
             was_speaking = self._assistant_speaking
             self._assistant_speaking = True
             self._last_audio_delta_ts = time.time()
+            
+            # Registrar início do TTS para proteção inicial (evita self-echo)
+            # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent - initial_protection_ms
+            if not was_speaking:
+                self._tts_start_ts = time.time()
             
             # Atualizar HeartbeatMonitor com resposta do provider
             self.heartbeat.provider_responded()
