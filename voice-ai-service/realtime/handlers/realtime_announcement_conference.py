@@ -171,8 +171,9 @@ class ConferenceAnnouncementSession:
         # Resample direto 24kHz -> 8kHz (evita artefatos de resampling em cadeia)
         self._resampler_out_8k = Resampler(24000, 8000)
         # Warmup para B-leg (configurável via banco)
-        # Evita stutter sem adicionar latência excessiva
-        warmup_ms = int(warmup_ms) if warmup_ms is not None else 100
+        # 200ms evita engasgos no início da fala sem adicionar latência perceptível
+        # 100ms era insuficiente e causava stuttering
+        warmup_ms = int(warmup_ms) if warmup_ms is not None else 200
         self._fs_audio_buffer = AudioBuffer(warmup_ms=warmup_ms, sample_rate=8000)
         
         # Buffer de áudio para fallback TTS
