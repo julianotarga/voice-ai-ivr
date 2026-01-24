@@ -512,9 +512,12 @@ class ConferenceAnnouncementSession:
         
         As tools accept_transfer e reject_transfer permitem decisão clara.
         """
-        # NOTA: NÃO configurar "transcription" explicitamente - a API GA habilita automaticamente
-        # Configurar explicitamente pode causar o OpenAI a ignorar toda a configuração de input
-        # (comparado com openai_realtime.py que funciona sem esse campo)
+        # Configuração da sessão OpenAI Realtime GA
+        # Ref: Context7 - session.update audio transcription
+        #
+        # IMPORTANTE: audio.input.transcription é OBRIGATÓRIO para receber
+        # eventos conversation.item.input_audio_transcription.completed
+        # Sem isso, transcript será null e all_transcripts ficará vazio.
         config = {
             "type": "session.update",
             "session": {
@@ -569,8 +572,8 @@ class ConferenceAnnouncementSession:
             }
         }
         
-        logger.info(f"📤 Sending session.update with VAD and tools (no explicit transcription)")
-        logger.debug(f"Session config: {json.dumps(config)[:800]}")
+        logger.info(f"📤 Sending session.update with VAD, transcription and tools")
+        logger.debug(f"Session config: {json.dumps(config)[:1000]}")
         
         await self._ws.send(json.dumps(config))
         
@@ -584,14 +587,28 @@ class ConferenceAnnouncementSession:
                 audio = session.get("audio", {})
                 input_cfg = audio.get("input", {})
                 turn_detection = input_cfg.get("turn_detection", {})
+                transcription = input_cfg.get("transcription")
+                
+                # Verificar se transcrição foi aplicada
+                transcription_status = "✓" if transcription else "✗ NULL"
+                transcription_model = transcription.get("model", "?") if transcription else "none"
                 
                 logger.info(
                     f"✅ Session configured: "
                     f"VAD={turn_detection.get('type', 'none')}, "
                     f"threshold={turn_detection.get('threshold', '?')}, "
                     f"create_response={turn_detection.get('create_response', '?')}, "
+                    f"transcription={transcription_status} ({transcription_model}), "
                     f"tools={len(config.get('session', {}).get('tools', []))}"
                 )
+                
+                # ALERTA se transcrição não foi aplicada
+                if not transcription:
+                    logger.error(
+                        "❌ [CRITICAL] Transcription NOT configured! "
+                        "Attendant speech will not be transcribed. "
+                        "all_transcripts will be empty."
+                    )
             elif event.get("type") == "error":
                 error = event.get("error", {})
                 logger.error(f"❌ Session config error: {error}")
