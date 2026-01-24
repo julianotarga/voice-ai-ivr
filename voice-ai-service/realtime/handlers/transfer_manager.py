@@ -433,24 +433,60 @@ class TransferManager:
             - Se encontrou: (destination, None)
             - Se não encontrou: (None, error_message)
         """
+        logger.info(
+            f"🔍 [FIND_DESTINATION] Buscando destino para: '{user_text}'",
+            extra={"call_uuid": self.call_uuid, "domain_uuid": self.domain_uuid}
+        )
+        
         destinations = await self.load_destinations()
         
         if not destinations:
+            logger.warning(
+                f"🔍 [FIND_DESTINATION] ERRO: Nenhum destino configurado para este tenant!",
+                extra={"call_uuid": self.call_uuid, "domain_uuid": self.domain_uuid}
+            )
             return (None, "Não há destinos de transferência configurados.")
+        
+        # Log dos destinos disponíveis para este tenant
+        available_names = [d.name for d in destinations]
+        logger.info(
+            f"🔍 [FIND_DESTINATION] Destinos disponíveis para este tenant: {available_names}",
+            extra={
+                "call_uuid": self.call_uuid,
+                "domain_uuid": self.domain_uuid,
+                "destinations_count": len(destinations),
+            }
+        )
         
         # Verificar se é pedido genérico
         generic_keywords = ["qualquer", "alguém", "atendente", "disponível", "pessoa"]
         text_lower = user_text.lower()
         
         if any(kw in text_lower for kw in generic_keywords):
+            logger.info(
+                f"🔍 [FIND_DESTINATION] Pedido genérico detectado: '{user_text}'",
+                extra={"call_uuid": self.call_uuid}
+            )
             # Retornar destino padrão (fila ou ring_group)
             dest = self._loader.get_default(destinations)
             if dest:
+                logger.info(
+                    f"🔍 [FIND_DESTINATION] Usando destino padrão: {dest.name}",
+                    extra={"call_uuid": self.call_uuid}
+                )
                 # Verificar horário
                 available, msg = self._loader.is_within_working_hours(dest)
                 if not available:
+                    logger.warning(
+                        f"🔍 [FIND_DESTINATION] Destino padrão fora do horário: {msg}",
+                        extra={"call_uuid": self.call_uuid}
+                    )
                     return (None, msg)
                 return (dest, None)
+            logger.warning(
+                "🔍 [FIND_DESTINATION] Nenhum destino padrão configurado",
+                extra={"call_uuid": self.call_uuid}
+            )
             return (None, "Não há atendentes disponíveis no momento.")
         
         # Buscar destino específico
@@ -458,17 +494,36 @@ class TransferManager:
         
         if not dest:
             # Sugerir destinos disponíveis
-            available_names = [d.name for d in destinations[:5]]
-            suggestion = ", ".join(available_names)
+            suggestion = ", ".join(available_names[:5])
+            logger.warning(
+                f"🔍 [FIND_DESTINATION] Destino '{user_text}' NÃO ENCONTRADO. "
+                f"Destinos disponíveis: {available_names}",
+                extra={"call_uuid": self.call_uuid, "domain_uuid": self.domain_uuid}
+            )
             return (
                 None,
                 f"Não encontrei '{user_text}'. Você pode falar com: {suggestion}."
             )
         
+        logger.info(
+            f"🔍 [FIND_DESTINATION] ✅ Destino encontrado: '{dest.name}' "
+            f"(número={dest.destination_number}, tipo={dest.destination_type})",
+            extra={"call_uuid": self.call_uuid}
+        )
+        
         # Verificar horário comercial
         available, msg = self._loader.is_within_working_hours(dest)
         if not available:
+            logger.warning(
+                f"🔍 [FIND_DESTINATION] Destino '{dest.name}' FORA DO HORÁRIO: {msg}",
+                extra={"call_uuid": self.call_uuid}
+            )
             return (None, msg)
+        
+        logger.info(
+            f"🔍 [FIND_DESTINATION] ✅ Destino validado e disponível: {dest.name}",
+            extra={"call_uuid": self.call_uuid}
+        )
         
         return (dest, None)
     

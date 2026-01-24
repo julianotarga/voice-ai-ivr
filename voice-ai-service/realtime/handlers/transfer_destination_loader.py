@@ -276,13 +276,26 @@ class TransferDestinationLoader:
                     timestamp=time.time()
                 )
             
+            # Log detalhado dos destinos carregados (MULTI-TENANT)
+            destination_names = [d.name for d in destinations]
             logger.info(
-                f"Loaded {len(destinations)} transfer destinations",
+                f"📋 [DESTINATIONS] Carregados {len(destinations)} destinos do banco: {destination_names}",
                 extra={
                     "domain_uuid": domain_uuid,
-                    "secretary_uuid": secretary_uuid
+                    "secretary_uuid": secretary_uuid,
+                    "destinations": destination_names,
                 }
             )
+            
+            # Log cada destino para debug
+            for dest in destinations:
+                logger.debug(
+                    f"📋 [DESTINATIONS] {dest.name}: "
+                    f"tipo={dest.destination_type}, "
+                    f"número={dest.destination_number}, "
+                    f"aliases={dest.aliases}, "
+                    f"horário={dest.working_hours}"
+                )
             
             return destinations
             

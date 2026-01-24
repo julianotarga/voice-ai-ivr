@@ -1337,10 +1337,39 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
 
         # Regra explícita para transferência (OpenAI Realtime)
         if self.config.intelligent_handoff_enabled:
-            # Obter lista de destinos disponíveis
+            # Obter lista de destinos disponíveis (MULTI-TENANT: vem do banco por domain_uuid)
             available_destinations = []
             if self._transfer_manager and self._transfer_manager._destinations:
                 available_destinations = [d.name for d in self._transfer_manager._destinations]
+                
+                # Log detalhado dos destinos carregados
+                logger.info(
+                    f"📋 [PROMPT] Destinos carregados do banco: {len(available_destinations)} destinos",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "domain_uuid": self.domain_uuid,
+                        "destinations": available_destinations,
+                    }
+                )
+                
+                # Log cada destino com detalhes
+                for dest in self._transfer_manager._destinations:
+                    logger.debug(
+                        f"📋 [PROMPT] Destino: {dest.name} | "
+                        f"Número: {dest.destination_number} | "
+                        f"Aliases: {dest.aliases}",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+            else:
+                logger.warning(
+                    "📋 [PROMPT] Nenhum destino de transferência carregado! "
+                    "Verifique a tabela v_voice_transfer_destinations",
+                    extra={
+                        "call_uuid": self.call_uuid,
+                        "domain_uuid": self.domain_uuid,
+                        "has_transfer_manager": self._transfer_manager is not None,
+                    }
+                )
             
             # Construir string de destinos para o prompt
             if available_destinations:
@@ -1351,8 +1380,16 @@ Você SÓ pode transferir para estes destinos: **{destinations_str}**
 - NÃO ofereça transferir para setores que não estão na lista acima
 - Se o cliente pedir um setor que não existe, diga: "Não temos esse setor, mas posso transferir para [destino mais adequado da lista]"
 """
+                logger.info(
+                    f"📋 [PROMPT] Instruções de destinos adicionadas ao prompt: {destinations_str}",
+                    extra={"call_uuid": self.call_uuid}
+                )
             else:
                 destinations_info = ""
+                logger.info(
+                    "📋 [PROMPT] Sem instruções de destinos (lista vazia)",
+                    extra={"call_uuid": self.call_uuid}
+                )
             
             base_prompt += f"""
 
