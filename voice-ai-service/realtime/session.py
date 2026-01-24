@@ -1454,11 +1454,15 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 f"Resampler setup: FS={fs_rate}Hz <-> Provider(in={provider_in}Hz, out={provider_out}Hz)"
             )
             
+            # Usar warmup do banco de dados (default 200ms) para evitar engasgos
+            warmup_ms = getattr(self.config, 'audio_warmup_ms', 200)
             self._resampler = ResamplerPair(
                 freeswitch_rate=fs_rate,
                 provider_input_rate=provider_in,
                 provider_output_rate=provider_out,
+                output_warmup_ms=warmup_ms,
             )
+            logger.info(f"AudioBuffer warmup: {warmup_ms}ms")
     
     async def handle_audio_input(self, audio_bytes: bytes) -> None:
         """Processa áudio do FreeSWITCH."""
@@ -2777,26 +2781,18 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 normalized_destination = self._normalize_handoff_destination_text(destination)
                 spoken_destination = self._format_destination_for_speech(normalized_destination)
                 
-                # Agendar o handoff para executar DEPOIS que a resposta do OpenAI terminar
-                # O delay de 4 segundos permite que o OpenAI fale o aviso
-                logger.info("🔄 [HANDOFF] Agendando handoff com delay para OpenAI falar...")
-                asyncio.create_task(
-                    self._delayed_intelligent_handoff(destination, reason, delay_seconds=4.0)
-                )
-                
-                # Retornar mensagem que instrui o OpenAI a falar o aviso
-                # O OpenAI vai gerar uma resposta natural baseada neste resultado
-                # Inclui nome do cliente para personalizar a mensagem
+                # Preparar mensagem que instrui o OpenAI a falar o aviso
                 if caller_name:
                     spoken_message = f"Um momento {caller_name}, vou transferir para {spoken_destination}."
                 else:
                     spoken_message = f"Um momento, vou transferir para {spoken_destination}."
                 
-                logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
+                # IMPORTANTE: Enviar instrução PRIMEIRO, ANTES de agendar o handoff
+                # Isso garante que o _delayed_intelligent_handoff capture os bytes
+                # da NOVA resposta, não da resposta anterior
                 
-                # IMPORTANTE: Fazer interrupt ANTES de enviar a instrução
+                # Fazer interrupt ANTES de enviar a instrução
                 # Isso garante que não há resposta ativa que bloqueie o response.create
-                # Sem isso, se a IA ainda está gerando resposta, a instrução é ignorada
                 if self._provider and hasattr(self._provider, 'interrupt'):
                     try:
                         await self._provider.interrupt()
@@ -2806,12 +2802,24 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                         logger.debug(f"🔄 [HANDOFF] Interrupt falhou: {e}")
                 
                 # Enviar instrução explícita para o OpenAI falar
-                # IMPORTANTE: Usar formato que o modelo segue consistentemente
+                logger.info("🔄 [HANDOFF] Enviando instrução de fala...")
                 await self._send_text_to_provider(
                     f"[INSTRUÇÃO] Fale EXATAMENTE esta frase curta: \"{spoken_message}\" "
                     "Não adicione nada antes ou depois. Apenas esta frase.",
                     request_response=True
                 )
+                
+                # Pequeno delay para garantir que a nova resposta seja iniciada
+                # antes de o _delayed_intelligent_handoff começar a verificar bytes
+                await asyncio.sleep(0.3)
+                
+                # AGORA sim, agendar o handoff para executar DEPOIS que o OpenAI terminar
+                logger.info("🔄 [HANDOFF] Agendando handoff com delay para OpenAI falar...")
+                asyncio.create_task(
+                    self._delayed_intelligent_handoff(destination, reason, delay_seconds=6.0)
+                )
+                
+                logger.info("🔄 [HANDOFF] request_handoff FINALIZADO - OpenAI vai falar o aviso")
                 
                 return {
                     "status": "verifying",
