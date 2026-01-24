@@ -101,12 +101,15 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para atendente. "
-        "REGRAS: "
-        "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
-        "2) MOTIVO: pode ser INFERIDO do contexto da conversa. "
-        "   Se o cliente já explicou o que precisa, NÃO pergunte novamente. "
-        "   Pergunte apenas se não ficou claro. "
-        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO]. Um momento.'"
+        "ANTES de chamar, você DEVE: "
+        "1) Perguntar o NOME do cliente se não souber: 'Posso saber seu nome?' "
+        "2) Confirmar a transferência com frase EXATA: '[NOME], vou transferir para [DESTINO]. Um momento.' "
+        "EXEMPLOS DE CONFIRMAÇÃO: "
+        "- 'João, vou transferir para o suporte. Um momento.' "
+        "- 'Maria, vou transferir para vendas. Um momento.' "
+        "- 'Carlos, vou transferir para o financeiro. Um momento.' "
+        "NUNCA diga frases longas. Seja breve e direto. "
+        "O MOTIVO pode ser inferido do contexto - NÃO pergunte se já ficou claro na conversa."
     ),
     "parameters": {
         "type": "object",
@@ -118,13 +121,13 @@ HANDOFF_FUNCTION_DEFINITION = {
             "reason": {
                 "type": "string",
                 "description": (
-                    "Motivo da ligação - use as palavras do cliente OU infira do contexto. "
-                    "Se o cliente explicou durante a conversa, use esse contexto."
+                    "Motivo da ligação - INFIRA do contexto da conversa. "
+                    "Use as palavras do cliente ou resuma em poucas palavras."
                 )
             },
             "caller_name": {
                 "type": "string",
-                "description": "Nome do cliente (OBRIGATÓRIO - pergunte se não souber)"
+                "description": "Nome do cliente (OBRIGATÓRIO - pergunte 'Posso saber seu nome?' se não souber)"
             }
         },
         "required": ["destination", "caller_name"]
@@ -135,13 +138,16 @@ END_CALL_FUNCTION_DEFINITION = {
     "type": "function",
     "name": "end_call",
     "description": (
-        "Encerra a chamada. "
-        "REGRA CRÍTICA: Você DEVE FALAR uma despedida educada ANTES de chamar esta função! "
-        "Exemplos: 'Obrigada por ligar, até logo!', 'Foi um prazer ajudar, até logo!' "
-        "NUNCA chame end_call sem ANTES ter falado a despedida em voz alta. "
-        "A despedida deve ser a ÚLTIMA coisa que você fala antes de chamar esta função. "
-        "Use após: 1) Resolver o assunto e falar despedida. 2) Anotar recado e agradecer. "
-        "3) Cliente recusar deixar recado - agradeça e despeça-se."
+        "Encerra a chamada APÓS você ter falado uma despedida. "
+        "FLUXO OBRIGATÓRIO: "
+        "1) Primeiro FALE uma despedida curta: 'Obrigada por ligar, [NOME]! Tenha um ótimo dia!' "
+        "2) DEPOIS chame end_call. "
+        "DESPEDIDAS VÁLIDAS: "
+        "- 'Obrigada por ligar, [NOME]! Tenha um ótimo dia!' "
+        "- '[NOME], foi um prazer ajudar! Até logo!' "
+        "- 'Tenha um ótimo dia, [NOME]! Até logo!' "
+        "IMPORTANTE: Use o nome do cliente na despedida se souber. "
+        "Se não souber o nome: 'Obrigada por ligar! Tenha um ótimo dia!'"
     ),
     "parameters": {
         "type": "object",
@@ -580,6 +586,7 @@ class RealtimeSession:
         self._pre_greeting_dropped = False
         self._silence_fallback_count = 0
         self._last_silence_fallback_ts = 0.0
+        self._awaiting_silence_response = False  # True após silence fallback - exige transcrição real
         self._handoff_fallback_task: Optional[asyncio.Task] = None
         self._handoff_fallback_destination: Optional[str] = None
         # Push-to-talk (VAD disabled) local speech detection
@@ -1371,6 +1378,32 @@ IA: "Maria, e sobre qual assunto você precisa de ajuda?"
 Cliente: "Tenho um problema técnico"
 IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
 [chama request_handoff com reason="problema técnico"]
+
+## DESPEDIDA - REGRAS
+
+### Quando encerrar a chamada:
+1. SEMPRE fale uma despedida CURTA e EDUCADA antes de chamar `end_call`
+2. USE o nome do cliente se souber
+
+### Frases de despedida OBRIGATÓRIAS (escolha uma):
+- "Obrigada por ligar, [NOME]! Tenha um ótimo dia!"
+- "[NOME], foi um prazer ajudar! Até logo!"
+- "Tenha um ótimo dia, [NOME]! Até logo!"
+- Se não souber o nome: "Obrigada por ligar! Tenha um ótimo dia!"
+
+### EXEMPLO - Encerramento correto:
+Cliente: "Era só isso mesmo"
+IA: "Obrigada por ligar, João! Tenha um ótimo dia!"
+[chama end_call]
+
+### EXEMPLO - Após recado:
+IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
+[chama end_call]
+
+### O que NÃO fazer:
+- NÃO encerre sem despedida
+- NÃO use frases muito longas
+- NÃO esqueça o nome do cliente se já souber
 """
         
         if not self.config.guardrails_enabled:
@@ -1956,6 +1989,33 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
             protection_until = getattr(self, '_interrupt_protected_until', 0)
             in_protection_period = now < protection_until
             
+            # 🛡️ PROTEÇÃO SILENCE FALLBACK: Se estamos aguardando resposta do usuário
+            # após um silence fallback, só aceitar resposta se houve transcrição real
+            if self._awaiting_silence_response:
+                # Verificar se houve transcrição DEPOIS do último silence fallback
+                transcript_after_fallback = (
+                    self._last_user_transcript_ts > self._last_silence_fallback_ts
+                )
+                
+                if not transcript_after_fallback:
+                    # Não houve resposta real do usuário - ignorar esta resposta da IA
+                    logger.warning(
+                        "🚫 [SILENCE_FALLBACK] Bloqueando resposta - sem transcrição real após 'Você ainda está aí?'",
+                        extra={
+                            "call_uuid": self.call_uuid,
+                            "last_transcript_ts": self._last_user_transcript_ts,
+                            "last_fallback_ts": self._last_silence_fallback_ts,
+                        }
+                    )
+                    # Cancelar a resposta se possível
+                    if self._provider and hasattr(self._provider, 'interrupt'):
+                        try:
+                            await self._provider.interrupt()
+                            logger.info("🚫 [SILENCE_FALLBACK] Resposta cancelada - aguardando transcrição real")
+                        except Exception as e:
+                            logger.debug(f"🚫 [SILENCE_FALLBACK] Erro ao cancelar: {e}")
+                    return "continue"  # Ignorar esta resposta
+            
             # Falso positivo: speech_started recente MAS sem speech_stopped
             # Isso indica que o VAD começou a detectar algo mas abortou (ruído curto)
             # NOTA: A transcrição pode chegar DEPOIS do response_started, então não usamos ela
@@ -2117,6 +2177,13 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
                     await self._on_transcript("user", event.transcript)
                 # Resetar fallback de silêncio ao receber transcrição do usuário
                 self._silence_fallback_count = 0
+                # 🛡️ Resetar flag de aguardando resposta (usuário respondeu de verdade)
+                if self._awaiting_silence_response:
+                    logger.info(
+                        f"⏰ [SILENCE_FALLBACK] Usuário respondeu: '{event.transcript[:50]}...'",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                    self._awaiting_silence_response = False
                 
                 # Detectar complexidade da pergunta para pacing (breathing room)
                 # Perguntas complexas recebem delay extra antes da resposta
@@ -2555,12 +2622,13 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
             # Primeiro deixar a IA confirmar o recado, depois o _delayed_stop cuida do resto
             # O _delayed_stop vai setar _ending_call quando começar a esperar a despedida
             
-            # Result com instrução clara para a IA confirmar
-            # IMPORTANTE: Instrução curta e direta para evitar que a IA repita o recado
+            # Result com instrução clara para a IA confirmar e despedir
+            # IMPORTANTE: Inclui o nome para despedida personalizada
+            farewell_with_name = f"Recado anotado, {caller_name}! Obrigada por ligar, tenha um ótimo dia!" if caller_name != "Não informado" else "Recado anotado! Obrigada por ligar, tenha um ótimo dia!"
             return {
                 "status": "success",
                 "action": "message_saved",
-                "instruction": "Diga APENAS: 'Recado anotado! Obrigado, tenha um bom dia.' NÃO repita o recado."
+                "instruction": f"Diga EXATAMENTE: '{farewell_with_name}' - Depois chame end_call."
             }
         
         elif name == "get_business_info":
@@ -2733,8 +2801,10 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
                         logger.debug(f"🔄 [HANDOFF] Interrupt falhou: {e}")
                 
                 # Enviar instrução explícita para o OpenAI falar
+                # IMPORTANTE: Usar formato que o modelo segue consistentemente
                 await self._send_text_to_provider(
-                    f"[SISTEMA] Diga apenas: '{spoken_message}' - exatamente assim, breve e direto.",
+                    f"[INSTRUÇÃO] Fale EXATAMENTE esta frase curta: \"{spoken_message}\" "
+                    "Não adicione nada antes ou depois. Apenas esta frase.",
                     request_response=True
                 )
                 
@@ -3359,15 +3429,20 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
                         )
                     elif hasattr(self._provider, 'send_instruction'):
                         await self._provider.send_instruction(prompt)
+                        # 🛡️ Marcar que estamos aguardando resposta REAL do usuário
+                        # Isso impede a IA de responder a falsos positivos do VAD
+                        self._awaiting_silence_response = True
                         logger.info(
-                            f"⏰ [SILENCE_FALLBACK] Instrução enviada: '{prompt}'",
+                            f"⏰ [SILENCE_FALLBACK] Instrução enviada: '{prompt}' (awaiting_response=True)",
                             extra={"call_uuid": self.call_uuid}
                         )
                     else:
                         # Fallback para providers que não suportam send_instruction
                         await self._send_text_to_provider(prompt)
+                        # 🛡️ Marcar que estamos aguardando resposta REAL do usuário
+                        self._awaiting_silence_response = True
                         logger.info(
-                            f"⏰ [SILENCE_FALLBACK] Instrução enviada via fallback: '{prompt}'",
+                            f"⏰ [SILENCE_FALLBACK] Instrução enviada via fallback: '{prompt}' (awaiting_response=True)",
                             extra={"call_uuid": self.call_uuid}
                         )
                 except Exception as e:
@@ -4337,8 +4412,9 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
                 extra={"call_uuid": self.call_uuid}
             )
             await self._send_text_to_provider(
-                f"[SISTEMA] Diga APENAS e EXATAMENTE: '{message}' - "
-                "Esta é uma frase curta de cortesia. Depois continue a conversa naturalmente."
+                f"[INSTRUÇÃO] Fale EXATAMENTE: \"{message}\" "
+                "Depois pergunte como pode ajudar.",
+                request_response=True
             )
         except Exception as e:
             logger.debug(f"Could not send hold return message: {e}")
@@ -4358,8 +4434,16 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
             return False
         
         farewell_message = (self.config.farewell or "").strip()
+        
+        # Personalizar com nome do cliente se disponível
+        caller_name = getattr(self, '_caller_name_from_handoff', None) or ""
         if not farewell_message:
-            farewell_message = "Obrigado por ligar, até logo!"
+            if caller_name:
+                farewell_message = f"Obrigada por ligar, {caller_name}! Tenha um ótimo dia!"
+            else:
+                farewell_message = "Obrigada por ligar! Tenha um ótimo dia!"
+        elif caller_name and "[NOME]" in farewell_message:
+            farewell_message = farewell_message.replace("[NOME]", caller_name)
         
         try:
             logger.info(
@@ -4367,8 +4451,8 @@ IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
                 extra={"call_uuid": self.call_uuid}
             )
             await self._send_text_to_provider(
-                f"[SISTEMA] Diga APENAS e EXATAMENTE: '{farewell_message}' - "
-                "Esta é uma despedida curta e educada.",
+                f"[INSTRUÇÃO] Fale EXATAMENTE esta despedida: \"{farewell_message}\" "
+                "Não adicione nada antes ou depois. Apenas esta frase.",
                 request_response=True
             )
             return True
