@@ -30,7 +30,10 @@ class RequestHandoffTool(VoiceAITool):
         "REGRAS: "
         "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
         "2) MOTIVO: pode ser inferido do contexto da conversa OU perguntado. "
-        "   Ex: cliente perguntou sobre planos e quer contratar → motivo = 'interesse em contratação'. "
+        "   Exemplos de inferência: "
+        "   - Cliente pergunta sobre planos → 'interesse em contratação' → destino: vendas. "
+        "   - Cliente reclama de internet lenta → 'problema de lentidão' → destino: suporte. "
+        "   - Cliente menciona fatura/cobrança → 'dúvida sobre fatura' → destino: financeiro. "
         "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO] para [MOTIVO]. Um momento.'"
     )
     
