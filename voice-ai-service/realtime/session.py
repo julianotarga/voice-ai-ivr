@@ -241,16 +241,14 @@ FUNCTION_FILLERS = {
     ],
     
     # Consultas
+    # get_business_info: SEM FILLER - função rápida (<100ms), não precisa
+    # search: FILLER - pode demorar (consulta externa)
     "search": [
         "Deixa eu buscar isso...",
         "Consultando aqui...",
     ],
-    "get_business_info": [
-        "Deixa eu verificar...",
-    ],
-    "lookup_customer": [
-        "Consultando seus dados...",
-    ],
+    "get_business_info": [],  # Rápido, não precisa de filler
+    "lookup_customer": [],    # Rápido, não precisa de filler
     
     # Hold/Unhold - SEM FILLER
     # A IA já deve avisar ANTES de chamar hold_call
