@@ -552,9 +552,11 @@ class ConferenceAnnouncementSession:
                         },
                         # Transcrição do input - OBRIGATÓRIO para receber transcripts do atendente
                         # Ref: Context7 - session.update audio transcription
-                        # NOTA: NÃO incluir "language" - deixar auto-detectar
+                        # NOTA: Incluir "language" para evitar detecção errada em áudio de telefonia
+                        # (sem isso, pode transcrever como japonês, chinês, etc.)
                         "transcription": {
-                            "model": "gpt-4o-transcribe"
+                            "model": "gpt-4o-transcribe",
+                            "language": "pt"  # Forçar português brasileiro
                         },
                     },
                     "output": {
