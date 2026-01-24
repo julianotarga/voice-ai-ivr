@@ -145,6 +145,7 @@ class ConferenceAnnouncementSession:
         self._rejected = False
         self._rejection_message: Optional[str] = None
         self._reject_retry_count = 0
+        self._accept_retry_count = 0  # Para pedir confirmação quando transcrição é ambígua
         
         # Flag para pular flush de áudio quando aceitar via pattern matching
         # Isso evita que áudio residual (ex: "vou anotar recado") seja reproduzido
@@ -1282,8 +1283,10 @@ class ConferenceAnnouncementSession:
             # Processar decisão
             if function_name == "accept_transfer":
                 # =========================================================================
-                # VERIFICAÇÃO DE SEGURANÇA: Checar TODOS os transcripts por negação
-                # Isso previne erros da IA que chama accept_transfer quando deveria rejeitar
+                # VERIFICAÇÃO DE SEGURANÇA DUPLA:
+                # 1. Verificar se há indicadores de REJEIÇÃO (não, ocupado, etc.)
+                # 2. Verificar se há indicadores de CONFIRMAÇÃO (sim, posso, pode, etc.)
+                # Se não houver confirmação explícita, pedir novamente (mais conservador)
                 # =========================================================================
                 all_transcripts = getattr(self, '_all_human_transcripts', [])
                 last_transcript = getattr(self, '_last_human_transcript', '')
@@ -1291,26 +1294,38 @@ class ConferenceAnnouncementSession:
                 # Combinar todos os transcripts para verificação
                 combined_transcript = ' '.join(all_transcripts).lower().strip()
                 
+                # Normalizar removendo pontuação
+                import re
+                combined_clean = re.sub(r'[.!?,;:\'"]+', '', combined_transcript).strip()
+                
                 logger.info(f"🔍 Safety check: all transcripts = {all_transcripts}")
-                logger.info(f"🔍 Safety check: combined = '{combined_transcript}'")
+                logger.info(f"🔍 Safety check: combined = '{combined_transcript}', clean = '{combined_clean}'")
                 
                 rejection_indicators = [
                     'não', 'nao', 'agora não', 'não posso', 'ocupado',
                     'depois', 'mais tarde', 'não dá', 'não quero',
-                    'não vou', 'não tenho', 'não vai dar'
+                    'não vou', 'não tenho', 'não vai dar', 'não atendo'
+                ]
+                
+                # NOVA VERIFICAÇÃO: Palavras de confirmação explícita
+                confirmation_indicators = [
+                    'sim', 'posso', 'pode', 'ok', 'tá', 'ta', 'tudo bem',
+                    'claro', 'certo', 'beleza', 'vou atender', 'manda',
+                    'pode passar', 'pode transferir', 'passa', 'transfere',
+                    'vamos lá', 'bora', 'manda ver', 'positivo', 'afirmativo'
                 ]
                 
                 # Verificar se contém indicadores de recusa
                 is_rejection = False
                 matched_indicator = None
                 
-                if combined_transcript:
-                    # Verificar cada indicador
+                if combined_clean:
+                    # Verificar cada indicador de rejeição
                     for indicator in rejection_indicators:
-                        if indicator in combined_transcript:
+                        if indicator in combined_clean:
                             is_rejection = True
                             matched_indicator = indicator
-                            logger.warning(f"⚠️ Safety check: '{indicator}' found in transcripts")
+                            logger.warning(f"⚠️ Safety check: REJECTION '{indicator}' found in transcripts")
                             break
                     
                     # Verificar "não" como palavra isolada no início de qualquer transcript
@@ -1323,6 +1338,18 @@ class ConferenceAnnouncementSession:
                                 logger.warning(f"⚠️ Safety check: 'não' as first word in '{transcript}'")
                                 break
                 
+                # NOVA VERIFICAÇÃO: Procurar confirmação explícita
+                has_confirmation = False
+                confirmation_matched = None
+                if combined_clean and not is_rejection:
+                    for indicator in confirmation_indicators:
+                        if indicator in combined_clean:
+                            has_confirmation = True
+                            confirmation_matched = indicator
+                            break
+                
+                logger.info(f"🔍 Safety check: is_rejection={is_rejection}, has_confirmation={has_confirmation}, matched='{confirmation_matched}'")
+                
                 if is_rejection:
                     # Converter accept_transfer para reject_transfer
                     self._rejection_message = f"Atendente disse não ({matched_indicator})"
@@ -1330,9 +1357,48 @@ class ConferenceAnnouncementSession:
                     
                     await self._send_courtesy_response()
                     self._rejected = True
+                elif not has_confirmation and len(combined_clean) < 15:
+                    # Transcrição curta SEM confirmação explícita - pedir novamente
+                    # Isso protege contra erros de STT como "que" em vez de "não"
+                    accept_retry_count = getattr(self, '_accept_retry_count', 0)
+                    
+                    if accept_retry_count < 1:
+                        self._accept_retry_count = accept_retry_count + 1
+                        logger.warning(
+                            f"⚠️ Safety check: accept_transfer SEM confirmação explícita em '{combined_clean}' "
+                            f"(len={len(combined_clean)}). Pedindo confirmação..."
+                        )
+                        
+                        if call_id:
+                            await self._send_function_output(call_id, {"status": "needs_confirmation"})
+                        
+                        # Pedir confirmação explícita
+                        try:
+                            await self._openai_ws.send(json.dumps({
+                                "type": "conversation.item.create",
+                                "item": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{
+                                        "type": "input_text",
+                                        "text": "[SISTEMA] Resposta do atendente não foi clara. Pergunte novamente de forma direta: 'Posso transferir a ligação?'"
+                                    }]
+                                }
+                            }))
+                            await self._openai_ws.send(json.dumps({
+                                "type": "response.create"
+                            }))
+                            logger.info("🔄 Pedindo confirmação explícita ao atendente")
+                        except Exception as e:
+                            logger.debug(f"Could not ask for confirmation: {e}")
+                        return  # Sair sem marcar decisão
+                    else:
+                        # Limite de retentativas atingido - aceitar com warning
+                        logger.warning(f"⚠️ Safety check: limite de re-tentativas atingido, aceitando sem confirmação explícita")
+                        self._accepted = True
                 else:
                     self._accepted = True
-                    logger.info(f"✅ Function call: ACCEPTED (no rejection indicators in '{combined_transcript}')")
+                    logger.info(f"✅ Function call: ACCEPTED (confirmation='{confirmation_matched}' in '{combined_clean}')")
                 
             elif function_name == "reject_transfer":
                 # =========================================================================
