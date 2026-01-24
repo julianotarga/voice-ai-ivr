@@ -101,11 +101,11 @@ HANDOFF_FUNCTION_DEFINITION = {
     "name": "request_handoff",
     "description": (
         "Transfere a chamada para atendente. "
-        "REGRAS OBRIGATÓRIAS - NÃO CHAME ESTA FUNÇÃO SE: "
-        "1) Você NÃO perguntou o NOME do cliente; "
-        "2) Você NÃO perguntou o MOTIVO detalhado da ligação. "
-        "PRIMEIRO colete nome e motivo, DEPOIS chame esta função. "
-        "O reason deve conter as PALAVRAS EXATAS do cliente, não um resumo."
+        "REGRAS: "
+        "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
+        "2) MOTIVO: pode ser inferido do contexto da conversa OU perguntado. "
+        "   Ex: cliente perguntou sobre planos e quer contratar → motivo = 'interesse em contratação'. "
+        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO] para [MOTIVO]. Um momento.'"
     ),
     "parameters": {
         "type": "object",

@@ -27,11 +27,11 @@ class RequestHandoffTool(VoiceAITool):
     name = "request_handoff"
     description = (
         "Transfere a chamada para atendente. "
-        "REGRAS OBRIGATÓRIAS - NÃO CHAME ESTA FUNÇÃO SE: "
-        "1) Não souber o NOME do cliente (pergunte primeiro) "
-        "2) Não souber o MOTIVO exato da ligação (pergunte primeiro). "
-        "Antes de transferir, SEMPRE confirme com o cliente: "
-        "'[NOME], vou transferir você para [DESTINO] por conta de [MOTIVO]. Um momento.'"
+        "REGRAS: "
+        "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
+        "2) MOTIVO: pode ser inferido do contexto da conversa OU perguntado. "
+        "   Ex: cliente perguntou sobre planos e quer contratar → motivo = 'interesse em contratação'. "
+        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO] para [MOTIVO]. Um momento.'"
     )
     
     parameters = {
@@ -43,7 +43,7 @@ class RequestHandoffTool(VoiceAITool):
             },
             "reason": {
                 "type": "string",
-                "description": "Motivo da ligação NAS PALAVRAS EXATAS DO CLIENTE (não resuma)"
+                "description": "Motivo da ligação - use as palavras do cliente OU infira do contexto (ex: 'interesse em contratação', 'dúvida sobre fatura')"
             },
             "caller_name": {
                 "type": "string",
