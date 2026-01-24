@@ -909,22 +909,24 @@ Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a liga
         """
         Toca beep de conexão em ambas as pernas após o bridge.
         
-        Usa uuid_broadcast para tocar simultaneamente em ambos os canais.
-        O 'both' faz o tom ser ouvido por ambas as partes.
+        Usa uuid_broadcast com 'both' para tocar simultaneamente em ambos os canais.
+        Isso indica ao cliente e atendente que estão conectados.
         """
         try:
             tone = self.config.bridge_beep_tone
             
-            # Tocar no A-leg (cliente) - 'aleg' envia para ambos os lados do bridge
-            # O 'both' no uuid_broadcast faz o áudio ir para ambas as pontas
+            # Tocar em AMBAS as pernas usando 'both'
+            # - 'aleg': apenas cliente ouve
+            # - 'bleg': apenas atendente ouve
+            # - 'both': ambos ouvem (o que queremos)
             success, result = await self._esl_command(
-                f"uuid_broadcast {self.a_leg_uuid} {tone} aleg",
+                f"uuid_broadcast {self.a_leg_uuid} {tone} both",
                 timeout=1.0,
-                description="BEEP"
+                description="BEEP_BOTH"
             )
             
             if success:
-                logger.info(f"{self._elapsed()} 🔔 Beep de conexão tocado")
+                logger.info(f"{self._elapsed()} 🔔 Beep de conexão tocado (ambas as pernas)")
             else:
                 logger.warning(f"{self._elapsed()} ⚠️ Beep falhou: {result}")
                 
