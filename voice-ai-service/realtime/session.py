@@ -1990,31 +1990,36 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             in_protection_period = now < protection_until
             
             # 🛡️ PROTEÇÃO SILENCE FALLBACK: Se estamos aguardando resposta do usuário
-            # após um silence fallback, só aceitar resposta se houve transcrição real
+            # após um silence fallback, verificar se o usuário realmente falou
+            # CORREÇÃO: Usar speech_stopped ao invés de transcrição (transcrição chega DEPOIS)
             if self._awaiting_silence_response:
-                # Verificar se houve transcrição DEPOIS do último silence fallback
-                transcript_after_fallback = (
-                    self._last_user_transcript_ts > self._last_silence_fallback_ts
+                # Verificar se houve speech_stopped DEPOIS do último silence fallback
+                # speech_stopped indica que o VAD confirmou fim de fala real
+                speech_after_fallback = (
+                    self._last_speech_stopped_ts > self._last_silence_fallback_ts
                 )
                 
-                if not transcript_after_fallback:
-                    # Não houve resposta real do usuário - ignorar esta resposta da IA
-                    logger.warning(
-                        "🚫 [SILENCE_FALLBACK] Bloqueando resposta - sem transcrição real após 'Você ainda está aí?'",
+                if speech_after_fallback:
+                    # Usuário falou de verdade! Resetar flag e permitir resposta
+                    logger.info(
+                        "✅ [SILENCE_FALLBACK] Usuário respondeu (VAD confirmou fala), permitindo resposta",
                         extra={
                             "call_uuid": self.call_uuid,
-                            "last_transcript_ts": self._last_user_transcript_ts,
-                            "last_fallback_ts": self._last_silence_fallback_ts,
+                            "speech_stopped_ts": self._last_speech_stopped_ts,
+                            "fallback_ts": self._last_silence_fallback_ts,
                         }
                     )
-                    # Cancelar a resposta se possível
-                    if self._provider and hasattr(self._provider, 'interrupt'):
-                        try:
-                            await self._provider.interrupt()
-                            logger.info("🚫 [SILENCE_FALLBACK] Resposta cancelada - aguardando transcrição real")
-                        except Exception as e:
-                            logger.debug(f"🚫 [SILENCE_FALLBACK] Erro ao cancelar: {e}")
-                    return "continue"  # Ignorar esta resposta
+                    self._awaiting_silence_response = False
+                # Se não houve speech_stopped, mas também não houve speech_started recente,
+                # pode ser uma resposta espontânea da IA (timeout, etc) - permitir
+                elif not (self._last_speech_started_ts > self._last_silence_fallback_ts):
+                    # Nenhum speech detectado - provavelmente timeout ou outra resposta
+                    # Não bloquear, apenas logar
+                    logger.debug(
+                        "🔄 [SILENCE_FALLBACK] Resposta sem speech detectado - permitindo",
+                        extra={"call_uuid": self.call_uuid}
+                    )
+                    self._awaiting_silence_response = False
             
             # Falso positivo: speech_started recente MAS sem speech_stopped
             # Isso indica que o VAD começou a detectar algo mas abortou (ruído curto)
