@@ -87,11 +87,9 @@ class GetBusinessInfoTool(VoiceAITool):
     name = "get_business_info"
     description = (
         "Obtém informações sobre a empresa. "
-        "SEMPRE use esta função para responder perguntas sobre: "
-        "serviços oferecidos, preços/valores/planos, promoções/descontos, "
-        "horários de atendimento, localização/endereço, formas de contato, "
-        "ou informações gerais sobre a empresa. "
-        "NÃO invente informações - use sempre esta função para obter dados corretos."
+        "IMPORTANTE: As informações da empresa já estão no seu prompt (seção 'Informações da Empresa'). "
+        "Use esta função APENAS se NÃO encontrar a informação no seu prompt. "
+        "Para perguntas sobre planos, preços, serviços, horários ou endereço - responda DIRETAMENTE do prompt."
     )
     
     parameters = {
@@ -108,7 +106,7 @@ class GetBusinessInfoTool(VoiceAITool):
     
     category = ToolCategory.INFO
     requires_response = True
-    filler_phrases = ["Um momento...", "Deixa eu verificar..."]
+    filler_phrases = []  # Sem filler - deve responder do prompt, não chamar tool
     
     # Informações padrão - sobrescritas pelos dados do banco de dados
     DEFAULT_INFO = {

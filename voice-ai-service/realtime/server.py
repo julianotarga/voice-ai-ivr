@@ -1015,10 +1015,30 @@ class RealtimeServer:
             "tool_names": [t.get("name") or (t.get("function") or {}).get("name") for t in tools if isinstance(t, dict)],
         })
         
-        # Combinar system_prompt base + transfer_context
+        # Combinar system_prompt base + transfer_context + business_info
         final_system_prompt = system_prompt_base
         if transfer_context:
             final_system_prompt = f"{system_prompt_base}\n{transfer_context}"
+        
+        # Incluir business_info no prompt para evitar chamadas desnecessárias à tool
+        business_info = _parse_business_info(row.get("business_info"))
+        if business_info:
+            business_info_text = "\n\n# Informações da Empresa (USE DIRETAMENTE, NÃO PRECISA CHAMAR get_business_info)\n"
+            for key, value in business_info.items():
+                if value:
+                    # Traduzir chaves para português
+                    key_pt = {
+                        "servicos": "Serviços",
+                        "precos": "Preços/Planos",
+                        "promocoes": "Promoções",
+                        "horarios": "Horários",
+                        "localizacao": "Endereço",
+                        "contato": "Contato",
+                        "sobre": "Sobre a empresa",
+                        "geral": "Informações gerais",
+                    }.get(key, key.title())
+                    business_info_text += f"- {key_pt}: {value}\n"
+            final_system_prompt = f"{final_system_prompt}\n{business_info_text}"
 
         # Parse handoff keywords from comma-separated string
         handoff_keywords_str = row.get("handoff_keywords") or "atendente,humano,pessoa,operador"
