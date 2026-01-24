@@ -512,6 +512,9 @@ class ConferenceAnnouncementSession:
         
         As tools accept_transfer e reject_transfer permitem decisão clara.
         """
+        # NOTA: NÃO configurar "transcription" explicitamente - a API GA habilita automaticamente
+        # Configurar explicitamente pode causar o OpenAI a ignorar toda a configuração de input
+        # (comparado com openai_realtime.py que funciona sem esse campo)
         config = {
             "type": "session.update",
             "session": {
@@ -530,19 +533,19 @@ class ConferenceAnnouncementSession:
                         "turn_detection": {
                             "type": "server_vad",
                             # threshold: 0.0-1.0 (maior = menos sensível)
-                            # 0.75 evita que ruídos/teclas interrompam a fala
-                            "threshold": 0.75,
+                            # 0.5 padrão, balanceado entre sensibilidade e ruído
+                            "threshold": 0.5,
                             # prefix_padding_ms: buffer antes de detectar início de fala
-                            # 400ms ignora sons curtos como cliques
-                            "prefix_padding_ms": 400,
+                            # 300ms é o padrão da API
+                            "prefix_padding_ms": 300,
                             # silence_duration_ms: quanto silêncio antes de considerar fim de turno
-                            # 700ms permite pausas naturais na fala
-                            "silence_duration_ms": 700
+                            # 500ms é o padrão, permite respostas mais rápidas
+                            "silence_duration_ms": 500,
+                            # create_response: gerar resposta automaticamente ao fim do turno
+                            "create_response": True
                         },
-                        "transcription": {
-                            "model": "gpt-4o-transcribe",
-                            "language": "pt"  # Português para evitar transcrição em outros idiomas
-                        },
+                        # NOTA: transcription é habilitada automaticamente pela API GA
+                        # NÃO configurar explicitamente - pode quebrar a funcionalidade
                     },
                     "output": {
                         "format": {
@@ -559,7 +562,8 @@ class ConferenceAnnouncementSession:
             }
         }
         
-        logger.debug(f"Session config with tools: {json.dumps(config)[:500]}")
+        logger.info(f"📤 Sending session.update with VAD and tools (no explicit transcription)")
+        logger.debug(f"Session config: {json.dumps(config)[:800]}")
         
         await self._ws.send(json.dumps(config))
         
@@ -568,7 +572,19 @@ class ConferenceAnnouncementSession:
             msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
             event = json.loads(msg)
             if event.get("type") == "session.updated":
-                logger.info("✅ Session configured with function calls")
+                # Log detalhado da configuração aplicada
+                session = event.get("session", {})
+                audio = session.get("audio", {})
+                input_cfg = audio.get("input", {})
+                turn_detection = input_cfg.get("turn_detection", {})
+                
+                logger.info(
+                    f"✅ Session configured: "
+                    f"VAD={turn_detection.get('type', 'none')}, "
+                    f"threshold={turn_detection.get('threshold', '?')}, "
+                    f"create_response={turn_detection.get('create_response', '?')}, "
+                    f"tools={len(config.get('session', {}).get('tools', []))}"
+                )
             elif event.get("type") == "error":
                 error = event.get("error", {})
                 logger.error(f"❌ Session config error: {error}")
@@ -1050,6 +1066,40 @@ class ConferenceAnnouncementSession:
     async def _handle_event(self, event: dict) -> None:
         """Processa evento do OpenAI Realtime."""
         etype = event.get("type", "")
+        
+        # Lista de eventos conhecidos (para logging de eventos desconhecidos)
+        KNOWN_EVENTS = {
+            "response.created", "response.done",
+            "response.audio.delta", "response.output_audio.delta",
+            "response.audio.done", "response.output_audio.done",
+            "response.audio_transcript.delta", "response.output_audio_transcript.delta",
+            "response.audio_transcript.done", "response.output_audio_transcript.done",
+            "response.function_call_arguments.delta", "response.function_call_arguments.done",
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+            "conversation.item.added",
+            "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
+            "input_audio_buffer.committed",
+            "session.created", "session.updated",
+            "error", "rate_limits.updated",
+        }
+        
+        # Log eventos desconhecidos para diagnóstico
+        if etype and etype not in KNOWN_EVENTS:
+            logger.warning(f"🔍 [UNKNOWN_EVENT] {etype}: {json.dumps(event)[:300]}")
+        
+        # VAD: Detectou início de fala do atendente
+        if etype == "input_audio_buffer.speech_started":
+            logger.info("🎙️ [VAD] Atendente começou a falar")
+        
+        # VAD: Detectou fim de fala do atendente
+        if etype == "input_audio_buffer.speech_stopped":
+            logger.info("🎙️ [VAD] Atendente parou de falar")
+        
+        # Transcrição falhou
+        if etype == "conversation.item.input_audio_transcription.failed":
+            error = event.get("error", {})
+            logger.error(f"❌ [TRANSCRIPTION_FAILED] {error}")
         
         if etype == "response.created":
             self._response_active = True
