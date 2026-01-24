@@ -142,6 +142,10 @@ class ConferenceAnnouncementSession:
         self._rejection_message: Optional[str] = None
         self._reject_retry_count = 0
         
+        # Flag para pular flush de áudio quando aceitar via pattern matching
+        # Isso evita que áudio residual (ex: "vou anotar recado") seja reproduzido
+        self._skip_audio_flush = False
+        
         # Evento para sinalizar decisão via function call
         self._decision_event = asyncio.Event()
         
@@ -1395,13 +1399,14 @@ class ConferenceAnnouncementSession:
             # Evitar patterns muito curtos que podem dar falso positivo
             accept_patterns = [
                 "pode passar", "pode transferir", "pode conectar",
-                "tá bom", "tá bem", "beleza",
-                "aceito", "claro", "certo",
-                "manda", "passa aí", "conecta",
+                "tá bom", "tá bem", "tudo bem", "ta bom", "ta bem",
+                "beleza", "aceito", "claro", "certo", "posso sim",
+                "manda", "passa aí", "passa ai", "conecta",
+                "vou atender", "pode colocar", "coloca na linha",
             ]
             
             # Patterns genéricos que precisam ser palavra isolada ou início de frase
-            accept_generic = ["sim", "ok", "pode"]
+            accept_generic = ["sim", "ok", "pode", "posso", "beleza", "certo", "claro"]
             
             # Patterns de RECUSA - ordenados por especificidade
             # IMPORTANTE: "não" isolado AGORA é considerado recusa
@@ -1421,7 +1426,8 @@ class ConferenceAnnouncementSession:
             for pattern in accept_patterns:
                 if pattern in text_lower:
                     self._accepted = True
-                    logger.info(f"Human ACCEPTED: matched '{pattern}'")
+                    self._skip_audio_flush = True  # 🚀 Não fazer flush - bridge imediato
+                    logger.info(f"Human ACCEPTED: matched '{pattern}' - skipping audio flush")
                     self._decision_event.set()
                     return
             
@@ -1431,7 +1437,8 @@ class ConferenceAnnouncementSession:
                 first_word = words[0].rstrip(".,!?")
                 if first_word in accept_generic or (len(words) == 1 and first_word in accept_generic):
                     self._accepted = True
-                    logger.info(f"Human ACCEPTED: generic match '{first_word}'")
+                    self._skip_audio_flush = True  # 🚀 Não fazer flush - bridge imediato
+                    logger.info(f"Human ACCEPTED: generic match '{first_word}' - skipping audio flush")
                     self._decision_event.set()
                     return
             
@@ -1882,66 +1889,79 @@ class ConferenceAnnouncementSession:
         except Exception as e:
             logger.debug(f"🔊 FS sender loop ended: {e} (sent {chunks_sent} batches, {total_bytes_sent} bytes)")
         finally:
-            # FLUSH: Enviar áudio restante para evitar cortes no final das frases
-            try:
-                flush_buffer = bytearray()
-                
-                # 1. Adicionar batch_buffer local
-                if batch_buffer:
-                    flush_buffer.extend(batch_buffer)
-                
-                # 2. Drenar a fila restante
+            # 🚀 SKIP FLUSH: Se aceitou via pattern matching, não enviar áudio residual
+            # Isso evita que a IA fale "vou anotar recado" enquanto faz o bridge
+            if self._skip_audio_flush:
+                logger.info(f"🚀 FS sender: SKIPPING flush (accepted via pattern match)")
+                # Limpar fila sem enviar
                 while not self._fs_audio_queue.empty():
                     try:
-                        chunk = self._fs_audio_queue.get_nowait()
-                        flush_buffer.extend(chunk)
+                        self._fs_audio_queue.get_nowait()
                     except Exception:
                         break
-                
-                # 3. Flush do AudioBuffer (áudio pendente de warmup)
-                remaining = self._fs_audio_buffer.flush()
-                if remaining:
-                    flush_buffer.extend(remaining)
-                
-                # 4. Enviar tudo de uma vez
-                if flush_buffer and self._fs_ws:
-                    flush_bytes = len(flush_buffer)
-                    audio_msg = json.dumps({
-                        "type": "streamAudio",
-                        "data": {
-                            "audioData": base64.b64encode(bytes(flush_buffer)).decode("utf-8"),
-                            "audioDataType": "raw"
-                        }
-                    })
-                    await self._fs_ws.send(audio_msg)
-                    total_bytes_sent += flush_bytes
-                    
-                    # TRACKING DINÂMICO: Todo áudio foi enviado
-                    self._pending_audio_bytes = 0
-                    
-                    # TAIL BUFFER DINÂMICO: Aguardar tempo proporcional ao áudio restante
-                    # L16 @ 8kHz = 16 bytes/ms
-                    # 
-                    # MARGEM CRÍTICA: O áudio foi enviado para o FreeSWITCH via WebSocket,
-                    # mas ainda precisa:
-                    # 1. Ser processado pelo FreeSWITCH (~50ms)
-                    # 2. Passar pelo buffer de jitter (~100ms)
-                    # 3. Ser transmitido pela rede até o telefone (~100-200ms)
-                    #
-                    # Margem total: 500ms para garantir que o áudio seja reproduzido
-                    # antes de qualquer ação que possa interromper a chamada.
-                    tail_duration_ms = (flush_bytes / 16.0) + 500
-                    logger.info(
-                        f"🔊 FS sender: flushed {flush_bytes} bytes, "
-                        f"waiting {tail_duration_ms:.0f}ms (dynamic tail buffer with 500ms margin)"
-                    )
-                    await asyncio.sleep(tail_duration_ms / 1000.0)
-                
-                # Sinalizar que todo áudio foi reproduzido
+                self._pending_audio_bytes = 0
                 self._audio_playback_done.set()
+            else:
+                # FLUSH: Enviar áudio restante para evitar cortes no final das frases
+                try:
+                    flush_buffer = bytearray()
                     
-            except Exception as flush_err:
-                logger.debug(f"🔊 FS sender: flush error: {flush_err}")
+                    # 1. Adicionar batch_buffer local
+                    if batch_buffer:
+                        flush_buffer.extend(batch_buffer)
+                    
+                    # 2. Drenar a fila restante
+                    while not self._fs_audio_queue.empty():
+                        try:
+                            chunk = self._fs_audio_queue.get_nowait()
+                            flush_buffer.extend(chunk)
+                        except Exception:
+                            break
+                    
+                    # 3. Flush do AudioBuffer (áudio pendente de warmup)
+                    remaining = self._fs_audio_buffer.flush()
+                    if remaining:
+                        flush_buffer.extend(remaining)
+                    
+                    # 4. Enviar tudo de uma vez
+                    if flush_buffer and self._fs_ws:
+                        flush_bytes = len(flush_buffer)
+                        audio_msg = json.dumps({
+                            "type": "streamAudio",
+                            "data": {
+                                "audioData": base64.b64encode(bytes(flush_buffer)).decode("utf-8"),
+                                "audioDataType": "raw"
+                            }
+                        })
+                        await self._fs_ws.send(audio_msg)
+                        total_bytes_sent += flush_bytes
+                        
+                        # TRACKING DINÂMICO: Todo áudio foi enviado
+                        self._pending_audio_bytes = 0
+                        
+                        # TAIL BUFFER DINÂMICO: Aguardar tempo proporcional ao áudio restante
+                        # L16 @ 8kHz = 16 bytes/ms
+                        # 
+                        # MARGEM CRÍTICA: O áudio foi enviado para o FreeSWITCH via WebSocket,
+                        # mas ainda precisa:
+                        # 1. Ser processado pelo FreeSWITCH (~50ms)
+                        # 2. Passar pelo buffer de jitter (~100ms)
+                        # 3. Ser transmitido pela rede até o telefone (~100-200ms)
+                        #
+                        # Margem total: 500ms para garantir que o áudio seja reproduzido
+                        # antes de qualquer ação que possa interromper a chamada.
+                        tail_duration_ms = (flush_bytes / 16.0) + 500
+                        logger.info(
+                            f"🔊 FS sender: flushed {flush_bytes} bytes, "
+                            f"waiting {tail_duration_ms:.0f}ms (dynamic tail buffer with 500ms margin)"
+                        )
+                        await asyncio.sleep(tail_duration_ms / 1000.0)
+                    
+                    # Sinalizar que todo áudio foi reproduzido
+                    self._audio_playback_done.set()
+                        
+                except Exception as flush_err:
+                    logger.debug(f"🔊 FS sender: flush error: {flush_err}")
             
             # Calcular e logar duração total do áudio
             # L16 @ 8kHz = 16 bytes/ms
