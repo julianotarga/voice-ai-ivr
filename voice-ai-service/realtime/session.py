@@ -1091,16 +1091,17 @@ class RealtimeSession:
             return
         
         try:
+            # FASE 1: Inicializar TransferManager ANTES do provider
+            # para que a lista de destinos disponíveis seja incluída no prompt
+            if self.config.intelligent_handoff_enabled:
+                await self._init_transfer_manager()
+            
             await self._create_provider()
             self._setup_resampler()
             
             # Iniciar HeartbeatMonitor APÓS provider estar conectado
             # para evitar falsos positivos de PROVIDER_TIMEOUT
             await self.heartbeat.start()
-            
-            # FASE 1: Inicializar TransferManager para handoff inteligente
-            if self.config.intelligent_handoff_enabled:
-                await self._init_transfer_manager()
             
             self._event_task = asyncio.create_task(self._event_loop())
             self._timeout_task = asyncio.create_task(self._timeout_monitor())
@@ -1336,10 +1337,27 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
 
         # Regra explícita para transferência (OpenAI Realtime)
         if self.config.intelligent_handoff_enabled:
-            base_prompt += """
+            # Obter lista de destinos disponíveis
+            available_destinations = []
+            if self._transfer_manager and self._transfer_manager._destinations:
+                available_destinations = [d.name for d in self._transfer_manager._destinations]
+            
+            # Construir string de destinos para o prompt
+            if available_destinations:
+                destinations_str = ", ".join(available_destinations)
+                destinations_info = f"""
+### DESTINOS DISPONÍVEIS (IMPORTANTE):
+Você SÓ pode transferir para estes destinos: **{destinations_str}**
+- NÃO ofereça transferir para setores que não estão na lista acima
+- Se o cliente pedir um setor que não existe, diga: "Não temos esse setor, mas posso transferir para [destino mais adequado da lista]"
+"""
+            else:
+                destinations_info = ""
+            
+            base_prompt += f"""
 
 ## TRANSFERÊNCIA - REGRAS
-
+{destinations_info}
 ### Antes de transferir:
 1. **NOME é OBRIGATÓRIO** - Pergunte se não souber: "Posso saber seu nome?"
 2. **MOTIVO pode ser INFERIDO** - Se o contexto deixar claro, NÃO pergunte novamente.
