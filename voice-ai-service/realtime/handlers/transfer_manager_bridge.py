@@ -111,6 +111,16 @@ class BridgeTransferConfig:
     # Prompts customizados
     announcement_prompt: Optional[str] = None
     courtesy_message: Optional[str] = None
+    
+    # Beep de conexão - toca em ambas as pernas quando o bridge é estabelecido
+    # Indica ao cliente e atendente que estão conectados
+    bridge_beep_enabled: bool = True
+    # Formato: tone_stream://%(duração_ms,silêncio_ms,frequência_hz)
+    # Exemplos:
+    #   - "tone_stream://%(100,0,800)" - Beep curto 800Hz
+    #   - "tone_stream://%(150,50,600);%(150,0,800)" - Duplo beep ascendente
+    #   - "/usr/share/freeswitch/sounds/..." - Arquivo de áudio
+    bridge_beep_tone: str = "tone_stream://%(100,50,600);%(150,0,800)"  # Duplo beep agradável
 
 
 class BridgeTransferManager:
@@ -881,6 +891,11 @@ Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a liga
             if success:
                 self._log_state_change(TransferState.BRIDGED)
                 logger.info(f"{self._elapsed()} ✅ Bridge estabelecido!")
+                
+                # 5. Tocar beep de conexão (se habilitado)
+                if self.config.bridge_beep_enabled:
+                    await self._play_bridge_beep()
+                
                 return True
             else:
                 logger.error(f"{self._elapsed()} ❌ Bridge falhou: {result}")
@@ -889,6 +904,33 @@ Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a liga
         except Exception as e:
             logger.error(f"{self._elapsed()} ❌ Erro ao criar bridge: {e}")
             return False
+    
+    async def _play_bridge_beep(self) -> None:
+        """
+        Toca beep de conexão em ambas as pernas após o bridge.
+        
+        Usa uuid_broadcast para tocar simultaneamente em ambos os canais.
+        O 'both' faz o tom ser ouvido por ambas as partes.
+        """
+        try:
+            tone = self.config.bridge_beep_tone
+            
+            # Tocar no A-leg (cliente) - 'aleg' envia para ambos os lados do bridge
+            # O 'both' no uuid_broadcast faz o áudio ir para ambas as pontas
+            success, result = await self._esl_command(
+                f"uuid_broadcast {self.a_leg_uuid} {tone} aleg",
+                timeout=1.0,
+                description="BEEP"
+            )
+            
+            if success:
+                logger.info(f"{self._elapsed()} 🔔 Beep de conexão tocado")
+            else:
+                logger.warning(f"{self._elapsed()} ⚠️ Beep falhou: {result}")
+                
+        except Exception as e:
+            # Não falhar o bridge por causa do beep
+            logger.warning(f"{self._elapsed()} ⚠️ Erro ao tocar beep: {e}")
     
     # =========================================================================
     # ROLLBACK
