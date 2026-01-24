@@ -1104,7 +1104,9 @@ Se a resposta for ambígua, pergunte novamente: "Então, posso transferir a liga
             await self._emit_event(VoiceEventType.TRANSFER_ANSWERED)
             
             # Estabilização após atendimento
-            await asyncio.sleep(self.config.stabilization_delay * 2)
+            # 500ms é um compromisso entre latência e estabilidade do canal de áudio
+            # Muito agressivo (< 300ms) pode causar problemas de sincronização
+            await asyncio.sleep(0.5)
             
             # STEP 4: Anúncio
             logger.info(f"{self._elapsed()} 📍 STEP 4: Anunciando para atendente...")

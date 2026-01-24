@@ -5036,7 +5036,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                announcement_warmup_ms=self.config.audio_warmup_ms,
+                                # Warmup menor para anúncio (100ms) - mais rápido que sessão principal
+                                announcement_warmup_ms=100,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -5069,7 +5070,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                announcement_warmup_ms=self.config.audio_warmup_ms,
+                                # Warmup menor para anúncio (100ms) - mais rápido que sessão principal
+                                announcement_warmup_ms=100,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,

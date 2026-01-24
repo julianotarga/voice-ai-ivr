@@ -43,15 +43,19 @@ class ConferenceAnnouncementResult:
 
 # Tools/Functions para OpenAI Realtime
 # IMPORTANTE: Descrições detalhadas para evitar falsos positivos/negativos
+# NOTA: Incluir confirmações CURTAS como "posso", "sim", "pode" que são comuns em telefonia
 TRANSFER_TOOLS = [
     {
         "type": "function",
         "name": "accept_transfer",
         "description": (
-            "Chamado SOMENTE quando o atendente ACEITA EXPLICITAMENTE a transferência. "
-            "Use APENAS quando ouvir confirmação INEQUÍVOCA como: "
-            "'pode passar', 'pode conectar', 'manda', 'ok pode', 'coloca na linha', 'pode colocar'. "
-            "NÃO use para saudações (alô, oi, bom dia) nem para perguntas (quem é?) nem para expressões irônicas (meu querido)."
+            "Chamado quando o atendente ACEITA a transferência. "
+            "Use quando ouvir confirmação como: "
+            "'posso', 'posso sim', 'sim posso', 'pode', 'pode sim', 'sim', 'ok', 'tá', 'tá bom', "
+            "'pode passar', 'pode conectar', 'manda', 'ok pode', 'coloca na linha', 'pode colocar', "
+            "'beleza', 'certo', 'claro', 'vou atender', 'vamos lá'. "
+            "IMPORTANTE: Palavras CURTAS como 'posso', 'pode', 'sim', 'ok' são CONFIRMAÇÕES válidas. "
+            "NÃO use para saudações isoladas (alô, oi, bom dia) nem para perguntas (quem é?)."
         ),
         "parameters": {
             "type": "object",
@@ -65,8 +69,8 @@ TRANSFER_TOOLS = [
         "description": (
             "Chamado SOMENTE quando o atendente RECUSA EXPLICITAMENTE a transferência. "
             "Use APENAS quando ouvir recusa CLARA como: "
-            "'não posso', 'estou ocupado', 'agora não', 'não dá', 'depois', 'liga mais tarde'. "
-            "NÃO use para saudações (alô, oi, bom dia) nem para perguntas (quem é?) nem para expressões irônicas (meu querido)."
+            "'não posso', 'estou ocupado', 'agora não', 'não dá', 'depois', 'liga mais tarde', 'não'. "
+            "NÃO use para saudações (alô, oi, bom dia) nem para perguntas (quem é?)."
         ),
         "parameters": {
             "type": "object",
@@ -535,14 +539,17 @@ class ConferenceAnnouncementSession:
                         "noise_reduction": {"type": "far_field"},
                         "turn_detection": {
                             "type": "server_vad",
-                            # threshold: 0.0-1.0 (maior = menos sensível)
-                            # 0.5 padrão, balanceado entre sensibilidade e ruído
-                            "threshold": 0.5,
+                            # threshold: 0.0-1.0 (menor = mais sensível)
+                            # 0.35 para melhor sensibilidade em telefonia sem muitos falsos positivos
+                            # Ref: Context7 - "higher for noisier environments"
+                            "threshold": 0.35,
                             # prefix_padding_ms: buffer antes de detectar início de fala
-                            # 300ms é o padrão da API
-                            "prefix_padding_ms": 300,
+                            # 350ms (levemente acima do default 300) para capturar início de palavras
+                            "prefix_padding_ms": 350,
                             # silence_duration_ms: quanto silêncio antes de considerar fim de turno
-                            # 500ms é o padrão, permite respostas mais rápidas
+                            # 500ms (default) - valores menores = respostas mais rápidas
+                            # Ref: Context7 - "shorter values lead to quicker turn detection"
+                            # NOTA: Problema de "POSSO" não capturado é de STT, não de VAD
                             "silence_duration_ms": 500,
                             # create_response: gerar resposta automaticamente ao fim do turno
                             "create_response": True,
@@ -551,12 +558,15 @@ class ConferenceAnnouncementSession:
                             "interrupt_response": True
                         },
                         # Transcrição do input - OBRIGATÓRIO para receber transcripts do atendente
-                        # Ref: Context7 - session.update audio transcription
-                        # NOTA: Incluir "language" para evitar detecção errada em áudio de telefonia
-                        # (sem isso, pode transcrever como japonês, chinês, etc.)
+                        # NOTA: Estrutura audio.input.transcription para session.update
+                        # não está explicitamente documentada, mas funciona na prática
                         "transcription": {
                             "model": "gpt-4o-transcribe",
-                            "language": "pt"  # Forçar português brasileiro
+                            # language: ISO-639-1 ("pt") - documentado e suportado
+                            "language": "pt"
+                            # NOTA: prompt removido pois não é documentado para esta estrutura
+                            # Se transcrição continuar falhando, considerar usar
+                            # transcription_session ao invés de session.update
                         },
                     },
                     "output": {
