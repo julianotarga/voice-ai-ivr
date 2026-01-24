@@ -29,12 +29,10 @@ class RequestHandoffTool(VoiceAITool):
         "Transfere a chamada para atendente. "
         "REGRAS: "
         "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
-        "2) MOTIVO: pode ser inferido do contexto da conversa OU perguntado. "
-        "   Exemplos de inferência: "
-        "   - Cliente pergunta sobre planos/preços/contratação → destino: vendas. "
-        "   - Cliente reclama de lentidão/sem conexão/wifi ruim/internet caindo/sem sinal → destino: suporte. "
-        "   - Cliente menciona fatura/boleto/cobrança/pagamento → destino: financeiro. "
-        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO] para [MOTIVO]. Um momento.'"
+        "2) MOTIVO: pode ser INFERIDO do contexto da conversa. "
+        "   Se o cliente já explicou o que precisa, NÃO pergunte novamente. "
+        "   Pergunte apenas se não ficou claro. "
+        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO]. Um momento.'"
     )
     
     parameters = {
@@ -42,11 +40,11 @@ class RequestHandoffTool(VoiceAITool):
         "properties": {
             "destination": {
                 "type": "string",
-                "description": "Para quem/onde transferir (ex: 'suporte', 'vendas', 'Jeni')"
+                "description": "Nome da pessoa ou departamento para transferir"
             },
             "reason": {
                 "type": "string",
-                "description": "Motivo da ligação - use as palavras do cliente OU infira do contexto (ex: 'interesse em contratação', 'dúvida sobre fatura')"
+                "description": "Motivo da ligação - use as palavras do cliente OU infira do contexto da conversa"
             },
             "caller_name": {
                 "type": "string",

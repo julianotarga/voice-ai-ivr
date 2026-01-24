@@ -103,42 +103,31 @@ HANDOFF_FUNCTION_DEFINITION = {
         "Transfere a chamada para atendente. "
         "REGRAS: "
         "1) NOME do cliente é OBRIGATÓRIO (pergunte se não souber). "
-        "2) MOTIVO: pode ser inferido do contexto da conversa OU perguntado. "
-        "   Exemplos de inferência: "
-        "   - Cliente pergunta sobre planos/preços/contratação → destino: vendas. "
-        "   - Cliente reclama de lentidão/sem conexão/wifi ruim/internet caindo/sem sinal → destino: suporte. "
-        "   - Cliente menciona fatura/boleto/cobrança/pagamento → destino: financeiro. "
-        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO] para [MOTIVO]. Um momento.'"
+        "2) MOTIVO: pode ser INFERIDO do contexto da conversa. "
+        "   Se o cliente já explicou o que precisa, NÃO pergunte novamente. "
+        "   Pergunte apenas se não ficou claro. "
+        "Antes de transferir, confirme: '[NOME], vou transferir para [DESTINO]. Um momento.'"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "destination": {
                 "type": "string",
-                "description": (
-                    "Nome da pessoa, departamento ou 'qualquer atendente'. "
-                    "Exemplos: 'Jeni', 'financeiro', 'suporte', 'qualquer atendente disponível'"
-                )
+                "description": "Nome da pessoa ou departamento para transferir"
             },
             "reason": {
                 "type": "string",
                 "description": (
-                    "Motivo da ligação nas PALAVRAS EXATAS do cliente. "
-                    "NÃO resuma, NÃO interprete, NÃO abrevie. "
-                    "Copie literalmente o que o cliente disse. "
-                    "Exemplo: se cliente disse 'minha internet está caindo toda hora desde ontem', "
-                    "use EXATAMENTE 'minha internet está caindo toda hora desde ontem'."
+                    "Motivo da ligação - use as palavras do cliente OU infira do contexto. "
+                    "Se o cliente explicou durante a conversa, use esse contexto."
                 )
             },
             "caller_name": {
                 "type": "string",
-                "description": (
-                    "Nome do cliente. OBRIGATÓRIO - você DEVE ter perguntado antes. "
-                    "Se não perguntou ainda, NÃO chame esta função."
-                )
+                "description": "Nome do cliente (OBRIGATÓRIO - pergunte se não souber)"
             }
         },
-        "required": ["destination", "reason", "caller_name"]
+        "required": ["destination", "caller_name"]
     }
 }
 
@@ -1342,49 +1331,46 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
         if self.config.intelligent_handoff_enabled:
             base_prompt += """
 
-## TRANSFERÊNCIA - REGRAS OBRIGATÓRIAS
+## TRANSFERÊNCIA - REGRAS
 
-### PROIBIDO fazer ANTES de coletar informações:
-- NÃO diga "vou transferir", "vou passar", "vou encaminhar"
-- NÃO mencione que vai transferir de nenhuma forma
-- NÃO chame request_handoff
+### Antes de transferir:
+1. **NOME é OBRIGATÓRIO** - Pergunte se não souber: "Posso saber seu nome?"
+2. **MOTIVO pode ser INFERIDO** - Se o contexto deixar claro, NÃO pergunte novamente.
 
-### OBRIGATÓRIO - Coletar ANTES de qualquer menção a transferência:
+### Quando INFERIR o motivo (NÃO pergunte):
+- Cliente já explicou o problema durante a conversa
+- Cliente demonstrou intenção clara (quer contratar, tem problema, quer cancelar)
+- Cliente pediu para falar com setor específico após explicar situação
 
-**PASSO 1 - Pergunte o NOME:**
-- "Posso saber seu nome, por favor?"
-- Aguarde a resposta e ANOTE o nome exato
+### Quando PERGUNTAR o motivo:
+- Cliente pede transferência sem contexto: "Quero falar com alguém"
+- Não ficou claro o que o cliente precisa
 
-**PASSO 2 - Pergunte o MOTIVO com DETALHES:**
-- "E qual seria o motivo do contato?" ou "Pode me explicar a situação?"
-- Deixe o cliente explicar COM SUAS PRÓPRIAS PALAVRAS
-- ANOTE as palavras exatas que o cliente usar (serão repassadas ao atendente)
-- Se for vago, peça mais detalhes: "Pode me dar mais detalhes para eu informar ao atendente?"
-
-**PASSO 3 - SÓ ENTÃO transfira:**
-- Diga: "Um momento [NOME], vou transferir para [DESTINO]."
-- Chame `request_handoff` com:
-  - caller_name: nome EXATO do cliente
-  - reason: motivo nas PALAVRAS EXATAS do cliente (não resuma, não interprete)
-  - destination: setor/pessoa solicitada
+### Fluxo de transferência:
+1. Confirme o nome (pergunte se não souber)
+2. Confirme a transferência: "[NOME], vou transferir para [DESTINO]. Um momento."
+3. Chame `request_handoff`
 
 ### Se a transferência falhar:
 - Ofereça: "Posso anotar um recado para retorno?"
-- Se sim: use `take_message` com o motivo EXATO
+- Se sim: use `take_message`
 - Se não: agradeça e use `end_call`
 
-### EXEMPLO CORRETO:
-Cliente: "Quero falar com suporte"
-IA: "Claro! Posso saber seu nome, por favor?"
-Cliente: "João Silva"
-IA: "João, e qual seria o motivo do contato?"
-Cliente: "Minha internet está caindo toda hora desde ontem"
-IA: "Entendi, João. Um momento, vou transferir para o suporte."
-[chama request_handoff com reason="Minha internet está caindo toda hora desde ontem"]
+### EXEMPLO - Motivo INFERIDO (correto):
+Cliente: "Quero contratar um plano"
+IA: "Claro! Posso saber seu nome?"
+Cliente: "João"
+IA: "João, vou transferir para vendas. Um momento."
+[chama request_handoff com reason="interesse em contratação"]
 
-### EXEMPLO ERRADO (NÃO FAÇA):
-Cliente: "Quero falar com suporte"
-IA: "Vou transferir você para o suporte..." ← ERRADO! Não coletou nome nem motivo!
+### EXEMPLO - Motivo PERGUNTADO (correto):
+Cliente: "Quero falar com alguém"
+IA: "Posso saber seu nome?"
+Cliente: "Maria"
+IA: "Maria, e sobre qual assunto você precisa de ajuda?"
+Cliente: "Tenho um problema técnico"
+IA: "Entendi, Maria. Vou transferir para o suporte. Um momento."
+[chama request_handoff com reason="problema técnico"]
 """
         
         if not self.config.guardrails_enabled:
