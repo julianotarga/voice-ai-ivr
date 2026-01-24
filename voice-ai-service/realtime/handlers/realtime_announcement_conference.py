@@ -547,8 +547,12 @@ class ConferenceAnnouncementSession:
                             # Ref: Context7 - realtime-vad best practices
                             "interrupt_response": True
                         },
-                        # NOTA: transcription é habilitada automaticamente pela API GA
-                        # NÃO configurar explicitamente - pode quebrar a funcionalidade
+                        # Transcrição do input - OBRIGATÓRIO para receber transcripts do atendente
+                        # Ref: Context7 - session.update audio transcription
+                        # NOTA: NÃO incluir "language" - deixar auto-detectar
+                        "transcription": {
+                            "model": "gpt-4o-transcribe"
+                        },
                     },
                     "output": {
                         "format": {
@@ -1091,7 +1095,7 @@ class ConferenceAnnouncementSession:
             "conversation.item.input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.failed",
             "conversation.item.input_audio_transcription.delta",
-            "conversation.item.added", "conversation.item.created",
+            "conversation.item.added", "conversation.item.created", "conversation.item.done",
             # VAD e input buffer
             "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
             "input_audio_buffer.committed", "input_audio_buffer.cleared",
