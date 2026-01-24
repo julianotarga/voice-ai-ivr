@@ -190,6 +190,14 @@ class RealtimeServer:
         """Inicia o servidor WebSocket."""
         self._running = True
         
+        # Pré-inicializar pool do banco para evitar delay na primeira chamada
+        try:
+            from services.database import db
+            pool = await db.get_pool()
+            logger.info(f"Database pool pre-initialized (min={pool.get_min_size()}, max={pool.get_max_size()})")
+        except Exception as e:
+            logger.warning(f"Failed to pre-initialize database pool: {e}")
+        
         self._server = await serve(
             self._handle_connection,
             self.host,
