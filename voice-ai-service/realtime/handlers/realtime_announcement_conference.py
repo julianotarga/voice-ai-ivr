@@ -542,7 +542,10 @@ class ConferenceAnnouncementSession:
                             # 500ms é o padrão, permite respostas mais rápidas
                             "silence_duration_ms": 500,
                             # create_response: gerar resposta automaticamente ao fim do turno
-                            "create_response": True
+                            "create_response": True,
+                            # interrupt_response: permitir barge-in (atendente interrompe IA)
+                            # Ref: Context7 - realtime-vad best practices
+                            "interrupt_response": True
                         },
                         # NOTA: transcription é habilitada automaticamente pela API GA
                         # NÃO configurar explicitamente - pode quebrar a funcionalidade
@@ -1068,19 +1071,32 @@ class ConferenceAnnouncementSession:
         etype = event.get("type", "")
         
         # Lista de eventos conhecidos (para logging de eventos desconhecidos)
+        # Ref: Context7 /websites/platform_openai - realtime server events
         KNOWN_EVENTS = {
+            # Session lifecycle
+            "session.created", "session.updated",
+            # Response lifecycle
             "response.created", "response.done",
+            "response.output_item.added", "response.output_item.done",
+            "response.content_part.added", "response.content_part.done",
+            # Audio output (formatos antigo e novo)
             "response.audio.delta", "response.output_audio.delta",
             "response.audio.done", "response.output_audio.done",
+            # Transcrição do assistente
             "response.audio_transcript.delta", "response.output_audio_transcript.delta",
             "response.audio_transcript.done", "response.output_audio_transcript.done",
+            # Function calls
             "response.function_call_arguments.delta", "response.function_call_arguments.done",
+            # Transcrição do usuário (STT)
             "conversation.item.input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.failed",
-            "conversation.item.added",
+            "conversation.item.input_audio_transcription.delta",
+            "conversation.item.added", "conversation.item.created",
+            # VAD e input buffer
             "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped",
-            "input_audio_buffer.committed",
-            "session.created", "session.updated",
+            "input_audio_buffer.committed", "input_audio_buffer.cleared",
+            "input_audio_buffer.timeout_triggered",
+            # Outros
             "error", "rate_limits.updated",
         }
         
@@ -1090,16 +1106,21 @@ class ConferenceAnnouncementSession:
         
         # VAD: Detectou início de fala do atendente
         if etype == "input_audio_buffer.speech_started":
-            logger.info("🎙️ [VAD] Atendente começou a falar")
+            item_id = event.get("item_id", "")
+            audio_start = event.get("audio_start_ms", 0)
+            logger.info(f"🎙️ [VAD] Atendente começou a falar (item={item_id}, audio_start={audio_start}ms)")
         
         # VAD: Detectou fim de fala do atendente
         if etype == "input_audio_buffer.speech_stopped":
-            logger.info("🎙️ [VAD] Atendente parou de falar")
+            item_id = event.get("item_id", "")
+            audio_end = event.get("audio_end_ms", 0)
+            logger.info(f"🎙️ [VAD] Atendente parou de falar (item={item_id}, audio_end={audio_end}ms)")
         
         # Transcrição falhou
         if etype == "conversation.item.input_audio_transcription.failed":
             error = event.get("error", {})
-            logger.error(f"❌ [TRANSCRIPTION_FAILED] {error}")
+            item_id = event.get("item_id", "")
+            logger.error(f"❌ [TRANSCRIPTION_FAILED] item={item_id}, error={error}")
         
         if etype == "response.created":
             self._response_active = True
