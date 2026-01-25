@@ -3904,7 +3904,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         if self._ending_call:
             # Modo 1: _ending_call já setado (ex: end_call)
             # Esperar o flag _farewell_response_started ser setado pelo handler de áudio
-            await self._wait_for_farewell_response(max_wait=5.0)
+            # 8s de timeout para dar tempo ao OpenAI processar e gerar áudio
+            await self._wait_for_farewell_response(max_wait=8.0)
         else:
             # Modo 2: _ending_call ainda não setado (ex: take_message)
             # Esperar o áudio da resposta de confirmação COMEÇAR a chegar
@@ -4491,15 +4492,23 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         """
         Garante despedida antes de end_call quando o LLM não falou.
         
+        IMPORTANTE: Esta função é chamada quando já determinamos que
+        a IA NÃO disse uma despedida adequada. Devemos SEMPRE enviar,
+        mesmo que haja uma resposta "ativa" (que pode ser só function call).
+        
         Returns:
             True se enviou despedida automaticamente.
         """
         if not self._provider:
+            logger.warning(
+                "🎙️ [FAREWELL] Provider não disponível, não foi possível enviar despedida",
+                extra={"call_uuid": self.call_uuid}
+            )
             return False
         
-        # Se a IA já está falando, assumir que a despedida já foi dita.
-        if self._assistant_speaking or self._response_active:
-            return False
+        # NOTA: Removida verificação de _assistant_speaking/_response_active
+        # Porque a resposta "ativa" pode ser apenas function call sem áudio.
+        # O caller já verificou que não houve despedida adequada.
         
         farewell_message = (self.config.farewell or "").strip()
         
@@ -4515,17 +4524,37 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         
         try:
             logger.info(
-                f"🎙️ [FAREWELL] Falando despedida automática: '{farewell_message}'",
+                f"🎙️ [FAREWELL] Enviando despedida automática: '{farewell_message}'",
                 extra={"call_uuid": self.call_uuid}
             )
+            
+            # Cancelar qualquer resposta em andamento que possa estar bloqueando
+            if hasattr(self._provider, 'cancel_response'):
+                try:
+                    await self._provider.cancel_response()
+                    logger.debug("🎙️ [FAREWELL] Resposta anterior cancelada")
+                except Exception:
+                    pass  # Ignorar erro de cancelamento
+            
+            # Pequena pausa para garantir que o cancelamento foi processado
+            await asyncio.sleep(0.1)
+            
             await self._send_text_to_provider(
-                f"[INSTRUÇÃO] Fale EXATAMENTE esta despedida: \"{farewell_message}\" "
-                "Não adicione nada antes ou depois. Apenas esta frase.",
+                f"[INSTRUÇÃO URGENTE] Diga EXATAMENTE esta frase de despedida agora: "
+                f"\"{farewell_message}\" - Fale esta frase imediatamente, sem adicionar nada.",
                 request_response=True
+            )
+            
+            logger.info(
+                "🎙️ [FAREWELL] Despedida enviada ao provider com sucesso",
+                extra={"call_uuid": self.call_uuid}
             )
             return True
         except Exception as e:
-            logger.debug(f"Could not send farewell message: {e}")
+            logger.error(
+                f"🎙️ [FAREWELL] ERRO ao enviar despedida: {e}",
+                extra={"call_uuid": self.call_uuid}
+            )
             return False
 
     def _get_last_assistant_transcript(self) -> Optional[str]:
