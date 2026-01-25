@@ -128,13 +128,17 @@ class AudioBuffer:
     
     def __init__(
         self, 
-        warmup_ms: int = 100,  # Reduzido para iniciar playback mais rápido
+        warmup_ms: int = 400,  # 400ms para evitar stuttering com jitter de rede
         sample_rate: int = 16000,
         bytes_per_sample: int = 2  # PCM16
     ):
         """
         Args:
-            warmup_ms: Tempo de warmup em milissegundos (default: 100ms)
+            warmup_ms: Tempo de warmup em milissegundos (default: 400ms)
+                       Valores recomendados:
+                       - 200ms: mínimo para conexões estáveis
+                       - 400ms: recomendado para produção
+                       - 600ms: para conexões instáveis
             sample_rate: Taxa de amostragem em Hz
             bytes_per_sample: Bytes por sample (2 para PCM16)
         """
@@ -152,7 +156,8 @@ class AudioBuffer:
         self._warmup_complete = False
         self._total_buffered = 0
         
-        logger.debug(f"AudioBuffer: warmup={warmup_ms}ms, {self.warmup_bytes} bytes")
+        # Log INFO para facilitar debug
+        logger.info(f"🔊 [AUDIO_BUFFER] Criado: warmup={warmup_ms}ms, buffer_size={self.warmup_bytes}B, rate={sample_rate}Hz")
     
     def add(self, audio_bytes: bytes) -> bytes:
         """
@@ -176,7 +181,12 @@ class AudioBuffer:
                 self._warmup_complete = True
                 result = bytes(self._buffer)
                 self._buffer.clear()
-                logger.debug(f"AudioBuffer: warmup complete, flushing {len(result)} bytes")
+                # Calcular duração do buffer em ms
+                audio_duration_ms = len(result) / (self.sample_rate * self.bytes_per_sample / 1000)
+                logger.info(
+                    f"🔊 [AUDIO_BUFFER] Warmup completo: flushing {len(result)}B "
+                    f"({audio_duration_ms:.0f}ms de áudio bufferizado)"
+                )
                 return result
             
             return b""  # Ainda em warmup
@@ -253,7 +263,7 @@ class ResamplerPair:
         freeswitch_rate: int = 16000, 
         provider_input_rate: int = 24000,
         provider_output_rate: int = None,  # Se None, usa provider_input_rate
-        output_warmup_ms: int = 100  # Reduzido para iniciar playback mais rápido
+        output_warmup_ms: int = 400  # 400ms para evitar stuttering
     ):
         # Se output rate não especificado, assume igual ao input
         if provider_output_rate is None:

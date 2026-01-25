@@ -447,7 +447,7 @@ class RealtimeSessionConfig:
     # Audio Configuration (per-secretary)
     # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
     audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
-    audio_warmup_ms: int = 200  # buffer de warmup em ms (aumentado para evitar stuttering)
+    audio_warmup_ms: int = 400  # buffer de warmup em ms (400ms evita stuttering)
     audio_adaptive_warmup: bool = True  # ajuste automático de warmup
     jitter_buffer_min: int = 100  # FreeSWITCH jitter buffer min (ms)
     jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
@@ -1509,8 +1509,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 f"Resampler setup: FS={fs_rate}Hz <-> Provider(in={provider_in}Hz, out={provider_out}Hz)"
             )
             
-            # Usar warmup do banco de dados (default 200ms) para evitar engasgos
-            warmup_ms = getattr(self.config, 'audio_warmup_ms', 200)
+            # Usar warmup do banco de dados (default 400ms) para evitar engasgos
+            warmup_ms = getattr(self.config, 'audio_warmup_ms', 400)
             self._resampler = ResamplerPair(
                 freeswitch_rate=fs_rate,
                 provider_input_rate=provider_in,
@@ -5099,8 +5099,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                # Warmup de 200ms evita engasgos no início da fala
-                                announcement_warmup_ms=200,
+                                # Warmup de 400ms evita engasgos no início da fala
+                                announcement_warmup_ms=400,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -5133,8 +5133,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                # Warmup de 200ms evita engasgos no início da fala
-                                announcement_warmup_ms=200,
+                                # Warmup de 400ms evita engasgos no início da fala
+                                announcement_warmup_ms=400,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -5360,9 +5360,9 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             self._input_audio_buffer.clear()
             if self._resampler:
                 try:
-                    # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
+                    # IMPORTANTE: Usar warmup estendido (600ms) após resume de transferência
                     # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
-                    self._resampler.reset_output_buffer(extended_warmup_ms=400)
+                    self._resampler.reset_output_buffer(extended_warmup_ms=600)
                     # Preservar o warmup para o próximo RESPONSE_STARTED não desfazer
                     self._preserve_extended_warmup = True
                 except Exception:

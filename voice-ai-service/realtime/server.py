@@ -719,7 +719,7 @@ class RealtimeServer:
                     s.omniplay_company_id,
                     -- Audio Configuration fields
                     COALESCE(s.audio_warmup_chunks, 15) as audio_warmup_chunks,
-                    COALESCE(s.audio_warmup_ms, 200) as audio_warmup_ms,
+                    COALESCE(s.audio_warmup_ms, 400) as audio_warmup_ms,
                     COALESCE(s.audio_adaptive_warmup, true) as audio_adaptive_warmup,
                     COALESCE(s.jitter_buffer_min, 100) as jitter_buffer_min,
                     COALESCE(s.jitter_buffer_max, 300) as jitter_buffer_max,
@@ -1076,7 +1076,7 @@ class RealtimeServer:
         
         # Audio Configuration - extrair valores do banco ANTES de criar o config
         db_warmup_chunks = int(row.get("audio_warmup_chunks") or 15)
-        db_warmup_ms = int(row.get("audio_warmup_ms") or 200)
+        db_warmup_ms = int(row.get("audio_warmup_ms") or 400)
         db_adaptive_warmup = _parse_bool(row.get("audio_adaptive_warmup"), default=True)
         db_jitter_min = int(row.get("jitter_buffer_min") or 100)
         db_jitter_max = int(row.get("jitter_buffer_max") or 300)
