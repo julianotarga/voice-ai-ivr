@@ -922,6 +922,58 @@ class ConferenceAnnouncementSession:
         # Log completo da mensagem (importante para debug)
         logger.info(f"Initial message sent: {self.initial_message}")
     
+    async def _send_accept_confirmation(self) -> None:
+        """
+        Envia confirmação verbal quando o atendente ACEITA a chamada.
+        
+        Faz a IA dizer algo curto como "Ok!" antes de conectar,
+        tornando a interação mais natural (ao invés de só o beep).
+        """
+        if not self._ws or self._is_ws_closed():
+            logger.debug("Cannot send accept confirmation - WebSocket closed")
+            return
+        
+        try:
+            # Mensagem curta e natural de confirmação
+            accept_text = "Ok!"
+            
+            logger.info("✅ [ACCEPT] Enviando confirmação verbal ao atendente...")
+            
+            # Cancelar qualquer resposta em andamento
+            try:
+                if self._response_active or self._response_audio_generating:
+                    await self._ws.send(json.dumps({"type": "response.cancel"}))
+                    await asyncio.sleep(0.2)
+            except Exception:
+                pass
+            
+            # Criar mensagem com instrução
+            await self._ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": f"[SISTEMA] O atendente confirmou. Diga APENAS: '{accept_text}'"
+                    }]
+                }
+            }))
+            
+            # Solicitar resposta
+            await self._ws.send(json.dumps({
+                "type": "response.create",
+                "response": {
+                    "modalities": ["audio"],
+                    "instructions": f"Diga exatamente '{accept_text}' de forma curta e amigável."
+                }
+            }))
+            
+            logger.info(f"✅ [ACCEPT] Confirmação enviada: '{accept_text}'")
+            
+        except Exception as e:
+            logger.debug(f"Could not send accept confirmation: {e}")
+    
     async def _send_courtesy_response(self) -> None:
         """
         Envia resposta de cortesia quando o atendente recusa a chamada.
@@ -1396,8 +1448,12 @@ class ConferenceAnnouncementSession:
                     else:
                         # Limite de retentativas atingido - aceitar com warning
                         logger.warning(f"⚠️ Safety check: limite de re-tentativas atingido, aceitando sem confirmação explícita")
+                        await self._send_accept_confirmation()
                         self._accepted = True
                 else:
+                    # Enviar confirmação verbal ANTES de marcar como aceito
+                    # Isso permite a IA dizer "Ok!" antes de conectar
+                    await self._send_accept_confirmation()
                     self._accepted = True
                     logger.info(f"✅ Function call: ACCEPTED (confirmation='{confirmation_matched}' in '{combined_clean}')")
                 
