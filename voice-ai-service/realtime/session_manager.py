@@ -45,6 +45,7 @@ class RealtimeSessionManager:
         self,
         config: RealtimeSessionConfig,
         on_audio_output: Optional[Callable] = None,
+        on_audio_output_pcmu: Optional[Callable] = None,  # NETPLAY v2.7: PCMU passthrough
         on_transcript: Optional[Callable] = None,
         on_function_call: Optional[Callable] = None,
         on_barge_in: Optional[Callable] = None,
@@ -64,6 +65,7 @@ class RealtimeSessionManager:
             session = RealtimeSession(
                 config=config,
                 on_audio_output=on_audio_output,
+                on_audio_output_pcmu=on_audio_output_pcmu,  # NETPLAY v2.7: PCMU passthrough
                 on_transcript=on_transcript,
                 on_function_call=on_function_call,
                 on_session_end=lambda reason: self._on_session_end(config.call_uuid, reason),

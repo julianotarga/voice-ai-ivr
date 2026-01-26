@@ -299,13 +299,16 @@ class RealtimeServer:
                 "secretary_uuid": secretary_uuid,
             })
             session = existing
-            send_audio, clear_playback, flush_audio, cleanup_playback = self._build_audio_handlers(websocket, call_uuid)
+            send_audio, send_audio_pcmu, clear_playback, flush_audio, cleanup_playback, pcmu_passthrough = self._build_audio_handlers(websocket, call_uuid)
             session.update_audio_handlers(
                 on_audio_output=send_audio,
+                on_audio_output_pcmu=send_audio_pcmu,
                 on_barge_in=clear_playback,
                 on_transfer=clear_playback,
                 on_audio_done=flush_audio,
             )
+            # Atualizar flag de passthrough na sessão
+            session._pcmu_passthrough_enabled = pcmu_passthrough
         else:
             # Criar sessão imediatamente (mod_audio_stream não envia metadata)
             # caller_id agora é recebido via URL
@@ -500,6 +503,24 @@ class RealtimeServer:
             except Exception:
                 pass
 
+        async def _send_streamaudio_pcmu_chunk(chunk_bytes: bytes) -> None:
+            """NETPLAY v2.7: Envia PCMU diretamente sem conversão L16→PCMU.
+            
+            Elimina a cadeia de conversões G.711→L16→G.711 que causa robotização.
+            mod_audio_stream detecta 'streamAudioPCMU' e escreve direto no canal.
+            """
+            payload = json.dumps({
+                "type": "streamAudioPCMU",
+                "data": {
+                    "audioData": base64.b64encode(chunk_bytes).decode("utf-8"),
+                }
+            })
+            await websocket.send(payload)
+            try:
+                _metrics.record_audio(call_uuid, "out", len(chunk_bytes))
+            except Exception:
+                pass
+
         async def _send_stop_audio() -> None:
             try:
                 await websocket.send(json.dumps({"type": "stopAudio"}))
@@ -635,48 +656,197 @@ class RealtimeServer:
                     extra={"call_uuid": call_uuid},
                 )
 
+        # ========================================
+        # NETPLAY v2.7: PCMU Passthrough
+        # ========================================
+        # Sender separado para PCMU direto (sem conversão L16→PCMU)
+        # Elimina a cadeia G.711→L16→G.711 que causa robotização
+        pcmu_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
+        pcmu_sender_task: Optional[asyncio.Task] = None
+        pcmu_pending = bytearray()
+        pcmu_passthrough_enabled = os.getenv("FS_PCMU_PASSTHROUGH", "true").lower() in ("1", "true", "yes")
+        
+        async def _sender_loop_pcmu() -> None:
+            """Sender loop para PCMU passthrough - envia direto sem conversão."""
+            nonlocal playback_mode
+            try:
+                chunks_sent = 0
+                batch_buffer = bytearray()
+                warmup_complete = False
+                last_send_time = 0.0
+                
+                # PCMU: 8 bytes/ms (8kHz * 1 byte/sample)
+                # Warmup similar ao L16 para evitar stuttering inicial
+                # 200ms = 1600 bytes @ 8kHz PCMU
+                warmup_bytes = 1600   # 200ms @ 8kHz PCMU
+                batch_bytes = 1600    # 200ms @ 8kHz PCMU
+                batch_duration_ms = 200.0
+                
+                while True:
+                    item = await pcmu_out_queue.get()
+                    if item is None:
+                        if batch_buffer:
+                            await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
+                        return
+                    
+                    if isinstance(item[0], str) and item[0] == "STOP":
+                        batch_buffer.clear()
+                        warmup_complete = False
+                        last_send_time = 0.0
+                        await _send_stop_audio()
+                        continue
+                    
+                    if isinstance(item[0], str) and item[0] == "FLUSH":
+                        if batch_buffer:
+                            await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
+                            batch_buffer.clear()
+                        continue
+                    
+                    generation, chunk = item
+                    if generation != playback_generation:
+                        continue
+                    
+                    batch_buffer.extend(chunk)
+                    
+                    if not warmup_complete:
+                        if len(batch_buffer) >= warmup_bytes:
+                            warmup_complete = True
+                            last_send_time = time.time()
+                            logger.info(
+                                f"PCMU passthrough warmup complete ({len(batch_buffer)} bytes)",
+                                extra={"call_uuid": call_uuid}
+                            )
+                        else:
+                            continue
+                    
+                    if len(batch_buffer) >= batch_bytes:
+                        now = time.time()
+                        elapsed_ms = (now - last_send_time) * 1000
+                        if elapsed_ms < batch_duration_ms:
+                            wait_ms = batch_duration_ms - elapsed_ms
+                            await asyncio.sleep(wait_ms / 1000.0)
+                        
+                        await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
+                        last_send_time = time.time()
+                        chunks_sent += 1
+                        batch_buffer.clear()
+                        
+                        if chunks_sent == 1:
+                            logger.info("PCMU passthrough playback started", extra={"call_uuid": call_uuid})
+            
+            except asyncio.CancelledError:
+                logger.debug("PCMU sender loop cancelled", extra={"call_uuid": call_uuid})
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("WebSocket closed during PCMU playback", extra={"call_uuid": call_uuid})
+            except Exception as e:
+                logger.error(
+                    f"Error in PCMU passthrough sender loop: {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
+        
+        async def send_audio_pcmu(audio_bytes: bytes):
+            """NETPLAY v2.7: Envia PCMU diretamente sem conversão.
+            
+            Usado quando OpenAI retorna G.711 e queremos passthrough para FreeSWITCH.
+            """
+            nonlocal pcmu_sender_task
+            try:
+                if not audio_bytes:
+                    return
+                
+                if pcmu_sender_task is None:
+                    pcmu_sender_task = asyncio.create_task(_sender_loop_pcmu())
+                    logger.info(
+                        "PCMU passthrough sender started",
+                        extra={"call_uuid": call_uuid}
+                    )
+                
+                pcmu_pending.extend(audio_bytes)
+                
+                # PCMU: 160 bytes = 20ms @ 8kHz
+                pcmu_chunk_size = 160
+                while len(pcmu_pending) >= pcmu_chunk_size:
+                    chunk = bytes(pcmu_pending[:pcmu_chunk_size])
+                    del pcmu_pending[:pcmu_chunk_size]
+                    await pcmu_out_queue.put((playback_generation, chunk))
+            
+            except Exception as e:
+                logger.error(
+                    f"Error queueing PCMU audio: {e}",
+                    exc_info=True,
+                    extra={"call_uuid": call_uuid},
+                )
+
         async def clear_playback(_: str) -> None:
             nonlocal playback_generation
             async with playback_lock:
                 playback_generation += 1
                 pending.clear()
+                pcmu_pending.clear()
                 try:
                     while True:
                         audio_out_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
+                try:
+                    while True:
+                        pcmu_out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
                 if sender_task is not None:
                     await audio_out_queue.put(("STOP", playback_generation))
+                if pcmu_sender_task is not None:
+                    await pcmu_out_queue.put(("STOP", playback_generation))
 
         async def flush_audio():
             await audio_out_queue.put(("FLUSH", playback_generation))
+            if pcmu_sender_task is not None:
+                await pcmu_out_queue.put(("FLUSH", playback_generation))
 
         async def cleanup_playback() -> None:
-            nonlocal sender_task, cleanup_started
+            nonlocal sender_task, pcmu_sender_task, cleanup_started
             if cleanup_started:
                 return
             cleanup_started = True
 
-            if sender_task is None:
-                return
+            # Cleanup L16 sender
+            if sender_task is not None:
+                try:
+                    await audio_out_queue.put(None)
+                except Exception:
+                    pass
 
-            try:
-                await audio_out_queue.put(None)
-            except Exception:
-                pass
+                try:
+                    await asyncio.wait_for(sender_task, timeout=1.0)
+                except asyncio.TimeoutError:
+                    sender_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await sender_task
+                except Exception:
+                    pass
+                finally:
+                    sender_task = None
+            
+            # Cleanup PCMU sender
+            if pcmu_sender_task is not None:
+                try:
+                    await pcmu_out_queue.put(None)
+                except Exception:
+                    pass
 
-            try:
-                await asyncio.wait_for(sender_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                sender_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await sender_task
-            except Exception:
-                pass
-            finally:
-                sender_task = None
+                try:
+                    await asyncio.wait_for(pcmu_sender_task, timeout=1.0)
+                except asyncio.TimeoutError:
+                    pcmu_sender_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pcmu_sender_task
+                except Exception:
+                    pass
+                finally:
+                    pcmu_sender_task = None
 
-        return send_audio, clear_playback, flush_audio, cleanup_playback
+        return send_audio, send_audio_pcmu, clear_playback, flush_audio, cleanup_playback, pcmu_passthrough_enabled
     
     async def _create_session_from_db(
         self,
@@ -1212,17 +1382,21 @@ class RealtimeServer:
         })
         
         # Handlers de áudio para este WebSocket
-        send_audio, clear_playback, flush_audio, cleanup_playback = self._build_audio_handlers(websocket, call_uuid)
+        send_audio, send_audio_pcmu, clear_playback, flush_audio, cleanup_playback, pcmu_passthrough = self._build_audio_handlers(websocket, call_uuid)
         
         # Criar sessão via manager
         manager = get_session_manager()
         session = await manager.create_session(
             config=config,
             on_audio_output=send_audio,
+            on_audio_output_pcmu=send_audio_pcmu,
             on_barge_in=clear_playback,
             on_transfer=clear_playback,
             on_audio_done=flush_audio,
         )
+        
+        # Marcar flag de passthrough na sessão
+        session._pcmu_passthrough_enabled = pcmu_passthrough
         
         return session, cleanup_playback
 

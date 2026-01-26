@@ -37,6 +37,7 @@ struct private_data {
     int cleanup_started:1;
     int codec_initialized:1;    /* Flag indicating if G.711 codec is initialized */
     int playback_active:1;      /* NETPLAY: Flag indicating playback is active */
+    int playback_is_pcmu:1;     /* NETPLAY v2.7: Buffer contains PCMU, skip L16→PCMU conversion */
     char initialMetadata[8192];
     switch_buffer_t *sbuffer;
     switch_buffer_t *playback_buffer;  /* NETPLAY: Buffer for streaming playback */

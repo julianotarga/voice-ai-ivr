@@ -541,6 +541,7 @@ class RealtimeSession:
         self,
         config: RealtimeSessionConfig,
         on_audio_output: Optional[Callable[[bytes], Any]] = None,
+        on_audio_output_pcmu: Optional[Callable[[bytes], Any]] = None,  # NETPLAY v2.7: PCMU passthrough
         on_transcript: Optional[Callable[[str, str], Any]] = None,
         on_function_call: Optional[Callable[[str, Dict], Any]] = None,
         on_session_end: Optional[Callable[[str], Any]] = None,
@@ -550,12 +551,16 @@ class RealtimeSession:
     ):
         self.config = config
         self._on_audio_output = on_audio_output
+        self._on_audio_output_pcmu = on_audio_output_pcmu  # NETPLAY v2.7: Callback para PCMU passthrough
         self._on_transcript = on_transcript
         self._on_function_call = on_function_call
         self._on_session_end = on_session_end
         self._on_barge_in = on_barge_in
         self._on_transfer = on_transfer
         self._on_audio_done = on_audio_done
+        
+        # NETPLAY v2.7: Flag para PCMU passthrough (setado pelo server.py)
+        self._pcmu_passthrough_enabled = False
         
         self._provider: Optional[BaseRealtimeProvider] = None
         self._resampler: Optional[ResamplerPair] = None
@@ -775,6 +780,7 @@ class RealtimeSession:
     def update_audio_handlers(
         self,
         on_audio_output: Optional[Callable] = None,
+        on_audio_output_pcmu: Optional[Callable] = None,  # NETPLAY v2.7: PCMU passthrough
         on_barge_in: Optional[Callable] = None,
         on_transfer: Optional[Callable] = None,
         on_audio_done: Optional[Callable] = None,
@@ -785,6 +791,8 @@ class RealtimeSession:
         """
         if on_audio_output:
             self._on_audio_output = on_audio_output
+        if on_audio_output_pcmu:
+            self._on_audio_output_pcmu = on_audio_output_pcmu
         if on_barge_in:
             self._on_barge_in = on_barge_in
         if on_transfer:
@@ -1799,14 +1807,53 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         original_len = len(audio_bytes)
         
         # ========================================
-        # DECODIFICAR G.711 OUTPUT (se configurado)
+        # NETPLAY v2.7: PCMU PASSTHROUGH
         # ========================================
-        # Quando o OpenAI está configurado para retornar G.711, precisamos
-        # decodificar para L16 PCM antes de enviar ao mod_audio_stream
+        # Quando habilitado, envia PCMU diretamente para mod_audio_stream
+        # sem conversão G.711→L16→G.711, eliminando robotização
         # ========================================
         is_g711_output = self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw", 
                                                         "pcma", "g711a", "alaw", "g711_alaw")
         
+        # Verificar se passthrough está habilitado e temos o callback
+        use_pcmu_passthrough = (
+            is_g711_output and 
+            getattr(self, '_pcmu_passthrough_enabled', False) and 
+            self._on_audio_output_pcmu is not None and
+            # Apenas μ-law por enquanto (mais comum)
+            self.config.audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw")
+        )
+        
+        if use_pcmu_passthrough:
+            # ========================================
+            # PASSTHROUGH: Enviar PCMU direto (sem conversões!)
+            # ========================================
+            if self._output_frame_count == 1:
+                logger.info(f"🔊 [OUTPUT] PCMU PASSTHROUGH: {original_len}B direto para FreeSWITCH (ZERO conversões)", extra={
+                    "call_uuid": self.call_uuid,
+                })
+            
+            # Não decodificar, não fazer resample - enviar direto!
+            if self._transfer_in_progress:
+                logger.debug("Audio muted - transfer in progress")
+                return
+            
+            self._pending_audio_bytes += len(audio_bytes)
+            
+            # Atualizar HeartbeatMonitor
+            self.heartbeat.audio_sent(len(audio_bytes))
+            self.heartbeat.update_buffer(self._pending_audio_bytes)
+            
+            # Enviar via callback PCMU (streamAudioPCMU)
+            await self._on_audio_output_pcmu(audio_bytes)
+            return
+        
+        # ========================================
+        # MODO LEGADO: DECODIFICAR G.711 OUTPUT
+        # ========================================
+        # Quando passthrough não está habilitado, precisamos
+        # decodificar para L16 PCM antes de enviar ao mod_audio_stream
+        # ========================================
         if is_g711_output:
             # Detectar se realmente é G.711 baseado no tamanho
             # G.711 @ 8kHz: 1 byte por sample (160B = 20ms)
@@ -1821,7 +1868,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             expected_l16_size = original_len * bytes_per_sample_l16 // bytes_per_sample_g711
             
             if self._output_frame_count == 1:
-                logger.info(f"🔊 [OUTPUT] G.711 configurado, decodificando: {original_len}B → ~{expected_l16_size}B", extra={
+                logger.info(f"🔊 [OUTPUT] G.711 LEGACY: decodificando {original_len}B → ~{expected_l16_size}B (passthrough DESABILITADO)", extra={
                     "call_uuid": self.call_uuid,
                 })
             

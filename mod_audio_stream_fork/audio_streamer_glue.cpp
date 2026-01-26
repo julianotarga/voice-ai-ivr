@@ -294,6 +294,18 @@ public:
                     }
 
                     switch_mutex_lock(tech_pvt->playback_mutex);
+                    
+                    /* NETPLAY v2.7: Se estava em modo PCMU, resetar para L16 e limpar buffer
+                     * para evitar corrupção de dados misturados */
+                    if (tech_pvt->playback_is_pcmu) {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                            "(%s) [MODE-SWITCH] PCMU→L16, clearing buffer to avoid corruption\n",
+                            m_sessionId.c_str());
+                        switch_buffer_zero(tech_pvt->playback_buffer);
+                        tech_pvt->playback_is_pcmu = 0;
+                        tech_pvt->playback_active = 0;  /* Force warmup again */
+                    }
+                    
                     if (tech_pvt->first_audio_ts == 0) {
                         tech_pvt->first_audio_ts = switch_micro_time_now();
                     }
@@ -358,6 +370,111 @@ public:
             } else {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, 
                     "(%s) streamAudio - missing data or buffer\n", m_sessionId.c_str());
+            }
+        }
+        // NETPLAY v2.7: streamAudioPCMU - write PCMU directly without L16→PCMU conversion
+        // This eliminates the G.711→L16→G.711 conversion chain that causes audio artifacts
+        else if(jsType && strcmp(jsType, "streamAudioPCMU") == 0) {
+            cJSON* jsonData = cJSON_GetObjectItem(json, "data");
+            if(jsonData && tech_pvt && tech_pvt->playback_buffer) {
+                cJSON* jsonAudio = cJSON_DetachItemFromObject(jsonData, "audioData");
+                
+                if (jsonAudio && jsonAudio->valuestring) {
+                    std::string rawAudio;
+                    try {
+                        rawAudio = base64_decode(jsonAudio->valuestring);
+                    } catch (const std::exception& e) {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, 
+                            "(%s) streamAudioPCMU base64 decode error: %s\n", m_sessionId.c_str(), e.what());
+                        cJSON_Delete(jsonAudio); 
+                        cJSON_Delete(json);
+                        return status;
+                    }
+                    
+                    if (rawAudio.size() < 1) {
+                        cJSON_Delete(jsonAudio);
+                        cJSON_Delete(json);
+                        return status;
+                    }
+
+                    switch_mutex_lock(tech_pvt->playback_mutex);
+                    
+                    /* NETPLAY v2.7: Se estava em modo L16, limpar buffer antes de mudar para PCMU
+                     * para evitar corrupção de dados misturados */
+                    if (!tech_pvt->playback_is_pcmu && switch_buffer_inuse(tech_pvt->playback_buffer) > 0) {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                            "(%s) [MODE-SWITCH] L16→PCMU, clearing buffer to avoid corruption\n",
+                            m_sessionId.c_str());
+                        switch_buffer_zero(tech_pvt->playback_buffer);
+                        tech_pvt->playback_active = 0;  /* Force warmup again */
+                    }
+                    
+                    /* Mark buffer as containing PCMU (not L16) - enables passthrough mode */
+                    tech_pvt->playback_is_pcmu = 1;
+                    
+                    if (tech_pvt->first_audio_ts == 0) {
+                        tech_pvt->first_audio_ts = switch_micro_time_now();
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+                            "(%s) [PCMU-PASSTHROUGH] First chunk received, mode=PCMU-passthrough\n", m_sessionId.c_str());
+                    }
+                    
+                    /* Check for buffer overrun - if near full, discard oldest data */
+                    /* PCMU uses half the buffer space of L16 (1 byte vs 2 bytes per sample) */
+                    const switch_size_t buffer_capacity = tech_pvt->playback_buflen ? tech_pvt->playback_buflen : 16000;
+                    const switch_size_t high_water_mark = buffer_capacity > rawAudio.size()
+                        ? (buffer_capacity - rawAudio.size())
+                        : 0;
+                    switch_size_t current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
+                    
+                    if (rawAudio.size() > buffer_capacity) {
+                        switch_buffer_zero(tech_pvt->playback_buffer);
+                        const size_t offset = rawAudio.size() - buffer_capacity;
+                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data() + offset, buffer_capacity);
+                        tech_pvt->buffer_overruns++;
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                            "(%s) [PCMU-BUFFER] overrun: payload %zuB > buffer %zuB, truncating\n",
+                            m_sessionId.c_str(), rawAudio.size(), buffer_capacity);
+                    } else if (current_size > high_water_mark) {
+                        /* Buffer nearly full - discard oldest data to make room */
+                        switch_size_t to_discard = current_size - high_water_mark + rawAudio.size();
+                        char discard_buf[1024];
+                        while (to_discard > 0) {
+                            switch_size_t chunk = (to_discard > sizeof(discard_buf)) ? sizeof(discard_buf) : to_discard;
+                            switch_buffer_read(tech_pvt->playback_buffer, discard_buf, chunk);
+                            to_discard -= chunk;
+                        }
+                        tech_pvt->buffer_overruns++;
+                    }
+                    
+                    /* Write PCMU audio directly to buffer */
+                    if (rawAudio.size() <= buffer_capacity) {
+                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
+                    }
+                    
+                    switch_size_t buffered = switch_buffer_inuse(tech_pvt->playback_buffer);
+                    if (buffered > tech_pvt->buffer_max_used) {
+                        tech_pvt->buffer_max_used = buffered;
+                    }
+                    
+                    /* Log periodicamente (baseado em rtp_packets para evitar variável estática) */
+                    int should_log = (tech_pvt->rtp_packets % 50 == 1);
+                    switch_mutex_unlock(tech_pvt->playback_mutex);
+                    
+                    if (should_log) {
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                            get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                            "(%s) [PCMU-BUFFER] +%zuB (total=%zuB, active=%d, mode=passthrough)\n",
+                            m_sessionId.c_str(), rawAudio.size(), buffered, tech_pvt->playback_active);
+                    }
+                    
+                    status = SWITCH_TRUE;
+                }
+                
+                if (jsonAudio)
+                    cJSON_Delete(jsonAudio);
+            } else {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, 
+                    "(%s) streamAudioPCMU - missing data or buffer\n", m_sessionId.c_str());
             }
         }
         cJSON_Delete(json);

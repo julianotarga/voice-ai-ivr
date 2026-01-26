@@ -113,7 +113,14 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 switch_mutex_lock(tech_pvt->playback_mutex);
                 
                 switch_size_t available = switch_buffer_inuse(tech_pvt->playback_buffer);
-                const switch_size_t l16_frame_size = 320;  /* L16 @ 8kHz, 20ms = 160 samples * 2 bytes */
+                
+                /* NETPLAY v2.7: PCMU Passthrough Support
+                 * When playback_is_pcmu is set, buffer contains raw PCMU (160 bytes/frame)
+                 * Otherwise, buffer contains L16 PCM (320 bytes/frame)
+                 */
+                const switch_size_t pcmu_frame_size = 160;  /* PCMU @ 8kHz, 20ms = 160 samples * 1 byte */
+                const switch_size_t l16_frame_size = 320;   /* L16 @ 8kHz, 20ms = 160 samples * 2 bytes */
+                const switch_size_t frame_size = tech_pvt->playback_is_pcmu ? pcmu_frame_size : l16_frame_size;
                 
                 /* NETPLAY v2.5.2: Increased buffer thresholds to reduce audio choppiness
                  * 
@@ -125,8 +132,8 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                  * - Low water mark: 160ms (8 frames) - only pause if buffer gets critically low
                  * - This creates a "buffer zone" that absorbs latency spikes
                  */
-                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (l16_frame_size * 20);
-                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (l16_frame_size * 8);
+                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 20);
+                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 8);
                 
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {
@@ -136,29 +143,35 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                     if (tech_pvt->first_audio_ts > 0) {
                         uint64_t latency_ms = (tech_pvt->playback_start_ts - tech_pvt->first_audio_ts) / 1000;
                         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_INFO),
-                            "[PLAYBACK] started buffer=%zu bytes, latency=%" SWITCH_UINT64_T_FMT "ms\n",
-                            available, latency_ms);
+                            "[PLAYBACK] started buffer=%zu bytes, latency=%" SWITCH_UINT64_T_FMT "ms, mode=%s\n",
+                            available, latency_ms, tech_pvt->playback_is_pcmu ? "PCMU-passthrough" : "L16");
                     } else {
                         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), get_stream_log_level(session, SWITCH_LOG_INFO),
-                            "[PLAYBACK] started buffer=%zu bytes\n", available);
+                            "[PLAYBACK] started buffer=%zu bytes, mode=%s\n", available,
+                            tech_pvt->playback_is_pcmu ? "PCMU-passthrough" : "L16");
                     }
                 }
                 
-                if (tech_pvt->playback_active && available >= l16_frame_size) {
-                    /* Read L16 audio from buffer */
-                    int16_t l16_data[160];  /* 160 samples of L16 */
+                if (tech_pvt->playback_active && available >= frame_size) {
                     uint8_t pcmu_data[160]; /* 160 bytes of PCMU */
-                    int i;
-                    
-                    switch_buffer_read(tech_pvt->playback_buffer, l16_data, l16_frame_size);
-                    
-                    /* Convert L16 to PCMU using FreeSWITCH's built-in function */
-                    for (i = 0; i < 160; i++) {
-                        pcmu_data[i] = linear_to_ulaw(l16_data[i]);
-                    }
-                    
-                    /* Get write codec (PCMU) */
                     switch_codec_t *write_codec = switch_core_session_get_write_codec(session);
+                    
+                    if (tech_pvt->playback_is_pcmu) {
+                        /* NETPLAY v2.7: PCMU Passthrough - read PCMU directly, no conversion */
+                        switch_buffer_read(tech_pvt->playback_buffer, pcmu_data, pcmu_frame_size);
+                        /* Data is already PCMU - write directly */
+                    } else {
+                        /* L16 mode - read L16 and convert to PCMU */
+                        int16_t l16_data[160];  /* 160 samples of L16 */
+                        int i;
+                        
+                        switch_buffer_read(tech_pvt->playback_buffer, l16_data, l16_frame_size);
+                        
+                        /* Convert L16 to PCMU using FreeSWITCH's built-in function */
+                        for (i = 0; i < 160; i++) {
+                            pcmu_data[i] = linear_to_ulaw(l16_data[i]);
+                        }
+                    }
                     
                     if (write_codec) {
                         switch_frame_t write_frame = { 0 };
@@ -171,17 +184,15 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                         switch_core_session_write_frame(session, &write_frame, SWITCH_IO_FLAG_NONE, 0);
                     }
                     tech_pvt->underrun_streak = 0;
-                } else if (tech_pvt->playback_active && available < l16_frame_size) {
+                } else if (tech_pvt->playback_active && available < frame_size) {
                     /* Underrun - opcionalmente injeta silêncio antes de pausar */
                     tech_pvt->buffer_underruns++;
                     tech_pvt->underrun_streak++;
                     if (tech_pvt->underrun_streak <= tech_pvt->underrun_grace_frames) {
-                        int16_t silence_l16[160] = {0};
+                        /* PCMU silence = 0xFF (μ-law zero) */
                         uint8_t silence_pcmu[160];
-                        int i;
-                        for (i = 0; i < 160; i++) {
-                            silence_pcmu[i] = linear_to_ulaw(silence_l16[i]);
-                        }
+                        memset(silence_pcmu, 0xFF, 160);  /* μ-law silence */
+                        
                         switch_codec_t *write_codec = switch_core_session_get_write_codec(session);
                         if (write_codec) {
                             switch_frame_t write_frame = { 0 };
@@ -465,8 +476,8 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.6.1-netplay"
-#define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-23"
+#define MOD_AUDIO_STREAM_VERSION "2.7.0-netplay"
+#define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-25"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)
 {
