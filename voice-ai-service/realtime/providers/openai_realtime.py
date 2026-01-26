@@ -279,27 +279,30 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     
     @property
     def input_sample_rate(self) -> int:
-        # NETPLAY v2.10.1: SEMPRE retornar 24000 para input também
-        # OpenAI Realtime API espera PCM16@24kHz, mesmo quando configuramos G.711
-        # O resample 8k→24k será feito antes de enviar
-        return 24000  # SEMPRE 24kHz
+        # OpenAI Realtime API:
+        # - G.711 (pcmu/pcma): nativo 8kHz - OpenAI aceita e processa em 8kHz
+        # - PCM16: nativo 24kHz
+        audio_format = getattr(self.config, 'audio_format', 'pcm16')
+        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711_alaw", "pcma", "alaw"):
+            return 8000  # G.711 é sempre 8kHz
+        return 24000  # PCM16 @ 24kHz
     
     @property
     def output_sample_rate(self) -> int:
-        # NETPLAY v2.10.1: SEMPRE retornar 24000 para output
-        # 
-        # Problema identificado (2026-01-26):
-        # - Código assumia que OpenAI enviaria G.711@8kHz quando configurado
-        # - Mas OpenAI pode IGNORAR o formato e enviar PCM16@24kHz
-        # - Se isso acontecer, resample 8k→8k não faz nada
-        # - Resultado: áudio 3x mais lento (24kHz interpretado como 8kHz)
-        # 
-        # Solução: SEMPRE assumir 24kHz e fazer resample 24k→8k
-        # - Se OpenAI enviar PCM16@24kHz: resample funciona corretamente
-        # - Se OpenAI enviar G.711@8kHz: precisamos detectar e tratar separadamente
+        # NETPLAY v2.10.3: OpenAI RESPEITA o formato G.711 e envia 8kHz
         #
-        # TODO: Implementar detecção automática baseada no tamanho dos chunks
-        return 24000  # SEMPRE 24kHz - OpenAI não suporta G.711 output de forma confiável
+        # Evidência dos logs (2026-01-26 20:50):
+        # - OpenAI enviou 800B = 100ms de G.711 @ 8kHz (correto!)
+        # - G.711 → L16: 800B → 1600B (decodificação correta)
+        # - Mas resample 24k→8k reduziu para 533B (ERRADO!)
+        # - Resultado: áudio 3x mais rápido (fino e acelerado)
+        #
+        # Conclusão: OpenAI ESTÁ enviando G.711@8kHz quando configurado
+        # Não precisa de resample, apenas decodificação G.711 → L16
+        audio_format = getattr(self.config, 'audio_format', 'pcm16')
+        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711_alaw", "pcma", "alaw"):
+            return 8000  # G.711 é sempre 8kHz - OpenAI respeita!
+        return 24000  # PCM16 @ 24kHz
     
     @property
     def is_connected(self) -> bool:
