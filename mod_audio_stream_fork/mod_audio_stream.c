@@ -122,18 +122,19 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 const switch_size_t l16_frame_size = 320;   /* L16 @ 8kHz, 20ms = 160 samples * 2 bytes */
                 const switch_size_t frame_size = tech_pvt->playback_is_pcmu ? pcmu_frame_size : l16_frame_size;
                 
-                /* NETPLAY v2.5.2: Increased buffer thresholds to reduce audio choppiness
+                /* NETPLAY v2.7: Increased buffer thresholds for PCMU passthrough
                  * 
                  * Problem: With OpenAI Realtime API, audio arrives in bursts with varying latency.
-                 * A 100ms warmup buffer is not enough to smooth out network jitter.
+                 * Previous 400ms warmup was not enough to prevent underruns at end of phrases.
                  * 
                  * Solution:
-                 * - Warmup threshold: 400ms (20 frames) - wait for more data before starting
-                 * - Low water mark: 160ms (8 frames) - only pause if buffer gets critically low
-                 * - This creates a "buffer zone" that absorbs latency spikes
+                 * - Warmup threshold: 800ms (40 frames) - wait for more data before starting
+                 * - Low water mark: 400ms (20 frames) - only pause if buffer gets critically low
+                 * - This creates a larger "buffer zone" that absorbs latency spikes
+                 * - Trade-off: ~800ms initial latency but eliminates robotization
                  */
-                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 20);
-                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 8);
+                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 40);
+                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 20);
                 
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {

@@ -676,11 +676,12 @@ class RealtimeServer:
                 last_send_time = 0.0
                 
                 # PCMU: 8 bytes/ms (8kHz * 1 byte/sample)
-                # Warmup similar ao L16 para evitar stuttering inicial
-                # 200ms = 1600 bytes @ 8kHz PCMU
-                warmup_bytes = 1600   # 200ms @ 8kHz PCMU
-                batch_bytes = 1600    # 200ms @ 8kHz PCMU
-                batch_duration_ms = 200.0
+                # Warmup maior para absorver jitter de rede e evitar underruns
+                # 400ms = 3200 bytes @ 8kHz PCMU
+                # Isso adiciona ~400ms de latência inicial, mas elimina robotização
+                warmup_bytes = 3200   # 400ms @ 8kHz PCMU
+                batch_bytes = 3200    # 400ms @ 8kHz PCMU
+                batch_duration_ms = 400.0
                 
                 while True:
                     item = await pcmu_out_queue.get()

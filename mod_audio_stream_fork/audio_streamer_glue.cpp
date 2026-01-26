@@ -593,10 +593,14 @@ namespace {
         const char *warmup_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_WARMUP_MS");
         const char *low_water_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_LOW_WATER_MS");
         const char *underrun_grace_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_UNDERRUN_GRACE_MS");
-        int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 2000;
-        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 400;
-        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 160;
-        int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 60;
+        /* NETPLAY v2.7: Increased buffer defaults to prevent underruns
+         * Previous values (400/160/60) caused robotization at end of phrases
+         * New values add ~800ms initial latency but eliminate audio artifacts
+         */
+        int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 3000;       /* 3 seconds buffer */
+        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 800;        /* 800ms warmup */
+        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 400;  /* 400ms low water */
+        int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 200; /* 200ms grace */
         if (buffer_ms < 200) buffer_ms = 200;
         if (buffer_ms > 10000) buffer_ms = 10000;
         if (warmup_ms < 40) warmup_ms = 40;
