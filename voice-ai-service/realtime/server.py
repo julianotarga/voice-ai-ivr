@@ -529,26 +529,32 @@ class RealtimeServer:
                 logger.warning(f"Failed to send stopAudio: {e}", extra={"call_uuid": call_uuid})
 
         async def _sender_loop_rawaudio() -> None:
+            """Sender loop para L16 PCM - com resampling.
+            
+            NETPLAY v2.10 (2026-01-26): Removido pacing artificial com asyncio.sleep()
+            
+            Problema anterior:
+            - asyncio.sleep() não garante timing preciso
+            - Pacing artificial causava jitter e áudio "tremido/arrastado"
+            
+            Solução:
+            - Enviar imediatamente quando dados disponíveis (event-driven)
+            - FreeSWITCH mod_audio_stream já tem buffer interno
+            - Deixar o buffer do FreeSWITCH fazer o pacing, não o Python
+            """
             nonlocal playback_mode
             try:
                 last_health_update = 0.0
                 chunks_sent = 0
                 batch_buffer = bytearray()
                 warmup_complete = False
-                last_send_time = 0.0
 
-                # CORREÇÃO 2026-01-25: Ajustado warmup do sender loop
-                # NOTA: O warmup principal (600ms) é feito no AudioBuffer do ResamplerPair
-                # Este warmup secundário evita envios muito pequenos no início
                 # 8kHz L16 = 16 bytes/ms
-                # 
-                # Valores calibrados para evitar dupla latência:
-                # - AudioBuffer faz warmup de 600ms
-                # - Este sender faz warmup de apenas 200ms (evitar micro-chunks)
-                # - Total: ~800ms antes do primeiro envio (vs 1000ms se ambos fossem 600ms)
-                warmup_bytes = 3200  # 200ms @ 8kHz L16 (evita micro-chunks iniciais)
-                batch_bytes = 3200   # 200ms @ 8kHz L16 (melhor pacing)
-                batch_duration_ms = 200.0  # 200ms entre envios
+                # Warmup: 640B = 40ms (mínimo para evitar micro-chunks)
+                # Batch: 320B = 20ms (1 frame L16 - menor latência possível)
+                # SEM PACING: envia imediatamente, FreeSWITCH faz o pacing
+                warmup_bytes = 640   # 40ms @ 8kHz L16 (2 frames)
+                batch_bytes = 320    # 20ms @ 8kHz L16 (1 frame - latência mínima)
 
                 while True:
                     item = await audio_out_queue.get()
@@ -560,7 +566,6 @@ class RealtimeServer:
                     if isinstance(item[0], str) and item[0] == "STOP":
                         batch_buffer.clear()
                         warmup_complete = False
-                        last_send_time = 0.0
                         await _send_stop_audio()
                         continue
 
@@ -587,7 +592,6 @@ class RealtimeServer:
                     if not warmup_complete:
                         if len(batch_buffer) >= warmup_bytes:
                             warmup_complete = True
-                            last_send_time = time.time()
                             logger.info(
                                 f"Streaming warmup complete ({len(batch_buffer)} bytes)",
                                 extra={"call_uuid": call_uuid}
@@ -595,17 +599,13 @@ class RealtimeServer:
                         else:
                             continue
 
-                    if len(batch_buffer) >= batch_bytes:
-                        now = time.time()
-                        elapsed_ms = (now - last_send_time) * 1000
-                        if elapsed_ms < batch_duration_ms:
-                            wait_ms = batch_duration_ms - elapsed_ms
-                            await asyncio.sleep(wait_ms / 1000.0)
-
-                        await _send_streamaudio_chunk(bytes(batch_buffer))
-                        last_send_time = time.time()
+                    # Enviar imediatamente quando temos 1+ frame completo
+                    # SEM SLEEP - FreeSWITCH faz o pacing via buffer interno
+                    while len(batch_buffer) >= batch_bytes:
+                        chunk_to_send = bytes(batch_buffer[:batch_bytes])
+                        del batch_buffer[:batch_bytes]
+                        await _send_streamaudio_chunk(chunk_to_send)
                         chunks_sent += 1
-                        batch_buffer.clear()
 
                         if chunks_sent == 1:
                             logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
@@ -667,21 +667,33 @@ class RealtimeServer:
         pcmu_passthrough_enabled = os.getenv("FS_PCMU_PASSTHROUGH", "true").lower() in ("1", "true", "yes")
         
         async def _sender_loop_pcmu() -> None:
-            """Sender loop para PCMU passthrough - envia direto sem conversão."""
+            """Sender loop para PCMU passthrough - envia direto sem conversão.
+            
+            NETPLAY v2.10 (2026-01-26): Removido pacing artificial com asyncio.sleep()
+            
+            Problema anterior:
+            - asyncio.sleep() não garante timing preciso
+            - Pacing artificial causava jitter e áudio "tremido/arrastado"
+            - O sleep impedia envio rápido durante bursts do OpenAI
+            
+            Solução:
+            - Enviar imediatamente quando dados disponíveis (event-driven)
+            - FreeSWITCH mod_audio_stream já tem buffer interno
+            - Deixar o buffer do FreeSWITCH fazer o pacing, não o Python
+            - Chunks pequenos (160B = 20ms) para menor latência
+            """
             nonlocal playback_mode
             try:
                 chunks_sent = 0
                 batch_buffer = bytearray()
                 warmup_complete = False
-                last_send_time = 0.0
                 
                 # PCMU: 8 bytes/ms (8kHz * 1 byte/sample)
-                # Warmup maior para absorver jitter de rede e evitar underruns
-                # 400ms = 3200 bytes @ 8kHz PCMU
-                # Isso adiciona ~400ms de latência inicial, mas elimina robotização
-                warmup_bytes = 3200   # 400ms @ 8kHz PCMU
-                batch_bytes = 3200    # 400ms @ 8kHz PCMU
-                batch_duration_ms = 400.0
+                # Warmup: 320B = 40ms (mínimo para evitar micro-chunks)
+                # Batch: 160B = 20ms (1 frame PCMU - menor latência possível)
+                # SEM PACING: envia imediatamente, FreeSWITCH faz o pacing
+                warmup_bytes = 320    # 40ms @ 8kHz PCMU (2 frames)
+                batch_bytes = 160     # 20ms @ 8kHz PCMU (1 frame - latência mínima)
                 
                 while True:
                     item = await pcmu_out_queue.get()
@@ -693,7 +705,6 @@ class RealtimeServer:
                     if isinstance(item[0], str) and item[0] == "STOP":
                         batch_buffer.clear()
                         warmup_complete = False
-                        last_send_time = 0.0
                         await _send_stop_audio()
                         continue
                     
@@ -712,7 +723,6 @@ class RealtimeServer:
                     if not warmup_complete:
                         if len(batch_buffer) >= warmup_bytes:
                             warmup_complete = True
-                            last_send_time = time.time()
                             logger.info(
                                 f"PCMU passthrough warmup complete ({len(batch_buffer)} bytes)",
                                 extra={"call_uuid": call_uuid}
@@ -720,17 +730,13 @@ class RealtimeServer:
                         else:
                             continue
                     
-                    if len(batch_buffer) >= batch_bytes:
-                        now = time.time()
-                        elapsed_ms = (now - last_send_time) * 1000
-                        if elapsed_ms < batch_duration_ms:
-                            wait_ms = batch_duration_ms - elapsed_ms
-                            await asyncio.sleep(wait_ms / 1000.0)
-                        
-                        await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
-                        last_send_time = time.time()
+                    # Enviar imediatamente quando temos 1+ frame completo
+                    # SEM SLEEP - FreeSWITCH faz o pacing via buffer interno
+                    while len(batch_buffer) >= batch_bytes:
+                        chunk_to_send = bytes(batch_buffer[:batch_bytes])
+                        del batch_buffer[:batch_bytes]
+                        await _send_streamaudio_pcmu_chunk(chunk_to_send)
                         chunks_sent += 1
-                        batch_buffer.clear()
                         
                         if chunks_sent == 1:
                             logger.info("PCMU passthrough playback started", extra={"call_uuid": call_uuid})

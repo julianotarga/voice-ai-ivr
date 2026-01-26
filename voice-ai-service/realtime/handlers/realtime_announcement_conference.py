@@ -954,48 +954,49 @@ class ConferenceAnnouncementSession:
             
             logger.info("💬 Sending courtesy response to attendant...")
             
-            # PASSO 1: Cancelar qualquer resposta em andamento para evitar
-            # receber o response.done da resposta anterior
-            try:
-                if self._response_active or self._response_audio_generating:
-                    await self._ws.send(json.dumps({"type": "response.cancel"}))
-                    # Aguardar mais tempo para o cancel ser processado
-                    # O OpenAI pode levar até 500ms para processar o cancel
-                    await asyncio.sleep(0.3)
-                else:
-                    logger.debug("⏳ [COURTESY] Sem resposta ativa, cancel não enviado")
-                
-                # Consumir eventos pendentes até encontrar um timeout
-                # Usar timeout maior (100ms) para garantir que não há mais eventos
-                drain_count = 0
-                while drain_count < 20:  # Aumentar limite
-                    try:
-                        msg = await asyncio.wait_for(self._ws.recv(), timeout=0.1)
-                        drain_count += 1
-                        # Log do tipo de evento drenado para diagnóstico
-                        try:
-                            event = json.loads(msg)
-                            etype = event.get("type", "unknown")
-                            logger.debug(f"Drained event: {etype}")
-                        except Exception:
-                            pass
-                    except asyncio.TimeoutError:
-                        break  # Sem mais eventos pendentes
-                if drain_count > 0:
-                    logger.debug(f"Drained {drain_count} pending events before courtesy")
-                
-                # Aguardar um pouco mais para garantir que o canal está limpo
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.debug(f"Could not cancel previous response: {e}")
+            # PASSO 1: Aguardar resposta anterior terminar (não cancelar, deixar terminar)
+            # Isso garante que o atendente ouça a resposta completa antes da cortesia
+            max_wait_for_response = 5.0  # segundos
+            wait_interval = 0.1
+            waited = 0.0
             
-            # Se ainda há resposta ativa, não solicitar nova para evitar
-            # "conversation_already_has_active_response" e sobreposição de fala.
-            if self._response_active or self._response_audio_generating:
-                logger.warning(
-                    "⚠️ [COURTESY] Resposta ativa ainda em andamento - cortesia ignorada para evitar overlap"
-                )
-                return
+            while (self._response_active or self._response_audio_generating) and waited < max_wait_for_response:
+                logger.debug(f"⏳ [COURTESY] Aguardando resposta anterior terminar... ({waited:.1f}s)")
+                try:
+                    # Processar eventos enquanto aguarda
+                    msg = await asyncio.wait_for(self._ws.recv(), timeout=wait_interval)
+                    event = json.loads(msg)
+                    etype = event.get("type", "")
+                    
+                    # Processar áudio pendente para o atendente ouvir
+                    if etype in ("response.audio.delta", "response.output_audio.delta"):
+                        audio_b64 = event.get("delta", "")
+                        if audio_b64:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            await self._enqueue_audio_to_freeswitch(audio_bytes)
+                    
+                    # Marcar quando resposta termina
+                    if etype == "response.audio.done":
+                        self._response_audio_generating = False
+                        logger.debug("⏳ [COURTESY] Áudio da resposta anterior concluído")
+                    
+                    if etype == "response.done":
+                        self._response_active = False
+                        logger.debug("⏳ [COURTESY] Resposta anterior concluída")
+                        
+                except asyncio.TimeoutError:
+                    waited += wait_interval
+                except Exception as e:
+                    logger.debug(f"⏳ [COURTESY] Erro processando evento: {e}")
+                    waited += wait_interval
+            
+            if waited >= max_wait_for_response:
+                logger.warning(f"⚠️ [COURTESY] Timeout aguardando resposta anterior ({max_wait_for_response}s)")
+            else:
+                logger.info(f"✅ [COURTESY] Resposta anterior concluída após {waited:.1f}s")
+            
+            # Pequeno delay para garantir que o canal está limpo
+            await asyncio.sleep(0.2)
             
             # PASSO 2: Enviar instrução de cortesia
             await self._ws.send(json.dumps({

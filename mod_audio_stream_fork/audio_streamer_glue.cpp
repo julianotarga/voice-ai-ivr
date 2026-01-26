@@ -731,14 +731,25 @@ namespace {
         const char *warmup_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_WARMUP_MS");
         const char *low_water_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_LOW_WATER_MS");
         const char *underrun_grace_ms_str = switch_channel_get_variable(channel, "STREAM_PLAYBACK_UNDERRUN_GRACE_MS");
-        /* NETPLAY v2.7: Increased buffer defaults to prevent underruns
-         * Previous values (400/160/60) caused robotization at end of phrases
-         * New values add ~800ms initial latency but eliminate audio artifacts
+        /* NETPLAY v2.9: Increased buffer defaults to prevent underruns
+         * 
+         * Problem analysis (2026-01-26):
+         * - OpenAI sends audio in bursts, not continuously
+         * - Python sends 1600B/200ms = exactly the consumption rate (8000B/s)
+         * - Any pause in OpenAI output causes buffer to drain quickly
+         * - With 11 underruns in 7s call, we need significantly more buffer
+         * 
+         * Solution: Increase warmup and low_water to create more buffer margin
+         * Trade-off: ~1200ms initial latency but eliminates robotization
+         * 
+         * Note: warmup_ms * 16 calculates bytes assuming L16 format.
+         * For PCMU mode, this effectively doubles the warmup time (800ms instead of 400ms)
+         * which is actually beneficial for absorbing burst irregularities.
          */
-        int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 3000;       /* 3 seconds buffer */
-        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 400;        /* 400ms warmup */
-        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 160;  /* 160ms low water */
-        int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 200; /* 200ms grace */
+        int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 5000;       /* 5 seconds buffer */
+        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 800;        /* 800ms warmup (1600ms effective for PCMU) */
+        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 400;  /* 400ms low water */
+        int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 500; /* 500ms grace (25 frames of silence) */
         if (buffer_ms < 200) buffer_ms = 200;
         if (buffer_ms > 10000) buffer_ms = 10000;
         if (warmup_ms < 40) warmup_ms = 40;
@@ -769,9 +780,11 @@ namespace {
         tech_pvt->audio_chunk_queue = audio_chunk_queue_create();
         tech_pvt->chunk_queue_pulls = 0;
         
+        /* Log effective values - note: for PCMU mode, actual time is 2x these values
+         * because we calculate bytes as L16 (16 bytes/ms) but PCMU uses 8 bytes/ms */
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-            "(%s) [PLAYBACK] buffer+queue created (%zuB, warmup=%dms, low_water=%dms, queue=enabled)\n",
-            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms);
+            "(%s) [PLAYBACK] buffer+queue created (%zuB, warmup=%dms/L16 or %dms/PCMU, low_water=%dms, grace=%dms)\n",
+            tech_pvt->sessionId, playback_buflen, warmup_ms, warmup_ms * 2, low_water_ms, underrun_grace_ms);
 
         if (desiredSampling != sampling) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) resampling from %u to %u\n", tech_pvt->sessionId, sampling, desiredSampling);
