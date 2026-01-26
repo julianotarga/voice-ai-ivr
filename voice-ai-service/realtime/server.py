@@ -664,7 +664,10 @@ class RealtimeServer:
         pcmu_out_queue: asyncio.Queue[Optional[tuple[int, bytes]]] = asyncio.Queue()
         pcmu_sender_task: Optional[asyncio.Task] = None
         pcmu_pending = bytearray()
-        pcmu_passthrough_enabled = os.getenv("FS_PCMU_PASSTHROUGH", "true").lower() in ("1", "true", "yes")
+        # NETPLAY v2.10: Desabilitado por padrão até confirmar que OpenAI suporta G.711 output
+        # O áudio estava tocando em velocidade 0.5x, indicando sample rate mismatch
+        # Se OpenAI ignora o formato e envia PCM16@24kHz, o passthrough causa áudio lento
+        pcmu_passthrough_enabled = os.getenv("FS_PCMU_PASSTHROUGH", "false").lower() in ("1", "true", "yes")
         
         async def _sender_loop_pcmu() -> None:
             """Sender loop para PCMU passthrough - envia direto sem conversão.
