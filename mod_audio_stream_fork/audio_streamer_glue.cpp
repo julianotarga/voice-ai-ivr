@@ -30,17 +30,36 @@
  * ======================================== */
 class AudioChunkQueue {
 public:
-    AudioChunkQueue() : m_total_bytes(0) {}
+    /* Max queue size: 5 seconds of PCMU @ 8kHz = 40,000 bytes
+     * This prevents unbounded memory growth if OpenAI sends faster than we consume */
+    static constexpr size_t MAX_QUEUE_BYTES = 40000;
+    
+    AudioChunkQueue() : m_total_bytes(0), m_dropped_bytes(0) {}
     
     void push(const uint8_t* data, size_t len) {
         if (!data || len == 0) return;
         std::lock_guard<std::mutex> lock(m_mutex);
+        
+        /* Protect against unbounded queue growth */
+        if (m_total_bytes + len > MAX_QUEUE_BYTES) {
+            /* Queue full - drop oldest chunks to make room */
+            size_t bytes_to_free = (m_total_bytes + len) - MAX_QUEUE_BYTES;
+            size_t freed = 0;
+            while (!m_chunks.empty() && freed < bytes_to_free) {
+                freed += m_chunks.front().size();
+                m_total_bytes -= m_chunks.front().size();
+                m_chunks.pop();
+            }
+            m_dropped_bytes += freed;
+        }
+        
         m_chunks.push(std::vector<uint8_t>(data, data + len));
         m_total_bytes += len;
     }
     
     /* Pull chunks from queue into switch_buffer until max_bytes reached or queue empty.
-     * Returns total bytes transferred. */
+     * Returns total bytes transferred.
+     * NOTE: Does NOT split chunks - whole chunks only for audio integrity. */
     size_t pull_to_buffer(switch_buffer_t* buffer, size_t max_bytes) {
         if (!buffer || max_bytes == 0) return 0;
         
@@ -51,14 +70,9 @@ public:
             const auto& chunk = m_chunks.front();
             size_t chunk_size = chunk.size();
             
-            /* Check if we have room for this chunk */
+            /* Check if this chunk fits in remaining space */
             if (transferred + chunk_size > max_bytes) {
-                /* Don't split chunks - either take whole chunk or leave it */
-                if (transferred == 0 && chunk_size <= max_bytes) {
-                    /* First chunk and it fits - take it */
-                } else {
-                    break;  /* No more room */
-                }
+                break;  /* No more room - stop here */
             }
             
             switch_buffer_write(buffer, chunk.data(), chunk_size);
@@ -86,10 +100,16 @@ public:
         return m_total_bytes;
     }
     
+    size_t dropped_bytes() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_dropped_bytes;
+    }
+    
 private:
     std::queue<std::vector<uint8_t>> m_chunks;
     std::mutex m_mutex;
     size_t m_total_bytes;
+    size_t m_dropped_bytes;  /* Track dropped bytes for debugging */
 };
 
 /* C wrapper functions for AudioChunkQueue */
@@ -413,13 +433,16 @@ public:
 
                     switch_mutex_lock(tech_pvt->playback_mutex);
                     
-                    /* NETPLAY v2.7: Se estava em modo PCMU, resetar para L16 e limpar buffer
+                    /* NETPLAY v2.8: Se estava em modo PCMU, resetar para L16 e limpar buffer+queue
                      * para evitar corrupção de dados misturados */
                     if (tech_pvt->playback_is_pcmu) {
                         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-                            "(%s) [MODE-SWITCH] PCMU→L16, clearing buffer to avoid corruption\n",
+                            "(%s) [MODE-SWITCH] PCMU→L16, clearing queue+buffer to avoid corruption\n",
                             m_sessionId.c_str());
                         switch_buffer_zero(tech_pvt->playback_buffer);
+                        if (tech_pvt->audio_chunk_queue) {
+                            audio_chunk_queue_clear(tech_pvt->audio_chunk_queue);
+                        }
                         tech_pvt->playback_is_pcmu = 0;
                         tech_pvt->playback_active = 0;  /* Force warmup again */
                     }
