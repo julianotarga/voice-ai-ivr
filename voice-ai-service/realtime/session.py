@@ -1510,7 +1510,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 f"Resampler setup: FS={fs_rate}Hz <-> Provider(in={provider_in}Hz, out={provider_out}Hz)"
             )
             
-            # Usar warmup do banco de dados (default 400ms) para evitar engasgos
+            # Usar warmup do banco de dados (default 600ms) para evitar engasgos
             warmup_ms = getattr(self.config, 'audio_warmup_ms', 600)  # Default 600ms (AUMENTADO 2026-01-25)
             self._resampler = ResamplerPair(
                 freeswitch_rate=fs_rate,
@@ -5557,9 +5557,9 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         self._input_audio_buffer.clear()
         if self._resampler:
             try:
-                # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
+                # IMPORTANTE: Usar warmup estendido (600ms) após resume de transferência
                 # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
-                self._resampler.reset_output_buffer(extended_warmup_ms=600)  # AUMENTADO 2026-01-25
+                self._resampler.reset_output_buffer(extended_warmup_ms=600)
                 # Preservar o warmup para o próximo RESPONSE_STARTED não desfazer
                 self._preserve_extended_warmup = True
             except Exception:

@@ -134,11 +134,11 @@ class AudioBuffer:
     ):
         """
         Args:
-            warmup_ms: Tempo de warmup em milissegundos (default: 600ms - AUMENTADO 2026-01-25)
+            warmup_ms: Tempo de warmup em milissegundos (default: 600ms)
                        Valores recomendados:
                        - 200ms: mínimo para conexões estáveis
-                       - 400ms: recomendado para produção
-                       - 600ms: para conexões instáveis
+                       - 400ms: produção com rede estável
+                       - 600ms: recomendado (absorve bursts do OpenAI Realtime)
             sample_rate: Taxa de amostragem em Hz
             bytes_per_sample: Bytes por sample (2 para PCM16)
         """

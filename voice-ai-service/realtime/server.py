@@ -516,14 +516,18 @@ class RealtimeServer:
                 warmup_complete = False
                 last_send_time = 0.0
 
-                # CORREÇÃO 2026-01-25: Aumentado warmup para absorver bursts do OpenAI Realtime
-                # Baseado em: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/docs/Tuning-Recipes.md
-                # 8kHz L16 = 16 bytes/ms, então:
-                # - 400ms warmup = 6400 bytes (antigo era 1600 = 100ms)
-                # - batch de 200ms para melhor pacing
-                warmup_bytes = 6400  # 400ms @ 8kHz L16 (era 1600 = 100ms)
-                batch_bytes = 3200   # 200ms @ 8kHz L16 (era 1600 = 100ms)
-                batch_duration_ms = 200.0  # 200ms entre envios (era 100ms)
+                # CORREÇÃO 2026-01-25: Ajustado warmup do sender loop
+                # NOTA: O warmup principal (600ms) é feito no AudioBuffer do ResamplerPair
+                # Este warmup secundário evita envios muito pequenos no início
+                # 8kHz L16 = 16 bytes/ms
+                # 
+                # Valores calibrados para evitar dupla latência:
+                # - AudioBuffer faz warmup de 600ms
+                # - Este sender faz warmup de apenas 200ms (evitar micro-chunks)
+                # - Total: ~800ms antes do primeiro envio (vs 1000ms se ambos fossem 600ms)
+                warmup_bytes = 3200  # 200ms @ 8kHz L16 (evita micro-chunks iniciais)
+                batch_bytes = 3200   # 200ms @ 8kHz L16 (melhor pacing)
+                batch_duration_ms = 200.0  # 200ms entre envios
 
                 while True:
                     item = await audio_out_queue.get()
