@@ -133,8 +133,8 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                  * - This creates a larger "buffer zone" that absorbs latency spikes
                  * - Trade-off: ~800ms initial latency but eliminates robotization
                  */
-                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 40);
-                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 20);
+                const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 20);  /* 400ms default */
+                const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 8);    /* 160ms default */
                 
                 /* NETPLAY v2.8: Pull chunks from queue to buffer when buffer is getting low
                  * This is the core of burst-tolerant playback:

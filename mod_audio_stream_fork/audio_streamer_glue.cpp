@@ -736,8 +736,8 @@ namespace {
          * New values add ~800ms initial latency but eliminate audio artifacts
          */
         int buffer_ms = buffer_ms_str ? atoi(buffer_ms_str) : 3000;       /* 3 seconds buffer */
-        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 800;        /* 800ms warmup */
-        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 400;  /* 400ms low water */
+        int warmup_ms = warmup_ms_str ? atoi(warmup_ms_str) : 400;        /* 400ms warmup */
+        int low_water_ms = low_water_ms_str ? atoi(low_water_ms_str) : 160;  /* 160ms low water */
         int underrun_grace_ms = underrun_grace_ms_str ? atoi(underrun_grace_ms_str) : 200; /* 200ms grace */
         if (buffer_ms < 200) buffer_ms = 200;
         if (buffer_ms > 10000) buffer_ms = 10000;
