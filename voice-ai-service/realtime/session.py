@@ -2554,14 +2554,25 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 has_farewell = self._check_farewell_keyword(last_assistant_text, "assistant")
                 text_lower = last_assistant_text.lower().strip()
                 hold_return_message = (self.config.hold_return_message or "").lower().strip()
+                
+                # Frases que INDICAM despedida (mesmo sem keywords explícitas)
+                farewell_phrases = (
+                    "obrigad", "por ligar",  # obrigado/obrigada por ligar
+                    "tenha um ótimo dia", "tenha um bom dia", "tenha uma ótima",
+                    "foi um prazer", "até a próxima", "bom dia", "boa tarde", "boa noite",
+                    "qualquer coisa é só chamar", "precisar de algo",
+                )
+                if any(phrase in text_lower for phrase in farewell_phrases):
+                    # Verificar se não é "obrigado por aguardar" que NÃO é despedida
+                    if "obrigado por aguardar" not in text_lower and "obrigada por aguardar" not in text_lower:
+                        has_farewell = True
+                
                 # Não considerar "Obrigado por aguardar" como despedida
                 if hold_return_message and hold_return_message in text_lower:
                     has_farewell = False
-                if "obrigado por aguardar" in text_lower:
+                if "obrigado por aguardar" in text_lower or "obrigada por aguardar" in text_lower:
                     has_farewell = False
-                # "Obrigado" sozinho não é despedida
-                if "obrigado" in text_lower or "brigado" in text_lower:
-                    has_farewell = False
+                
                 # Frases de oferta de recado não são despedida
                 if any(phrase in text_lower for phrase in (
                     "posso anotar uma mensagem",
