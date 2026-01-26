@@ -55,9 +55,27 @@ struct private_data {
     switch_size_t buffer_max_used;       /* Max buffered bytes observed */
     uint32_t underrun_streak;            /* Consecutive underrun frames */
     uint32_t underrun_grace_frames;      /* Grace frames before pausing */
+    /* NETPLAY v2.8: Audio Chunk Queue for burst-tolerant playback */
+    void *audio_chunk_queue;             /* C++ AudioChunkQueue object pointer */
+    uint32_t chunk_queue_pulls;          /* Counter for chunks pulled from queue */
 };
 
 typedef struct private_data private_t;
+
+/* NETPLAY v2.8: C wrapper functions for AudioChunkQueue (implemented in C++) */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void* audio_chunk_queue_create(void);
+void audio_chunk_queue_destroy(void* queue);
+void audio_chunk_queue_push(void* queue, const uint8_t* data, size_t len);
+size_t audio_chunk_queue_pull_to_buffer(void* queue, switch_buffer_t* buffer, size_t max_bytes);
+void audio_chunk_queue_clear(void* queue);
+size_t audio_chunk_queue_size(void* queue);
+size_t audio_chunk_queue_total_bytes(void* queue);
+#ifdef __cplusplus
+}
+#endif
 
 enum notifyEvent_t {
     CONNECT_SUCCESS,

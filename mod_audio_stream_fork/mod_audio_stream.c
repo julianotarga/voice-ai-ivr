@@ -136,6 +136,44 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
                 const switch_size_t warmup_threshold = tech_pvt->warmup_threshold ? tech_pvt->warmup_threshold : (frame_size * 40);
                 const switch_size_t low_water_mark = tech_pvt->low_water_mark ? tech_pvt->low_water_mark : (frame_size * 20);
                 
+                /* NETPLAY v2.8: Pull chunks from queue to buffer when buffer is getting low
+                 * This is the core of burst-tolerant playback:
+                 * 1. Queue receives chunks in bursts from OpenAI (irregular timing)
+                 * 2. We pull from queue into buffer when buffer drops below threshold
+                 * 3. Buffer feeds frames to FreeSWITCH at constant 20ms rate
+                 * 
+                 * Pull strategy: refill buffer to warmup_threshold * 1.5 when below low_water_mark
+                 */
+                if (tech_pvt->audio_chunk_queue && available < warmup_threshold) {
+                    /* Calculate how many bytes we want to pull */
+                    switch_size_t target = (warmup_threshold * 3) / 2;  /* 1.5x warmup threshold */
+                    switch_size_t buffer_capacity = tech_pvt->playback_buflen ? tech_pvt->playback_buflen : 16000;
+                    if (target > buffer_capacity - available) {
+                        target = buffer_capacity - available;  /* Don't exceed buffer capacity */
+                    }
+                    
+                    if (target > 0) {
+                        switch_size_t pulled = audio_chunk_queue_pull_to_buffer(
+                            tech_pvt->audio_chunk_queue,
+                            tech_pvt->playback_buffer,
+                            target
+                        );
+                        
+                        if (pulled > 0) {
+                            available = switch_buffer_inuse(tech_pvt->playback_buffer);
+                            tech_pvt->chunk_queue_pulls++;
+                            
+                            /* Log pulls periodically */
+                            if (tech_pvt->chunk_queue_pulls % 25 == 1 || pulled > 3200) {
+                                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                                    get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                                    "[QUEUE-PULL] %zu bytes from queue, buffer now %zu bytes\n",
+                                    pulled, available);
+                            }
+                        }
+                    }
+                }
+                
                 /* Warmup: wait until we have enough buffer */
                 if (!tech_pvt->playback_active && available >= warmup_threshold) {
                     tech_pvt->playback_active = 1;
@@ -477,7 +515,7 @@ done:
  *   - SMBF_WRITE_REPLACE for frame injection
  *   - Barge-in support via stopAudio command
  * ======================================== */
-#define MOD_AUDIO_STREAM_VERSION "2.7.1-netplay"
+#define MOD_AUDIO_STREAM_VERSION "2.8.0-netplay"
 #define MOD_AUDIO_STREAM_BUILD_DATE "2026-01-26"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load)

@@ -9,9 +9,122 @@
 #include <unordered_set>
 #include <atomic>
 #include <vector>
+#include <queue>
+#include <mutex>
 #include "base64.h"
 
 #define FRAME_SIZE_8000  320 /* 1000x0.02 (20ms)= 160 x(16bit= 2 bytes) 320 frame size*/
+
+/* ========================================
+ * NETPLAY v2.8: AudioChunkQueue
+ * 
+ * Thread-safe queue for audio chunks from OpenAI.
+ * This absorbs burst arrivals and provides smooth
+ * playback even with irregular chunk timing.
+ * 
+ * Design rationale:
+ * - OpenAI sends audio in bursts (multiple chunks quickly, then pause)
+ * - FreeSWITCH consumes audio at constant rate (every 20ms)
+ * - Queue acts as reservoir between irregular input and regular output
+ * - Reduces underruns by buffering complete chunks, not raw bytes
+ * ======================================== */
+class AudioChunkQueue {
+public:
+    AudioChunkQueue() : m_total_bytes(0) {}
+    
+    void push(const uint8_t* data, size_t len) {
+        if (!data || len == 0) return;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_chunks.push(std::vector<uint8_t>(data, data + len));
+        m_total_bytes += len;
+    }
+    
+    /* Pull chunks from queue into switch_buffer until max_bytes reached or queue empty.
+     * Returns total bytes transferred. */
+    size_t pull_to_buffer(switch_buffer_t* buffer, size_t max_bytes) {
+        if (!buffer || max_bytes == 0) return 0;
+        
+        std::lock_guard<std::mutex> lock(m_mutex);
+        size_t transferred = 0;
+        
+        while (!m_chunks.empty()) {
+            const auto& chunk = m_chunks.front();
+            size_t chunk_size = chunk.size();
+            
+            /* Check if we have room for this chunk */
+            if (transferred + chunk_size > max_bytes) {
+                /* Don't split chunks - either take whole chunk or leave it */
+                if (transferred == 0 && chunk_size <= max_bytes) {
+                    /* First chunk and it fits - take it */
+                } else {
+                    break;  /* No more room */
+                }
+            }
+            
+            switch_buffer_write(buffer, chunk.data(), chunk_size);
+            transferred += chunk_size;
+            m_total_bytes -= chunk_size;
+            m_chunks.pop();
+        }
+        
+        return transferred;
+    }
+    
+    void clear() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        while (!m_chunks.empty()) m_chunks.pop();
+        m_total_bytes = 0;
+    }
+    
+    size_t size() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_chunks.size();
+    }
+    
+    size_t total_bytes() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_total_bytes;
+    }
+    
+private:
+    std::queue<std::vector<uint8_t>> m_chunks;
+    std::mutex m_mutex;
+    size_t m_total_bytes;
+};
+
+/* C wrapper functions for AudioChunkQueue */
+extern "C" {
+    void* audio_chunk_queue_create(void) {
+        return new AudioChunkQueue();
+    }
+    
+    void audio_chunk_queue_destroy(void* queue) {
+        if (queue) delete static_cast<AudioChunkQueue*>(queue);
+    }
+    
+    void audio_chunk_queue_push(void* queue, const uint8_t* data, size_t len) {
+        if (queue) static_cast<AudioChunkQueue*>(queue)->push(data, len);
+    }
+    
+    size_t audio_chunk_queue_pull_to_buffer(void* queue, switch_buffer_t* buffer, size_t max_bytes) {
+        if (!queue) return 0;
+        return static_cast<AudioChunkQueue*>(queue)->pull_to_buffer(buffer, max_bytes);
+    }
+    
+    void audio_chunk_queue_clear(void* queue) {
+        if (queue) static_cast<AudioChunkQueue*>(queue)->clear();
+    }
+    
+    size_t audio_chunk_queue_size(void* queue) {
+        if (!queue) return 0;
+        return static_cast<AudioChunkQueue*>(queue)->size();
+    }
+    
+    size_t audio_chunk_queue_total_bytes(void* queue) {
+        if (!queue) return 0;
+        return static_cast<AudioChunkQueue*>(queue)->total_bytes();
+    }
+}
 
 static switch_log_level_t get_stream_log_level(switch_core_session_t *session, switch_log_level_t default_level) {
     switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -249,15 +362,20 @@ public:
         
         const char* jsType = cJSON_GetObjectCstr(json, "type");
         
-        // NETPLAY: stopAudio - clear playback buffer (barge-in)
+        // NETPLAY v2.8: stopAudio - clear both queue and playback buffer (barge-in)
         if(jsType && strcmp(jsType, "stopAudio") == 0) {
             if (tech_pvt && tech_pvt->playback_buffer) {
                 switch_mutex_lock(tech_pvt->playback_mutex);
+                /* Clear the chunk queue first (if exists) */
+                if (tech_pvt->audio_chunk_queue) {
+                    audio_chunk_queue_clear(tech_pvt->audio_chunk_queue);
+                }
+                /* Then clear the playback buffer */
                 switch_buffer_zero(tech_pvt->playback_buffer);
                 tech_pvt->playback_active = 0;
                 switch_mutex_unlock(tech_pvt->playback_mutex);
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "(%s) [PLAYBACK] stopped (barge-in)\n", m_sessionId.c_str());
+                    "(%s) [PLAYBACK] stopped - queue+buffer cleared (barge-in)\n", m_sessionId.c_str());
             }
             status = SWITCH_TRUE;
         }
@@ -372,8 +490,8 @@ public:
                     "(%s) streamAudio - missing data or buffer\n", m_sessionId.c_str());
             }
         }
-        // NETPLAY v2.7: streamAudioPCMU - write PCMU directly without L16→PCMU conversion
-        // This eliminates the G.711→L16→G.711 conversion chain that causes audio artifacts
+        // NETPLAY v2.8: streamAudioPCMU - push PCMU chunks to queue for burst-tolerant playback
+        // The queue absorbs irregular chunk arrivals from OpenAI, reducing underruns
         else if(jsType && strcmp(jsType, "streamAudioPCMU") == 0) {
             cJSON* jsonData = cJSON_GetObjectItem(json, "data");
             if(jsonData && tech_pvt && tech_pvt->playback_buffer) {
@@ -403,9 +521,12 @@ public:
                      * para evitar corrupção de dados misturados */
                     if (!tech_pvt->playback_is_pcmu && switch_buffer_inuse(tech_pvt->playback_buffer) > 0) {
                         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-                            "(%s) [MODE-SWITCH] L16→PCMU, clearing buffer to avoid corruption\n",
+                            "(%s) [MODE-SWITCH] L16→PCMU, clearing queue+buffer\n",
                             m_sessionId.c_str());
                         switch_buffer_zero(tech_pvt->playback_buffer);
+                        if (tech_pvt->audio_chunk_queue) {
+                            audio_chunk_queue_clear(tech_pvt->audio_chunk_queue);
+                        }
                         tech_pvt->playback_active = 0;  /* Force warmup again */
                     }
                     
@@ -415,56 +536,50 @@ public:
                     if (tech_pvt->first_audio_ts == 0) {
                         tech_pvt->first_audio_ts = switch_micro_time_now();
                         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                            "(%s) [PCMU-PASSTHROUGH] First chunk received, mode=PCMU-passthrough\n", m_sessionId.c_str());
+                            "(%s) [PCMU-QUEUE] First chunk received, queue-based playback enabled\n", m_sessionId.c_str());
                     }
                     
-                    /* Check for buffer overrun - if near full, discard oldest data */
-                    /* PCMU uses half the buffer space of L16 (1 byte vs 2 bytes per sample) */
-                    const switch_size_t buffer_capacity = tech_pvt->playback_buflen ? tech_pvt->playback_buflen : 16000;
-                    const switch_size_t high_water_mark = buffer_capacity > rawAudio.size()
-                        ? (buffer_capacity - rawAudio.size())
-                        : 0;
-                    switch_size_t current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
-                    
-                    if (rawAudio.size() > buffer_capacity) {
-                        switch_buffer_zero(tech_pvt->playback_buffer);
-                        const size_t offset = rawAudio.size() - buffer_capacity;
-                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data() + offset, buffer_capacity);
-                        tech_pvt->buffer_overruns++;
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-                            "(%s) [PCMU-BUFFER] overrun: payload %zuB > buffer %zuB, truncating\n",
-                            m_sessionId.c_str(), rawAudio.size(), buffer_capacity);
-                    } else if (current_size > high_water_mark) {
-                        /* Buffer nearly full - discard oldest data to make room */
-                        switch_size_t to_discard = current_size - high_water_mark + rawAudio.size();
-                        char discard_buf[1024];
-                        while (to_discard > 0) {
-                            switch_size_t chunk = (to_discard > sizeof(discard_buf)) ? sizeof(discard_buf) : to_discard;
-                            switch_buffer_read(tech_pvt->playback_buffer, discard_buf, chunk);
-                            to_discard -= chunk;
+                    /* NETPLAY v2.8: Push chunk to queue instead of direct buffer write.
+                     * The capture_callback will pull from queue when buffer runs low.
+                     * This absorbs burst arrivals and smooths playback. */
+                    if (tech_pvt->audio_chunk_queue) {
+                        audio_chunk_queue_push(tech_pvt->audio_chunk_queue, 
+                            (const uint8_t*)rawAudio.data(), rawAudio.size());
+                        
+                        size_t queue_size = audio_chunk_queue_size(tech_pvt->audio_chunk_queue);
+                        size_t queue_bytes = audio_chunk_queue_total_bytes(tech_pvt->audio_chunk_queue);
+                        size_t buffer_bytes = switch_buffer_inuse(tech_pvt->playback_buffer);
+                        
+                        /* Log every 50th chunk or when queue is getting large */
+                        int should_log = (tech_pvt->rtp_packets % 50 == 1) || (queue_size > 10);
+                        
+                        switch_mutex_unlock(tech_pvt->playback_mutex);
+                        
+                        if (should_log) {
+                            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                                get_stream_log_level(session, SWITCH_LOG_DEBUG),
+                                "(%s) [PCMU-QUEUE] +%zuB (queue=%zu chunks/%zuB, buffer=%zuB)\n",
+                                m_sessionId.c_str(), rawAudio.size(), queue_size, queue_bytes, buffer_bytes);
                         }
-                        tech_pvt->buffer_overruns++;
-                    }
-                    
-                    /* Write PCMU audio directly to buffer */
-                    if (rawAudio.size() <= buffer_capacity) {
-                        switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
-                    }
-                    
-                    switch_size_t buffered = switch_buffer_inuse(tech_pvt->playback_buffer);
-                    if (buffered > tech_pvt->buffer_max_used) {
-                        tech_pvt->buffer_max_used = buffered;
-                    }
-                    
-                    /* Log periodicamente (baseado em rtp_packets para evitar variável estática) */
-                    int should_log = (tech_pvt->rtp_packets % 50 == 1);
-                    switch_mutex_unlock(tech_pvt->playback_mutex);
-                    
-                    if (should_log) {
-                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-                            get_stream_log_level(session, SWITCH_LOG_DEBUG),
-                            "(%s) [PCMU-BUFFER] +%zuB (total=%zuB, active=%d, mode=passthrough)\n",
-                            m_sessionId.c_str(), rawAudio.size(), buffered, tech_pvt->playback_active);
+                    } else {
+                        /* Fallback: no queue, write directly to buffer (legacy behavior) */
+                        const switch_size_t buffer_capacity = tech_pvt->playback_buflen ? tech_pvt->playback_buflen : 16000;
+                        if (rawAudio.size() <= buffer_capacity) {
+                            switch_size_t current_size = switch_buffer_inuse(tech_pvt->playback_buffer);
+                            if (current_size + rawAudio.size() > buffer_capacity) {
+                                /* Discard oldest data to make room */
+                                switch_size_t to_discard = current_size + rawAudio.size() - buffer_capacity;
+                                char discard_buf[1024];
+                                while (to_discard > 0) {
+                                    switch_size_t chunk = (to_discard > sizeof(discard_buf)) ? sizeof(discard_buf) : to_discard;
+                                    switch_buffer_read(tech_pvt->playback_buffer, discard_buf, chunk);
+                                    to_discard -= chunk;
+                                }
+                                tech_pvt->buffer_overruns++;
+                            }
+                            switch_buffer_write(tech_pvt->playback_buffer, rawAudio.data(), rawAudio.size());
+                        }
+                        switch_mutex_unlock(tech_pvt->playback_mutex);
                     }
                     
                     status = SWITCH_TRUE;
@@ -626,9 +741,14 @@ namespace {
         tech_pvt->buffer_max_used = 0;
         tech_pvt->underrun_streak = 0;
         tech_pvt->underrun_grace_frames = (uint32_t)(underrun_grace_ms / 20);
+        
+        /* NETPLAY v2.8: Create audio chunk queue for burst-tolerant playback */
+        tech_pvt->audio_chunk_queue = audio_chunk_queue_create();
+        tech_pvt->chunk_queue_pulls = 0;
+        
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-            "(%s) [PLAYBACK] buffer created (%zuB, warmup=%dms, low_water=%dms, underrun_grace=%dms)\n",
-            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms, underrun_grace_ms);
+            "(%s) [PLAYBACK] buffer+queue created (%zuB, warmup=%dms, low_water=%dms, queue=enabled)\n",
+            tech_pvt->sessionId, playback_buflen, warmup_ms, low_water_ms);
 
         if (desiredSampling != sampling) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) resampling from %u to %u\n", tech_pvt->sessionId, sampling, desiredSampling);
@@ -718,6 +838,11 @@ namespace {
         if (tech_pvt->playback_mutex) {
             switch_mutex_destroy(tech_pvt->playback_mutex);
             tech_pvt->playback_mutex = nullptr;
+        }
+        /* NETPLAY v2.8: Destroy audio chunk queue */
+        if (tech_pvt->audio_chunk_queue) {
+            audio_chunk_queue_destroy(tech_pvt->audio_chunk_queue);
+            tech_pvt->audio_chunk_queue = nullptr;
         }
         /*if (tech_pvt->pAudioStreamer) {
             auto* as = (AudioStreamer *) tech_pvt->pAudioStreamer;
