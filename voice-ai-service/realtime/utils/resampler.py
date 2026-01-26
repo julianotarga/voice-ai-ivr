@@ -128,13 +128,13 @@ class AudioBuffer:
     
     def __init__(
         self, 
-        warmup_ms: int = 400,  # 400ms para evitar stuttering com jitter de rede
+        warmup_ms: int = 600,  # 600ms para evitar stuttering com jitter de rede (AUMENTADO 2026-01-25)
         sample_rate: int = 16000,
         bytes_per_sample: int = 2  # PCM16
     ):
         """
         Args:
-            warmup_ms: Tempo de warmup em milissegundos (default: 400ms)
+            warmup_ms: Tempo de warmup em milissegundos (default: 600ms - AUMENTADO 2026-01-25)
                        Valores recomendados:
                        - 200ms: mínimo para conexões estáveis
                        - 400ms: recomendado para produção
@@ -263,7 +263,7 @@ class ResamplerPair:
         freeswitch_rate: int = 16000, 
         provider_input_rate: int = 24000,
         provider_output_rate: int = None,  # Se None, usa provider_input_rate
-        output_warmup_ms: int = 400  # 400ms para evitar stuttering
+        output_warmup_ms: int = 600  # 600ms para evitar stuttering (AUMENTADO 2026-01-25)
     ):
         # Se output rate não especificado, assume igual ao input
         if provider_output_rate is None:

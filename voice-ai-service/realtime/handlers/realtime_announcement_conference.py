@@ -174,7 +174,7 @@ class ConferenceAnnouncementSession:
         # Warmup para B-leg (configurável via banco)
         # 400ms evita engasgos no início da fala mesmo com jitter de rede
         # 200ms pode ser insuficiente em conexões instáveis
-        warmup_ms = int(warmup_ms) if warmup_ms is not None else 400
+        warmup_ms = int(warmup_ms) if warmup_ms is not None else 600  # Default 600ms (AUMENTADO 2026-01-25)
         self._fs_audio_buffer = AudioBuffer(warmup_ms=warmup_ms, sample_rate=8000)
         logger.info(f"🔊 [ANNOUNCEMENT] AudioBuffer configurado: warmup={warmup_ms}ms")
         

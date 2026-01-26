@@ -446,8 +446,8 @@ class RealtimeSessionConfig:
     hold_return_message: Optional[str] = "Obrigado por aguardar."
     # Audio Configuration (per-secretary)
     # Ref: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/Configuration-Reference.md
-    audio_warmup_chunks: int = 15  # chunks de 20ms antes do playback
-    audio_warmup_ms: int = 400  # buffer de warmup em ms (400ms evita stuttering)
+    audio_warmup_chunks: int = 30  # chunks de 20ms antes do playback (AUMENTADO: 30 chunks = 600ms)
+    audio_warmup_ms: int = 600  # buffer de warmup em ms (AUMENTADO: 600ms para absorver bursts do OpenAI)
     audio_adaptive_warmup: bool = True  # ajuste automático de warmup
     jitter_buffer_min: int = 100  # FreeSWITCH jitter buffer min (ms)
     jitter_buffer_max: int = 300  # FreeSWITCH jitter buffer max (ms)
@@ -455,8 +455,9 @@ class RealtimeSessionConfig:
     stream_buffer_size: int = 20  # mod_audio_stream buffer in MILLISECONDS (not samples!)
     
     # Streaming Tuning (baseado em Asterisk-AI-Voice-Agent)
-    provider_grace_ms: int = 500  # Absorver chunks atrasados do provider (evita tail-chop artifacts)
-    low_watermark_ms: int = 180   # Guard band - pausa breve se buffer cair abaixo disso
+    # CORREÇÃO 2026-01-25: Aumentado para absorver bursts do OpenAI Realtime API
+    provider_grace_ms: int = 800  # Absorver chunks atrasados do provider (evita tail-chop artifacts)
+    low_watermark_ms: int = 250   # Guard band - pausa breve se buffer cair abaixo disso (AUMENTADO)
     
     # Barge-in Protection (evita self-echo e falsos barge-ins)
     initial_protection_ms: int = 350  # Ignorar input nos primeiros ms após TTS iniciar (evita self-echo)
@@ -1510,7 +1511,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             )
             
             # Usar warmup do banco de dados (default 400ms) para evitar engasgos
-            warmup_ms = getattr(self.config, 'audio_warmup_ms', 400)
+            warmup_ms = getattr(self.config, 'audio_warmup_ms', 600)  # Default 600ms (AUMENTADO 2026-01-25)
             self._resampler = ResamplerPair(
                 freeswitch_rate=fs_rate,
                 provider_input_rate=provider_in,
@@ -5128,8 +5129,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                # Warmup de 400ms evita engasgos no início da fala
-                                announcement_warmup_ms=400,
+                                # Warmup de 600ms evita engasgos no início da fala (AUMENTADO 2026-01-25)
+                                announcement_warmup_ms=600,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -5162,8 +5163,8 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                                 openai_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
                                 openai_voice=os.getenv("OPENAI_REALTIME_VOICE", "marin"),
                                 announcement_prompt=self.config.transfer_realtime_prompt,
-                                # Warmup de 400ms evita engasgos no início da fala
-                                announcement_warmup_ms=400,
+                                # Warmup de 600ms evita engasgos no início da fala (AUMENTADO 2026-01-25)
+                                announcement_warmup_ms=600,
                             ),
                             on_resume=self._resume_voice_ai,
                             secretary_uuid=self.config.secretary_uuid,
@@ -5558,7 +5559,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             try:
                 # IMPORTANTE: Usar warmup estendido (400ms) após resume de transferência
                 # para evitar áudio picotado. Há mais jitter após o stream ser retomado.
-                self._resampler.reset_output_buffer(extended_warmup_ms=400)
+                self._resampler.reset_output_buffer(extended_warmup_ms=600)  # AUMENTADO 2026-01-25
                 # Preservar o warmup para o próximo RESPONSE_STARTED não desfazer
                 self._preserve_extended_warmup = True
             except Exception:

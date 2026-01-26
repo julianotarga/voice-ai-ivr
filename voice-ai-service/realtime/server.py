@@ -516,9 +516,14 @@ class RealtimeServer:
                 warmup_complete = False
                 last_send_time = 0.0
 
-                warmup_bytes = 1600
-                batch_bytes = 1600
-                batch_duration_ms = 100.0
+                # CORREÇÃO 2026-01-25: Aumentado warmup para absorver bursts do OpenAI Realtime
+                # Baseado em: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/docs/Tuning-Recipes.md
+                # 8kHz L16 = 16 bytes/ms, então:
+                # - 400ms warmup = 6400 bytes (antigo era 1600 = 100ms)
+                # - batch de 200ms para melhor pacing
+                warmup_bytes = 6400  # 400ms @ 8kHz L16 (era 1600 = 100ms)
+                batch_bytes = 3200   # 200ms @ 8kHz L16 (era 1600 = 100ms)
+                batch_duration_ms = 200.0  # 200ms entre envios (era 100ms)
 
                 while True:
                     item = await audio_out_queue.get()
@@ -717,9 +722,9 @@ class RealtimeServer:
                     COALESCE(s.presence_check_enabled, true) as presence_check_enabled,
                     s.omniplay_webhook_url,
                     s.omniplay_company_id,
-                    -- Audio Configuration fields
-                    COALESCE(s.audio_warmup_chunks, 15) as audio_warmup_chunks,
-                    COALESCE(s.audio_warmup_ms, 400) as audio_warmup_ms,
+                    -- Audio Configuration fields (defaults AUMENTADOS 2026-01-25)
+                    COALESCE(s.audio_warmup_chunks, 30) as audio_warmup_chunks,
+                    COALESCE(s.audio_warmup_ms, 600) as audio_warmup_ms,
                     COALESCE(s.audio_adaptive_warmup, true) as audio_adaptive_warmup,
                     COALESCE(s.jitter_buffer_min, 100) as jitter_buffer_min,
                     COALESCE(s.jitter_buffer_max, 300) as jitter_buffer_max,
@@ -1075,8 +1080,8 @@ class RealtimeServer:
                     })
         
         # Audio Configuration - extrair valores do banco ANTES de criar o config
-        db_warmup_chunks = int(row.get("audio_warmup_chunks") or 15)
-        db_warmup_ms = int(row.get("audio_warmup_ms") or 400)
+        db_warmup_chunks = int(row.get("audio_warmup_chunks") or 30)  # AUMENTADO 2026-01-25
+        db_warmup_ms = int(row.get("audio_warmup_ms") or 600)  # AUMENTADO 2026-01-25
         db_adaptive_warmup = _parse_bool(row.get("audio_adaptive_warmup"), default=True)
         db_jitter_min = int(row.get("jitter_buffer_min") or 100)
         db_jitter_max = int(row.get("jitter_buffer_max") or 300)
