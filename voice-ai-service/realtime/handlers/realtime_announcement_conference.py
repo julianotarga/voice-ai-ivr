@@ -1376,21 +1376,24 @@ class ConferenceAnnouncementSession:
                         
                         # Pedir confirmação explícita
                         try:
-                            await self._openai_ws.send(json.dumps({
-                                "type": "conversation.item.create",
-                                "item": {
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": [{
-                                        "type": "input_text",
-                                        "text": "[SISTEMA] Resposta do atendente não foi clara. Pergunte novamente de forma direta: 'Posso transferir a ligação?'"
-                                    }]
-                                }
-                            }))
-                            await self._openai_ws.send(json.dumps({
-                                "type": "response.create"
-                            }))
-                            logger.info("🔄 Pedindo confirmação explícita ao atendente")
+                            if not self._ws or self._is_ws_closed():
+                                logger.warning("⚠️ Não foi possível pedir confirmação: WebSocket indisponível")
+                            else:
+                                await self._ws.send(json.dumps({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": "[SISTEMA] Resposta do atendente não foi clara. Pergunte novamente de forma direta: 'Posso transferir a ligação?'"
+                                        }]
+                                    }
+                                }))
+                                await self._ws.send(json.dumps({
+                                    "type": "response.create"
+                                }))
+                                logger.info("🔄 Pedindo confirmação explícita ao atendente")
                         except Exception as e:
                             logger.debug(f"Could not ask for confirmation: {e}")
                         return  # Sair sem marcar decisão

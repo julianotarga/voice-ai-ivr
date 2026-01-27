@@ -1449,12 +1449,18 @@ class AsyncESLClient:
                         current_reg['user'] = value
                     
                     elif key == 'Contact':
-                        # Extrair SIP URI do formato: "" <sip:1001@177.72.14.10:5060;...>
-                        match = re.search(r'<sip:([^;>]+)', value)
+                        # Extrair SIP URI COMPLETA (preserva ;transport=...;rinstance=...)
+                        # Ex: "" <sip:1001@177.72.14.10:5060;transport=UDP;rinstance=...>
+                        match = re.search(r'<(sip:[^>]+)>', value)
                         if match:
-                            current_reg['contact'] = f"sip:{match.group(1)}"
+                            current_reg['contact'] = match.group(1)
                         else:
-                            current_reg['contact'] = value
+                            # Fallback: tentar achar "sip:..." mesmo sem <> 
+                            match = re.search(r'(sip:[^\s]+)', value)
+                            if match:
+                                current_reg['contact'] = match.group(1)
+                            else:
+                                current_reg['contact'] = value
                     
                     elif key == 'Status':
                         current_reg['status'] = value
