@@ -609,14 +609,21 @@ class BridgeTransferManager:
             
             # Remover prefixo sip: ou sips:
             contact_clean = contact_clean.replace('sips:', '').replace('sip:', '')
-            
-            # Remover parâmetros após ; (ex: ;transport=UDP;rinstance=abc)
-            if ';' in contact_clean:
-                contact_clean = contact_clean.split(';')[0]
-            
             contact_clean = contact_clean.strip()
-            dial_string = f"sofia/internal/{contact_clean}"
-            logger.info(f"{self._elapsed()} ✅ Usando DIRECT contact: {dial_string}")
+            
+            # Usar contact COMPLETO (inclui transport/rinstance quando existir)
+            # Ex: 1000@1.2.3.4:62800;transport=tcp;rinstance=abc
+            if contact_clean:
+                dial_string = f"sofia/internal/{contact_clean}"
+                logger.info(
+                    f"{self._elapsed()} ✅ Usando DIRECT contact completo: {dial_string}"
+                )
+            else:
+                # Fallback se o contact não for utilizável
+                dial_string = f"sofia/internal/{destination}@{self.domain}"
+                logger.warning(
+                    f"{self._elapsed()} ⚠️ Contact inválido, usando fallback: {dial_string}"
+                )
             
             # Variáveis do originate (direct contact)
             originate_vars = (
