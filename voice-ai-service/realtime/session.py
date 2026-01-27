@@ -669,6 +669,7 @@ class RealtimeSession:
         self._esl_connected = False  # True quando ESL Outbound conectou
         self._on_hold = False  # True quando chamada está em espera
         self._bridged_to: Optional[str] = None  # UUID do canal bridged
+        self._inbound_esl_adapter = None  # Cache do adapter ESL Inbound por sessão
         
         # ========================================
         # Echo Cancellation (Speex AEC) para viva-voz
@@ -4165,8 +4166,16 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
 
         if should_hangup:
             try:
-                from .esl import get_esl_adapter
-                adapter = get_esl_adapter(self.call_uuid)
+                # Em transferências, force ESL Inbound para uuid_kill
+                if self._transfer_in_progress or reason.startswith("transfer"):
+                    adapter = await self._get_inbound_esl_adapter()
+                    logger.info(
+                        "📞 [STOP] Usando ESL Inbound para uuid_kill (transferência)",
+                        extra={"call_uuid": self.call_uuid, "reason": reason}
+                    )
+                else:
+                    from .esl import get_esl_adapter
+                    adapter = get_esl_adapter(self.call_uuid)
                 
                 # Encerrar a chamada IMEDIATAMENTE
                 # (não parar audio_stream - o hangup já faz isso)
@@ -4458,8 +4467,10 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         from .handlers.esl_client import get_esl_for_domain
         from .esl.command_interface import ESLInboundAdapter
         
-        esl = await get_esl_for_domain(self.domain_uuid)
-        return ESLInboundAdapter(esl)
+        if self._inbound_esl_adapter is None:
+            esl = await get_esl_for_domain(self.domain_uuid)
+            self._inbound_esl_adapter = ESLInboundAdapter(esl)
+        return self._inbound_esl_adapter
     
     async def hold_call(self, force_inbound: bool = False) -> bool:
         """
@@ -4713,8 +4724,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             }
         """
         try:
-            from .esl import get_esl_adapter
-            adapter = get_esl_adapter(self.call_uuid)
+            adapter = await self._get_inbound_esl_adapter()
             
             # 1. Verificar registro SIP
             # Usar sofia status para verificar se ramal está registrado
@@ -5475,8 +5485,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             # Isso evita que o sistema fique "perdido" tentando falar com ninguém.
             # =================================================================
             try:
-                from .esl import get_esl_adapter
-                adapter = get_esl_adapter(self.call_uuid)
+                adapter = await self._get_inbound_esl_adapter()
                 a_leg_exists = await asyncio.wait_for(
                     adapter.uuid_exists(self.call_uuid),
                     timeout=2.0

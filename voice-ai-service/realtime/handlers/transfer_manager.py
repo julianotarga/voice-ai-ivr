@@ -39,7 +39,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from .esl_client import AsyncESLClient, ESLEvent, OriginateResult, get_esl_client
+from .esl_client import AsyncESLClient, ESLEvent, OriginateResult, get_esl_client, get_esl_for_domain
 from .transfer_destination_loader import (
     TransferDestination,
     TransferDestinationLoader,
@@ -1987,11 +1987,16 @@ async def create_transfer_manager(
             logger.warning(f"Failed to load domain settings: {e}")
             domain_settings = {}
     
+    # Obter ESL client específico do tenant (multi-tenant)
+    # Se falhar, get_esl_for_domain retorna o singleton padrão
+    esl_client = await get_esl_for_domain(domain_uuid)
+    
     manager = TransferManager(
         domain_uuid=domain_uuid,
         call_uuid=call_uuid,
         caller_id=caller_id,
         secretary_uuid=secretary_uuid,
+        esl_client=esl_client,
         on_resume=on_resume,
         on_transfer_complete=on_transfer_complete,
         domain_settings=domain_settings,
