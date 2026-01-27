@@ -596,6 +596,9 @@ class RealtimeServer:
                             )
                             await asyncio.sleep(remaining_duration_ms / 1000.0)
                             batch_buffer.clear()
+                        # Resetar pacing para próxima resposta (evita lead negativo acumulado)
+                        pacer.reset()
+                        warmup_complete = False
                         continue
 
                     generation, chunk = item
@@ -749,6 +752,9 @@ class RealtimeServer:
                             await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
                             pacer.on_sent(len(batch_buffer))
                             batch_buffer.clear()
+                        # Resetar pacing para próxima resposta (evita lead negativo acumulado)
+                        pacer.reset()
+                        warmup_complete = False
                         continue
                     
                     generation, chunk = item
