@@ -1294,6 +1294,14 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             else:
                 credentials = raw_config or {}
         
+        # NETPLAY v2.10.4: Passar audio_format explicitamente para o provider
+        # Isso garante que o provider saiba qual sample rate usar (8kHz para G.711, 24kHz para PCM16)
+        audio_format = self.config.audio_format
+        logger.info(f"🎵 [PROVIDER] Criando RealtimeConfig com audio_format={audio_format}", extra={
+            "call_uuid": self.call_uuid,
+            "domain_uuid": self.domain_uuid,
+        })
+        
         provider_config = RealtimeConfig(
             domain_uuid=self.domain_uuid,
             secretary_uuid=self.config.secretary_uuid,
@@ -1311,6 +1319,8 @@ Comece cumprimentando e informando sobre o horário de atendimento."""
             # Tools e outros
             tools=self.config.tools,
             max_response_output_tokens=self.config.max_response_output_tokens,
+            # NETPLAY v2.10.4: Audio format explícito para sample rate correto
+            audio_format=audio_format,
         )
         
         self._provider = RealtimeProviderFactory.create(
@@ -1505,18 +1515,43 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         
         IMPORTANTE: Input e output do provider podem ter sample rates diferentes!
         - ElevenLabs: input=16kHz, output=16kHz/22050Hz/44100Hz (dinâmico)
-        - OpenAI Realtime: input=24kHz, output=24kHz
+        - OpenAI Realtime: input=24kHz, output=24kHz (PCM16) ou 8kHz (G.711)
         - Gemini Live: input=16kHz, output=24kHz
+        
+        NETPLAY v2.10.4: Log detalhado para debug de sample rate
         """
         if self._provider:
             fs_rate = self.config.freeswitch_sample_rate
             provider_in = self._provider.input_sample_rate
             provider_out = self._provider.output_sample_rate
+            audio_format = self.config.audio_format
             
-            # Log explícito para debug
+            # NETPLAY v2.10.4: Log detalhado para debug de sample rate
+            needs_input_resample = (fs_rate != provider_in)
+            needs_output_resample = (provider_out != fs_rate)
+            
             logger.info(
-                f"Resampler setup: FS={fs_rate}Hz <-> Provider(in={provider_in}Hz, out={provider_out}Hz)"
+                f"🎵 [RESAMPLER] Setup: audio_format={audio_format}, "
+                f"FS={fs_rate}Hz, Provider(in={provider_in}Hz, out={provider_out}Hz), "
+                f"needs_input_resample={needs_input_resample}, needs_output_resample={needs_output_resample}",
+                extra={
+                    "call_uuid": self.call_uuid,
+                    "domain_uuid": self.domain_uuid,
+                    "audio_format": audio_format,
+                    "freeswitch_rate": fs_rate,
+                    "provider_input_rate": provider_in,
+                    "provider_output_rate": provider_out,
+                }
             )
+            
+            # VALIDAÇÃO: Se audio_format é G.711, provider DEVE retornar 8kHz
+            if audio_format in ("pcmu", "g711u", "ulaw", "g711_ulaw", "pcma", "g711a", "alaw", "g711_alaw"):
+                if provider_out != 8000:
+                    logger.error(
+                        f"⚠️ [RESAMPLER] BUG DETECTADO! audio_format={audio_format} mas provider_output={provider_out}Hz! "
+                        f"Deveria ser 8000Hz. Verifique openai_realtime.py output_sample_rate",
+                        extra={"call_uuid": self.call_uuid}
+                    )
             
             # Usar warmup do banco de dados (default 600ms) para evitar engasgos
             warmup_ms = getattr(self.config, 'audio_warmup_ms', 600)  # Default 600ms (AUMENTADO 2026-01-25)

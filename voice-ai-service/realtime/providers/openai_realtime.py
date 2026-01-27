@@ -279,29 +279,38 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
     
     @property
     def input_sample_rate(self) -> int:
-        # OpenAI Realtime API:
-        # - G.711 (pcmu/pcma): nativo 8kHz - OpenAI aceita e processa em 8kHz
-        # - PCM16: nativo 24kHz
+        """
+        NETPLAY v2.10.4: Sample rate de entrada baseado no audio_format.
+        
+        OpenAI Realtime API:
+        - G.711 (pcmu/pcma): nativo 8kHz - OpenAI aceita e processa em 8kHz
+        - PCM16: nativo 24kHz
+        """
         audio_format = getattr(self.config, 'audio_format', 'pcm16')
-        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711_alaw", "pcma", "alaw"):
-            return 8000  # G.711 é sempre 8kHz
+        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711u", "g711_alaw", "pcma", "alaw", "g711a"):
+            return 8000  # G.711 é SEMPRE 8kHz
         return 24000  # PCM16 @ 24kHz
     
     @property
     def output_sample_rate(self) -> int:
-        # NETPLAY v2.10.3: OpenAI RESPEITA o formato G.711 e envia 8kHz
-        #
-        # Evidência dos logs (2026-01-26 20:50):
-        # - OpenAI enviou 800B = 100ms de G.711 @ 8kHz (correto!)
-        # - G.711 → L16: 800B → 1600B (decodificação correta)
-        # - Mas resample 24k→8k reduziu para 533B (ERRADO!)
-        # - Resultado: áudio 3x mais rápido (fino e acelerado)
-        #
-        # Conclusão: OpenAI ESTÁ enviando G.711@8kHz quando configurado
-        # Não precisa de resample, apenas decodificação G.711 → L16
+        """
+        NETPLAY v2.10.4: Sample rate de saída baseado no audio_format.
+        
+        IMPORTANTE: OpenAI RESPEITA o formato G.711 e envia 8kHz quando configurado!
+        
+        Evidência dos logs (2026-01-26):
+        - OpenAI enviou 800B = 100ms de G.711 @ 8kHz (correto!)
+        - G.711 → L16: 800B → 1600B (decodificação correta)
+        
+        Fluxo correto para G.711:
+        1. OpenAI envia G.711 @ 8kHz (800B/100ms)
+        2. session.py decodifica G.711 → L16 @ 8kHz (1600B/100ms)
+        3. ResamplerPair: 8000Hz → 8000Hz = SEM RESAMPLE
+        4. FreeSWITCH recebe L16 @ 8kHz (1600B/100ms)
+        """
         audio_format = getattr(self.config, 'audio_format', 'pcm16')
-        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711_alaw", "pcma", "alaw"):
-            return 8000  # G.711 é sempre 8kHz - OpenAI respeita!
+        if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711u", "g711_alaw", "pcma", "alaw", "g711a"):
+            return 8000  # G.711 é SEMPRE 8kHz - OpenAI respeita!
         return 24000  # PCM16 @ 24kHz
     
     @property
@@ -449,11 +458,12 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             # ETAPA 1: Configuração de áudio e sessão
             # Determinar formato de áudio baseado na configuração
             # G.711 μ-law (8kHz) elimina resampling e reduz latência ~50ms
+            # NETPLAY v2.10.4: Lista completa de formatos G.711 para consistência
             audio_format = getattr(self.config, 'audio_format', 'pcm16')
-            if audio_format in ("g711_ulaw", "pcmu", "ulaw"):
+            if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711u"):
                 input_format = {"type": "audio/pcmu"}  # G.711 μ-law @ 8kHz
                 input_rate_log = "8kHz G.711 μ-law"
-            elif audio_format in ("g711_alaw", "pcma", "alaw"):
+            elif audio_format in ("g711_alaw", "pcma", "alaw", "g711a"):
                 input_format = {"type": "audio/pcma"}  # G.711 A-law @ 8kHz
                 input_rate_log = "8kHz G.711 A-law"
             else:
@@ -467,10 +477,10 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             
             # Configurar output format baseado no input (G.711 elimina resampling)
             # Context7 confirma: OpenAI suporta g711_ulaw e g711_alaw para output também!
-            if audio_format in ("g711_ulaw", "pcmu", "ulaw"):
+            if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711u"):
                 output_format = {"type": "audio/pcmu"}  # G.711 μ-law @ 8kHz
                 output_rate_log = "8kHz G.711 μ-law"
-            elif audio_format in ("g711_alaw", "pcma", "alaw"):
+            elif audio_format in ("g711_alaw", "pcma", "alaw", "g711a"):
                 output_format = {"type": "audio/pcma"}  # G.711 A-law @ 8kHz
                 output_rate_log = "8kHz G.711 A-law"
             else:
@@ -557,11 +567,12 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             # === FORMATO PREVIEW: Enviar tudo junto (mantém comportamento anterior) ===
             # Determinar formato de áudio para modelos preview
             # Context7: OpenAI suporta g711_ulaw e g711_alaw para input E output
+            # NETPLAY v2.10.4: Lista completa de formatos G.711 para consistência
             audio_format = getattr(self.config, 'audio_format', 'pcm16')
-            if audio_format in ("g711_ulaw", "pcmu", "ulaw"):
+            if audio_format in ("g711_ulaw", "pcmu", "ulaw", "g711u"):
                 input_audio_fmt = "g711_ulaw"
                 output_audio_fmt = "g711_ulaw"  # G.711 elimina resampling
-            elif audio_format in ("g711_alaw", "pcma", "alaw"):
+            elif audio_format in ("g711_alaw", "pcma", "alaw", "g711a"):
                 input_audio_fmt = "g711_alaw"
                 output_audio_fmt = "g711_alaw"  # G.711 elimina resampling
             else:
