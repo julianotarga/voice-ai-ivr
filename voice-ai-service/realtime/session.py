@@ -4448,7 +4448,20 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 pass
             await self._notify_transfer_start()
     
-    async def hold_call(self) -> bool:
+    async def _get_inbound_esl_adapter(self):
+        """
+        Retorna um adapter ESL Inbound (sempre).
+        
+        Usado em operações críticas de handoff/transferência para garantir
+        suporte a execute_api/uuid_* que não funcionam via ESL Outbound.
+        """
+        from .handlers.esl_client import get_esl_for_domain
+        from .esl.command_interface import ESLInboundAdapter
+        
+        esl = await get_esl_for_domain(self.domain_uuid)
+        return ESLInboundAdapter(esl)
+    
+    async def hold_call(self, force_inbound: bool = False) -> bool:
         """
         Coloca o cliente em espera (modo silêncio).
         
@@ -4462,8 +4475,15 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             return True
         
         try:
-            from .esl import get_esl_adapter
-            adapter = get_esl_adapter(self.call_uuid)
+            if force_inbound:
+                adapter = await self._get_inbound_esl_adapter()
+                logger.info(
+                    "⏸️ [HOLD_CALL] Usando ESL Inbound (forçado para handoff)",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            else:
+                from .esl import get_esl_adapter
+                adapter = get_esl_adapter(self.call_uuid)
             
             # Pausar audio_stream (modo silêncio - sem MOH)
             result = await adapter.execute_api(f"uuid_audio_stream {self.call_uuid} pause")
@@ -4477,7 +4497,12 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             logger.error(f"Error placing call on hold: {e}")
             return False
     
-    async def unhold_call(self, timeout: float = 5.0, speak_return_message: bool = True) -> bool:
+    async def unhold_call(
+        self,
+        timeout: float = 5.0,
+        speak_return_message: bool = True,
+        force_inbound: bool = False
+    ) -> bool:
         """
         Retira o cliente da espera.
         
@@ -4500,8 +4525,15 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             return True
         
         try:
-            from .esl import get_esl_adapter
-            adapter = get_esl_adapter(self.call_uuid)
+            if force_inbound:
+                adapter = await self._get_inbound_esl_adapter()
+                logger.info(
+                    "▶️ [UNHOLD_CALL] Usando ESL Inbound (forçado para handoff)",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            else:
+                from .esl import get_esl_adapter
+                adapter = get_esl_adapter(self.call_uuid)
             
             # Tentar resume primeiro (funciona se stream estava apenas pausado)
             try:
@@ -5143,7 +5175,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             # O agente já avisou o cliente através do LLM, agora colocamos em hold
             logger.info("📞 [INTELLIGENT_HANDOFF] Step 2: Colocando cliente em HOLD...")
             hold_start_time = asyncio.get_event_loop().time()
-            hold_success = await self.hold_call()
+            hold_success = await self.hold_call(force_inbound=True)
             if hold_success:
                 client_on_hold = True
                 logger.info("📞 [INTELLIGENT_HANDOFF] Step 2: Cliente em HOLD com sucesso")
@@ -5328,7 +5360,10 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 # Remover do hold imediatamente - sem delay artificial
                 # O tempo real da tentativa de transferência já é suficiente
                 logger.info("📞 [INTELLIGENT_HANDOFF] Step 4: Transferência não sucedida, removendo do HOLD...")
-                unhold_result = await self.unhold_call(speak_return_message=False)
+                unhold_result = await self.unhold_call(
+                    speak_return_message=False,
+                    force_inbound=True
+                )
                 logger.info(f"📞 [INTELLIGENT_HANDOFF] Step 4: unhold_call retornou: {unhold_result}")
                 client_on_hold = False
                 hold_return_message = (self.config.hold_return_message or "").strip()
@@ -5356,7 +5391,10 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             if client_on_hold:
                 logger.info("Error during handoff, removing client from hold")
                 try:
-                    await self.unhold_call(speak_return_message=False)
+                    await self.unhold_call(
+                        speak_return_message=False,
+                        force_inbound=True
+                    )
                 except Exception:
                     pass
             
