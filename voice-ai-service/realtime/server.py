@@ -23,6 +23,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from .session import RealtimeSessionConfig
 from .session_manager import get_session_manager
 from .utils.metrics import get_metrics
+from .utils.audio_pacing import AudioPacer, create_pcmu_pacer, create_l16_pacer
 from .config_loader import (
     get_config_loader,
     build_transfer_context,
@@ -529,20 +530,29 @@ class RealtimeServer:
                 logger.warning(f"Failed to send stopAudio: {e}", extra={"call_uuid": call_uuid})
 
         async def _sender_loop_rawaudio() -> None:
-            """Sender loop para L16 PCM - com resampling.
+            """Sender loop para L16 PCM - com pacing baseado em lead tracking.
             
-            NETPLAY v2.10 (2026-01-26): Removido pacing artificial com asyncio.sleep()
+            NETPLAY v2.10.5 (2026-01-27): Implementado AudioPacer para controle de timing
             
-            Problema anterior:
-            - asyncio.sleep() não garante timing preciso
-            - Pacing artificial causava jitter e áudio "tremido/arrastado"
+            Problema anterior (v2.10.0-v2.10.4):
+            - Envio sem pacing causava bursts de pacotes
+            - Bursts causavam "concealed samples" no cliente WebRTC
+            - Concealed samples causam robotização do áudio
             
-            Solução:
-            - Enviar imediatamente quando dados disponíveis (event-driven)
-            - FreeSWITCH mod_audio_stream já tem buffer interno
-            - Deixar o buffer do FreeSWITCH fazer o pacing, não o Python
+            Solução (inspirada em xtts-stream e dograh):
+            - AudioPacer baseado em "lead tracking"
+            - Calcula quanto estamos "à frente" do clock real
+            - Só espera quando necessário para manter ritmo constante
+            - Evita tanto bursts quanto delays excessivos
+            
+            Ref: realtime/utils/audio_pacing.py
             """
             nonlocal playback_mode
+            
+            # Criar pacer para L16 @ 8kHz (2 bytes/sample)
+            # target_lead_ms=60 permite 60ms de buffer antes de esperar
+            pacer = create_l16_pacer(sample_rate=8000, target_lead_ms=60.0)
+            
             try:
                 last_health_update = 0.0
                 chunks_sent = 0
@@ -551,28 +561,33 @@ class RealtimeServer:
 
                 # 8kHz L16 = 16 bytes/ms
                 # Warmup: 640B = 40ms (mínimo para evitar micro-chunks)
-                # Batch: 320B = 20ms (1 frame L16 - menor latência possível)
-                # SEM PACING: envia imediatamente, FreeSWITCH faz o pacing
+                # Batch: 320B = 20ms (1 frame L16)
                 warmup_bytes = 640   # 40ms @ 8kHz L16 (2 frames)
-                batch_bytes = 320    # 20ms @ 8kHz L16 (1 frame - latência mínima)
+                batch_bytes = 320    # 20ms @ 8kHz L16 (1 frame)
 
                 while True:
                     item = await audio_out_queue.get()
                     if item is None:
                         if batch_buffer:
+                            await pacer.pace(len(batch_buffer))
                             await _send_streamaudio_chunk(bytes(batch_buffer))
+                            pacer.on_sent(len(batch_buffer))
+                        pacer.stop()
                         return
 
                     if isinstance(item[0], str) and item[0] == "STOP":
                         batch_buffer.clear()
                         warmup_complete = False
+                        pacer.reset()  # Reset pacer para nova resposta
                         await _send_stop_audio()
                         continue
 
                     if isinstance(item[0], str) and item[0] == "FLUSH":
                         if batch_buffer:
                             remaining_bytes = len(batch_buffer)
+                            await pacer.pace(remaining_bytes)
                             await _send_streamaudio_chunk(bytes(batch_buffer))
+                            pacer.on_sent(remaining_bytes)
 
                             remaining_duration_ms = (remaining_bytes / 16.0) + 50
                             logger.debug(
@@ -592,23 +607,28 @@ class RealtimeServer:
                     if not warmup_complete:
                         if len(batch_buffer) >= warmup_bytes:
                             warmup_complete = True
+                            pacer.start()  # Iniciar pacer após warmup
                             logger.info(
-                                f"Streaming warmup complete ({len(batch_buffer)} bytes)",
+                                f"Streaming warmup complete ({len(batch_buffer)} bytes), pacer started",
                                 extra={"call_uuid": call_uuid}
                             )
                         else:
                             continue
 
-                    # Enviar imediatamente quando temos 1+ frame completo
-                    # SEM SLEEP - FreeSWITCH faz o pacing via buffer interno
+                    # Enviar frames com pacing controlado
                     while len(batch_buffer) >= batch_bytes:
                         chunk_to_send = bytes(batch_buffer[:batch_bytes])
                         del batch_buffer[:batch_bytes]
+                        
+                        # Pace: espera se estivermos muito à frente do clock real
+                        await pacer.pace(len(chunk_to_send))
                         await _send_streamaudio_chunk(chunk_to_send)
+                        pacer.on_sent(len(chunk_to_send))
+                        
                         chunks_sent += 1
 
                         if chunks_sent == 1:
-                            logger.info("Streaming playback started", extra={"call_uuid": call_uuid})
+                            logger.info("Streaming playback started (with pacer)", extra={"call_uuid": call_uuid})
 
                     now = time.time()
                     if now - last_health_update >= 1.0:
@@ -619,10 +639,13 @@ class RealtimeServer:
                         last_health_update = now
 
             except asyncio.CancelledError:
+                pacer.stop()
                 logger.debug("Playback sender loop cancelled", extra={"call_uuid": call_uuid})
             except websockets.exceptions.ConnectionClosed:
+                pacer.stop()
                 logger.debug("WebSocket closed during audio playback", extra={"call_uuid": call_uuid})
             except Exception as e:
+                pacer.stop()
                 logger.error(
                     f"Error in FreeSWITCH playback sender loop: {e}",
                     exc_info=True,
@@ -670,22 +693,28 @@ class RealtimeServer:
         pcmu_passthrough_enabled = os.getenv("FS_PCMU_PASSTHROUGH", "false").lower() in ("1", "true", "yes")
         
         async def _sender_loop_pcmu() -> None:
-            """Sender loop para PCMU passthrough - envia direto sem conversão.
+            """Sender loop para PCMU passthrough - com pacing baseado em lead tracking.
             
-            NETPLAY v2.10 (2026-01-26): Removido pacing artificial com asyncio.sleep()
+            NETPLAY v2.10.5 (2026-01-27): Implementado AudioPacer para controle de timing
             
-            Problema anterior:
-            - asyncio.sleep() não garante timing preciso
-            - Pacing artificial causava jitter e áudio "tremido/arrastado"
-            - O sleep impedia envio rápido durante bursts do OpenAI
+            Problema anterior (v2.10.0-v2.10.4):
+            - Envio sem pacing causava bursts de pacotes
+            - Bursts causavam "concealed samples" no cliente WebRTC
+            - Concealed samples causam robotização do áudio
             
-            Solução:
-            - Enviar imediatamente quando dados disponíveis (event-driven)
-            - FreeSWITCH mod_audio_stream já tem buffer interno
-            - Deixar o buffer do FreeSWITCH fazer o pacing, não o Python
-            - Chunks pequenos (160B = 20ms) para menor latência
+            Solução (inspirada em xtts-stream e dograh):
+            - AudioPacer baseado em "lead tracking"
+            - Calcula quanto estamos "à frente" do clock real
+            - Só espera quando necessário para manter ritmo constante
+            
+            Ref: realtime/utils/audio_pacing.py
             """
             nonlocal playback_mode
+            
+            # Criar pacer para PCMU @ 8kHz (1 byte/sample)
+            # target_lead_ms=60 permite 60ms de buffer antes de esperar
+            pacer = create_pcmu_pacer(target_lead_ms=60.0)
+            
             try:
                 chunks_sent = 0
                 batch_buffer = bytearray()
@@ -693,27 +722,32 @@ class RealtimeServer:
                 
                 # PCMU: 8 bytes/ms (8kHz * 1 byte/sample)
                 # Warmup: 320B = 40ms (mínimo para evitar micro-chunks)
-                # Batch: 160B = 20ms (1 frame PCMU - menor latência possível)
-                # SEM PACING: envia imediatamente, FreeSWITCH faz o pacing
+                # Batch: 160B = 20ms (1 frame PCMU)
                 warmup_bytes = 320    # 40ms @ 8kHz PCMU (2 frames)
-                batch_bytes = 160     # 20ms @ 8kHz PCMU (1 frame - latência mínima)
+                batch_bytes = 160     # 20ms @ 8kHz PCMU (1 frame)
                 
                 while True:
                     item = await pcmu_out_queue.get()
                     if item is None:
                         if batch_buffer:
+                            await pacer.pace(len(batch_buffer))
                             await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
+                            pacer.on_sent(len(batch_buffer))
+                        pacer.stop()
                         return
                     
                     if isinstance(item[0], str) and item[0] == "STOP":
                         batch_buffer.clear()
                         warmup_complete = False
+                        pacer.reset()  # Reset pacer para nova resposta
                         await _send_stop_audio()
                         continue
                     
                     if isinstance(item[0], str) and item[0] == "FLUSH":
                         if batch_buffer:
+                            await pacer.pace(len(batch_buffer))
                             await _send_streamaudio_pcmu_chunk(bytes(batch_buffer))
+                            pacer.on_sent(len(batch_buffer))
                             batch_buffer.clear()
                         continue
                     
@@ -726,29 +760,37 @@ class RealtimeServer:
                     if not warmup_complete:
                         if len(batch_buffer) >= warmup_bytes:
                             warmup_complete = True
+                            pacer.start()  # Iniciar pacer após warmup
                             logger.info(
-                                f"PCMU passthrough warmup complete ({len(batch_buffer)} bytes)",
+                                f"PCMU passthrough warmup complete ({len(batch_buffer)} bytes), pacer started",
                                 extra={"call_uuid": call_uuid}
                             )
                         else:
                             continue
                     
-                    # Enviar imediatamente quando temos 1+ frame completo
-                    # SEM SLEEP - FreeSWITCH faz o pacing via buffer interno
+                    # Enviar frames com pacing controlado
                     while len(batch_buffer) >= batch_bytes:
                         chunk_to_send = bytes(batch_buffer[:batch_bytes])
                         del batch_buffer[:batch_bytes]
+                        
+                        # Pace: espera se estivermos muito à frente do clock real
+                        await pacer.pace(len(chunk_to_send))
                         await _send_streamaudio_pcmu_chunk(chunk_to_send)
+                        pacer.on_sent(len(chunk_to_send))
+                        
                         chunks_sent += 1
                         
                         if chunks_sent == 1:
-                            logger.info("PCMU passthrough playback started", extra={"call_uuid": call_uuid})
+                            logger.info("PCMU passthrough playback started (with pacer)", extra={"call_uuid": call_uuid})
             
             except asyncio.CancelledError:
+                pacer.stop()
                 logger.debug("PCMU sender loop cancelled", extra={"call_uuid": call_uuid})
             except websockets.exceptions.ConnectionClosed:
+                pacer.stop()
                 logger.debug("WebSocket closed during PCMU playback", extra={"call_uuid": call_uuid})
             except Exception as e:
+                pacer.stop()
                 logger.error(
                     f"Error in PCMU passthrough sender loop: {e}",
                     exc_info=True,
