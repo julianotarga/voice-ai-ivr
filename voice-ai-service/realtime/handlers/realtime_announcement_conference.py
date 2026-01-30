@@ -1608,13 +1608,30 @@ class ConferenceAnnouncementSession:
                     return
             
             # Verificar patterns genéricos de aceite (palavra isolada ou início)
+            # NOTA: Aceite genérico é mais seguro que rejeição genérica
+            # Se aceitarmos incorretamente, o atendente pode recusar depois
+            # Mas se rejeitarmos incorretamente, perdemos a oportunidade
             words = text_lower.split()
             if words:
                 first_word = words[0].rstrip(".,!?")
-                if first_word in accept_generic or (len(words) == 1 and first_word in accept_generic):
+                # Aceitar apenas se for palavra isolada OU se for claramente afirmativo
+                # "sim" sozinho pode ser saudação, mas "sim posso" é aceite
+                if len(words) == 1 and first_word in accept_generic:
+                    # Palavra isolada - pode ser saudação, log warning mas aceitar
+                    logger.warning(
+                        f"Generic accept '{first_word}' (single word) - may be greeting. "
+                        f"Consider letting OpenAI decide via function calls."
+                    )
                     self._accepted = True
-                    self._skip_audio_flush = True  # 🚀 Não fazer flush - bridge imediato
+                    self._skip_audio_flush = True
                     logger.info(f"Human ACCEPTED: generic match '{first_word}' - skipping audio flush")
+                    self._decision_event.set()
+                    return
+                elif first_word in accept_generic and len(words) > 1:
+                    # Primeira palavra é afirmativa e há mais palavras - mais confiável
+                    self._accepted = True
+                    self._skip_audio_flush = True
+                    logger.info(f"Human ACCEPTED: generic match '{first_word}' with context - skipping audio flush")
                     self._decision_event.set()
                     return
             
@@ -1632,19 +1649,23 @@ class ConferenceAnnouncementSession:
                     self._decision_event.set()
                     return
             
-            # Verificar "não" como primeira palavra ou isolado = recusa
+            # REMOVIDO: Pattern matching agressivo para "não" isolado
+            # Problema: "Não" pode ser resposta contextual, não recusa da chamada
+            # Ex: Atendente diz "Carmo", "Tem que ver, né?", "Não" (respondendo a algo)
+            # O OpenAI é mais inteligente e considera o contexto via function calls
+            # 
+            # Se o atendente realmente quer recusar, ele dirá algo mais explícito
+            # como "não posso", "estou ocupado", que são capturados nos reject_patterns
+            #
+            # Ref: Bug 2026-01-30 - "Não" isolado interpretado como rejeição incorretamente
             if words:
                 first_word = words[0].rstrip(".,!?")
-                # "não" ou "nao" como primeira palavra é recusa clara
+                # Log para debug, mas NÃO rejeitar automaticamente
                 if first_word in reject_generic:
-                    self._rejection_message = human_text
-                    logger.info(f"Human REJECTED: 'não' detected as first word")
-                    
-                    await self._send_courtesy_response()
-                    
-                    self._rejected = True
-                    self._decision_event.set()
-                    return
+                    logger.debug(
+                        f"'não' detected as first word, but NOT auto-rejecting. "
+                        f"Letting OpenAI decide via function calls. Text: '{human_text}'"
+                    )
     
     async def _check_assistant_decision(self) -> None:
         """Verifica decisão na transcrição do assistente (fallback)."""
