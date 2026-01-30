@@ -262,6 +262,7 @@ FUNCTION_FILLERS = {
     # Callback - SEM FILLER (fluxo conversacional natural)
     "accept_callback": [],
     "provide_callback_number": [],
+    "use_current_extension": [],
     "confirm_callback_number": [],
     "schedule_callback": [],
     
@@ -3070,7 +3071,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 # Ainda retornamos sucesso para o LLM continuar o fluxo
                 return {"status": "noted", "action": "saved_locally"}
         
-        elif name in ("accept_callback", "provide_callback_number", "confirm_callback_number", "schedule_callback"):
+        elif name in ("accept_callback", "provide_callback_number", "use_current_extension", "confirm_callback_number", "schedule_callback"):
             # Delegar para o ToolRegistry (tools modulares de callback)
             # Ref: voice-ai-ivr/voice-ai-service/realtime/tools/callback.py
             return await self._execute_registry_tool(name, args)
