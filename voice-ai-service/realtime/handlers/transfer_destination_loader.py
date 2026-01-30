@@ -25,6 +25,15 @@ import json
 
 import asyncpg
 
+# Import pytz com fallback
+try:
+    import pytz
+    PYTZ_AVAILABLE = True
+except ImportError:
+    pytz = None  # type: ignore
+    PYTZ_AVAILABLE = False
+    logging.warning("pytz not installed. Timezone support will be limited.")
+
 logger = logging.getLogger(__name__)
 
 # Configurações do banco
@@ -401,12 +410,21 @@ class TransferDestinationLoader:
         Returns:
             Tuple (is_available, message_if_unavailable)
         
-        Formato working_hours esperado:
+        Suporta dois formatos de working_hours:
+        
+        Formato 1 (FusionPBX PHP - ATUAL):
+        {
+            "start": "08:00",
+            "end": "15:00",
+            "days": [1, 2, 3, 4, 5],  // 0=Dom, 1=Seg...6=Sab
+            "timezone": "America/Sao_Paulo"
+        }
+        
+        Formato 2 (schedule detalhado - LEGADO):
         {
             "timezone": "America/Sao_Paulo",
             "schedule": {
                 "monday": [{"start": "08:00", "end": "18:00"}],
-                "tuesday": [{"start": "08:00", "end": "18:00"}],
                 ...
             }
         }
@@ -415,56 +433,160 @@ class TransferDestinationLoader:
             # Sem restrição de horário = sempre disponível
             return (True, "")
         
-        if now is None:
-            now = datetime.now()
-        
         try:
-            schedule = dest.working_hours.get("schedule", {})
+            wh = dest.working_hours
             
-            # Mapear dia da semana
-            day_map = {
-                0: "monday",
-                1: "tuesday",
-                2: "wednesday",
-                3: "thursday",
-                4: "friday",
-                5: "saturday",
-                6: "sunday"
-            }
+            # Obter timezone e aplicar
+            tz_name = wh.get("timezone", "America/Sao_Paulo")
+            if PYTZ_AVAILABLE and pytz is not None:
+                try:
+                    tz = pytz.timezone(tz_name)
+                    if now is None:
+                        now = datetime.now(tz)
+                    elif now.tzinfo is None:
+                        now = tz.localize(now)
+                    else:
+                        now = now.astimezone(tz)
+                except Exception as tz_err:
+                    logger.debug(f"Timezone error (using local): {tz_err}")
+                    if now is None:
+                        now = datetime.now()
+            else:
+                if now is None:
+                    now = datetime.now()
             
-            day_name = day_map.get(now.weekday())
-            day_schedule = schedule.get(day_name, [])
-            
-            if not day_schedule:
-                # Não trabalha neste dia
-                return (False, f"{dest.name} não está disponível hoje.")
-            
-            current_time = now.time()
-            
-            for slot in day_schedule:
-                start_str = slot.get("start", "00:00")
-                end_str = slot.get("end", "23:59")
-                
-                start_parts = start_str.split(":")
-                end_parts = end_str.split(":")
-                
-                start_time = time(int(start_parts[0]), int(start_parts[1]))
-                end_time = time(int(end_parts[0]), int(end_parts[1]))
-                
-                if start_time <= current_time <= end_time:
-                    return (True, "")
-            
-            # Fora do horário
-            next_slot = day_schedule[0]
-            return (
-                False,
-                f"{dest.name} está disponível a partir das {next_slot.get('start', '08:00')}."
-            )
+            # Detectar formato do working_hours
+            if "schedule" in wh:
+                # Formato 2: schedule detalhado (legado)
+                return self._check_schedule_format(dest, wh, now)
+            elif "days" in wh:
+                # Formato 1: FusionPBX PHP (atual)
+                return self._check_days_format(dest, wh, now)
+            else:
+                # Formato desconhecido, considerar disponível
+                logger.warning(f"Unknown working_hours format for {dest.name}: {wh}")
+                return (True, "")
             
         except Exception as e:
-            logger.warning(f"Error checking working hours: {e}")
+            logger.warning(f"Error checking working hours for {dest.name}: {e}")
             # Em caso de erro, considerar disponível
             return (True, "")
+    
+    def _check_days_format(
+        self,
+        dest: TransferDestination,
+        wh: Dict[str, Any],
+        now: datetime
+    ) -> tuple[bool, str]:
+        """
+        Verifica disponibilidade no formato FusionPBX PHP.
+        
+        Formato:
+        {
+            "start": "08:00",
+            "end": "15:00",
+            "days": [1, 2, 3, 4, 5],  // 0=Dom, 1=Seg...6=Sab
+            "timezone": "America/Sao_Paulo"
+        }
+        
+        IMPORTANTE: PHP usa 0=Domingo, Python usa 0=Segunda!
+        """
+        days = wh.get("days", [])
+        start_str = wh.get("start", "00:00")
+        end_str = wh.get("end", "23:59")
+        
+        # Converter dia Python (0=Seg) para formato PHP (0=Dom)
+        # Python weekday(): 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+        # PHP/JS: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+        python_weekday = now.weekday()  # 0=Mon...6=Sun
+        php_day = (python_weekday + 1) % 7  # Converte para 0=Sun...6=Sat
+        
+        logger.debug(
+            f"[WORKING_HOURS] {dest.name}: python_weekday={python_weekday}, "
+            f"php_day={php_day}, configured_days={days}, now={now}"
+        )
+        
+        if php_day not in days:
+            day_names = {0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb"}
+            available_days = ", ".join([day_names.get(d, str(d)) for d in sorted(days)])
+            return (False, f"{dest.name} não está disponível hoje. Atende: {available_days}.")
+        
+        # Verificar horário
+        current_time = now.time()
+        
+        start_parts = start_str.split(":")
+        end_parts = end_str.split(":")
+        
+        start_time = time(int(start_parts[0]), int(start_parts[1]))
+        end_time = time(int(end_parts[0]), int(end_parts[1]))
+        
+        if start_time <= current_time <= end_time:
+            return (True, "")
+        
+        # Fora do horário mas no dia certo
+        if current_time < start_time:
+            return (False, f"{dest.name} abre às {start_str}.")
+        else:
+            return (False, f"{dest.name} fechou às {end_str}.")
+    
+    def _check_schedule_format(
+        self,
+        dest: TransferDestination,
+        wh: Dict[str, Any],
+        now: datetime
+    ) -> tuple[bool, str]:
+        """
+        Verifica disponibilidade no formato schedule detalhado (legado).
+        
+        Formato:
+        {
+            "schedule": {
+                "monday": [{"start": "08:00", "end": "18:00"}],
+                ...
+            }
+        }
+        """
+        schedule = wh.get("schedule", {})
+        
+        # Mapear dia da semana
+        day_map = {
+            0: "monday",
+            1: "tuesday",
+            2: "wednesday",
+            3: "thursday",
+            4: "friday",
+            5: "saturday",
+            6: "sunday"
+        }
+        
+        day_name = day_map.get(now.weekday())
+        day_schedule = schedule.get(day_name, [])
+        
+        if not day_schedule:
+            # Não trabalha neste dia
+            return (False, f"{dest.name} não está disponível hoje.")
+        
+        current_time = now.time()
+        
+        for slot in day_schedule:
+            start_str = slot.get("start", "00:00")
+            end_str = slot.get("end", "23:59")
+            
+            start_parts = start_str.split(":")
+            end_parts = end_str.split(":")
+            
+            start_time = time(int(start_parts[0]), int(start_parts[1]))
+            end_time = time(int(end_parts[0]), int(end_parts[1]))
+            
+            if start_time <= current_time <= end_time:
+                return (True, "")
+        
+        # Fora do horário
+        next_slot = day_schedule[0]
+        return (
+            False,
+            f"{dest.name} está disponível a partir das {next_slot.get('start', '08:00')}."
+        )
     
     def invalidate_cache(self, domain_uuid: Optional[str] = None):
         """
