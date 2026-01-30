@@ -3097,11 +3097,14 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             return {"error": f"Tool not found: {name}"}
         
         # Criar contexto para o tool
+        # Extrair nome do cliente (pode vir de request_handoff ou transcript)
+        caller_name = self._extract_caller_name()
+        
         context = ToolContext(
             call_uuid=self.call_uuid,
             domain_uuid=self.config.domain_uuid,
             caller_id=self.config.caller_id,
-            caller_name=getattr(self, '_caller_name', None),
+            caller_name=caller_name,
             secretary_uuid=self.config.secretary_uuid,
             company_id=self.config.omniplay_company_id,
             webhook_url=self.config.omniplay_webhook_url,
