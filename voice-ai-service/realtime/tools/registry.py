@@ -243,6 +243,12 @@ class ToolRegistry:
             from .message import TakeMessageTool
             from .decision import AcceptTransferTool, RejectTransferTool
             from .call_control import EndCallTool, GetBusinessInfoTool
+            from .callback import (
+                AcceptCallbackTool,
+                ProvideCallbackNumberTool,
+                ConfirmCallbackNumberTool,
+                ScheduleCallbackTool,
+            )
             
             cls.register(RequestHandoffTool())
             cls.register(TakeMessageTool())
@@ -250,6 +256,12 @@ class ToolRegistry:
             cls.register(RejectTransferTool())
             cls.register(EndCallTool())
             cls.register(GetBusinessInfoTool())
+            
+            # Tools de Callback (retorno de ligação)
+            cls.register(AcceptCallbackTool())
+            cls.register(ProvideCallbackNumberTool())
+            cls.register(ConfirmCallbackNumberTool())
+            cls.register(ScheduleCallbackTool())
             
             cls._initialized = True
             logger.info(f"✅ ToolRegistry inicializado com {len(cls._tools)} tools")

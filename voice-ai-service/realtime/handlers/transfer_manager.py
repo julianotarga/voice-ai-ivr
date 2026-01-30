@@ -65,35 +65,36 @@ TRANSFER_ANNOUNCEMENTS = [
 
 # Mensagens quando destino está offline/indisponível
 # Funciona para pessoas ("João não está disponível") e departamentos ("Vendas não está disponível")
+# IMPORTANTE: Oferecer CALLBACK como primeira opção (mais útil para o cliente)
 OFFLINE_MESSAGES = [
     "Infelizmente {destination} não está disponível no momento. "
-    "Posso anotar um recado para retornarem assim que possível?",
+    "Prefere que liguemos de volta quando estiver disponível, ou quer deixar um recado?",
     "{destination} não está online agora. "
-    "Quer deixar uma mensagem para nossa equipe entrar em contato?",
+    "Posso agendar um retorno de ligação, ou prefere deixar uma mensagem?",
 ]
 
 # Mensagens quando destino não atende
 NO_ANSWER_MESSAGES = [
     "{destination} não conseguiu atender agora. "
-    "Quer deixar um recado para te retornarem?",
+    "Prefere que retornemos a ligação, ou quer deixar um recado?",
     "Liguei para {destination} mas não houve resposta. "
-    "Posso anotar uma mensagem?",
+    "Posso agendar uma ligação de retorno, ou prefere deixar uma mensagem?",
 ]
 
 # Mensagens quando destino está ocupado
 BUSY_MESSAGES = [
     "{destination} está em outra ligação no momento. "
-    "Quer aguardar ou prefere que eu anote um recado?",
+    "Quer aguardar, que liguemos de volta, ou prefere deixar um recado?",
     "{destination} está ocupado agora. "
-    "Posso tentar novamente ou deixar uma mensagem?",
+    "Prefere que retornemos a ligação ou quer deixar uma mensagem?",
 ]
 
 # Mensagens quando destino rejeitou a chamada ativamente
 REJECTED_MESSAGES = [
     "{destination} não pôde atender no momento. "
-    "Quer deixar um recado para retornarem?",
+    "Prefere que liguemos de volta, ou quer deixar um recado?",
     "A chamada não foi atendida por {destination}. "
-    "Posso anotar uma mensagem?",
+    "Posso agendar um retorno de ligação, ou prefere deixar uma mensagem?",
 ]
 
 
