@@ -485,6 +485,8 @@ class ScheduleCallbackTool(VoiceAITool):
                 # Formatar número para exibição
                 formatted_number = PhoneNumberValidator.format_for_speech(callback_number)
                 
+                # IMPORTANTE: OmniPlay espera "ticket" não "callback"
+                # O formato deve ser compatível com VoiceMessageTicketPayload
                 payload = {
                     "event": "voice_ai_callback",
                     "domain_uuid": context.domain_uuid,
@@ -492,15 +494,17 @@ class ScheduleCallbackTool(VoiceAITool):
                     "caller_id": context.caller_id,
                     "secretary_uuid": context.secretary_uuid,
                     "company_id": context.company_id,
-                    "callback": {
+                    # OmniPlay espera o campo "ticket", não "callback"
+                    "ticket": {
                         "type": "callback",
                         "callback_number": callback_number,
                         "callback_number_formatted": formatted_number,
                         "preferred_time": preferred_time,
                         "is_asap": is_asap,
                         "scheduled_at": scheduled_at,
-                        "reason": callback_reason,
+                        "message": callback_reason or "",  # Motivo do callback
                         "caller_name": context.caller_name,
+                        "caller_phone": context.caller_id,
                         "priority": "normal"
                     }
                 }
