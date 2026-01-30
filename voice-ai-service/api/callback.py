@@ -650,14 +650,22 @@ async def originate_callback(request: OriginateRequest):
 
 
 @router.get("/status/{call_uuid}", response_model=CallStatusResponse)
-async def get_call_status(call_uuid: str):
+async def get_call_status(call_uuid: str, domain_uuid: Optional[str] = None):
     """
     Retorna status de uma chamada.
     
     Consulta o FreeSWITCH para obter estado atual.
+    
+    Args:
+        call_uuid: UUID da chamada
+        domain_uuid: UUID do tenant (opcional, mas recomendado para multi-tenant)
     """
     try:
-        esl = await get_esl()
+        # Usar ESL do domínio se fornecido, senão usar default
+        if domain_uuid:
+            esl = await get_esl_with_domain_config(domain_uuid)
+        else:
+            esl = await get_esl()
         
         # Verificar se a chamada está ativa
         result = await esl.execute_api(f"uuid_exists {call_uuid}")
@@ -695,12 +703,20 @@ async def get_call_status(call_uuid: str):
 
 
 @router.delete("/cancel/{call_uuid}")
-async def cancel_callback(call_uuid: str):
+async def cancel_callback(call_uuid: str, domain_uuid: Optional[str] = None):
     """
     Cancela uma chamada de callback em andamento.
+    
+    Args:
+        call_uuid: UUID da chamada a cancelar
+        domain_uuid: UUID do tenant (opcional, mas recomendado para multi-tenant)
     """
     try:
-        esl = await get_esl()
+        # Usar ESL do domínio se fornecido, senão usar default
+        if domain_uuid:
+            esl = await get_esl_with_domain_config(domain_uuid)
+        else:
+            esl = await get_esl()
         
         # Verificar se a chamada existe
         exists = await esl.execute_api(f"uuid_exists {call_uuid}")
@@ -799,6 +815,8 @@ async def notify_omniplay_callback_result(
     try:
         domain_settings = await get_domain_settings(domain_uuid)
         omniplay_url = domain_settings.get('omniplay_api_url', 'http://127.0.0.1:8080')
+        api_key = domain_settings.get('omniplay_api_key', '')
+        timeout_ms = domain_settings.get('omniplay_api_timeout_ms', 10000)
         
         payload = {
             "ticketId": ticket_id,
@@ -808,16 +826,21 @@ async def notify_omniplay_callback_result(
             "completedAt": datetime.now().isoformat()
         }
         
+        # Headers com autenticação do domínio
+        headers = {
+            "Content-Type": "application/json",
+            "X-Service-Name": "voice-ai-service"
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{omniplay_url}/api/callbacks/{ticket_id}/complete",
                 json={"success": status == "completed", "duration": duration_seconds},
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Service-Name": "voice-ai-service"
-                },
-                timeout=aiohttp.ClientTimeout(total=10)
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout_ms / 1000.0)
             ) as response:
                 if response.status in (200, 201):
                     logger.info(

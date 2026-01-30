@@ -1220,13 +1220,34 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 error_code = error.get("code", "unknown")
                 error_message = error.get("message", "No error message provided")
                 
-                logger.error(f"❌ [OPENAI] Response FAILED: {error_code} - {error_message}", extra={
+                # ===== ERROS CRÍTICOS DE BILLING (insufficient_quota) =====
+                billing_errors = ["insufficient_quota", "billing_hard_limit_reached", "quota_exceeded"]
+                if error_type in billing_errors or error_code in billing_errors:
+                    logger.critical(
+                        f"🚨 [OPENAI BILLING] Response FAILED - {error_type}: {error_message}",
+                        extra={
+                            "domain_uuid": self.config.domain_uuid,
+                            "error_type": error_type,
+                            "error_code": error_code,
+                            "error_message": error_message,
+                            "response_id": response.get("id"),
+                            "full_response": json.dumps(response)[:1500],
+                            "action_required": "URGENTE: Verificar créditos/limite na conta OpenAI!",
+                        }
+                    )
+                else:
+                    logger.error(f"❌ [OPENAI] Response FAILED: {error_type}/{error_code} - {error_message}", extra={
+                        "domain_uuid": self.config.domain_uuid,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "response_id": response.get("id"),
+                        "status_details": status_details,
+                    })
+            elif status == "cancelled":
+                logger.debug(f"Response cancelled (normal flow)", extra={
                     "domain_uuid": self.config.domain_uuid,
-                    "error_type": error_type,
-                    "error_code": error_code,
-                    "error_message": error_message,
                     "response_id": response.get("id"),
-                    "status_details": status_details,
                 })
             else:
                 logger.debug(f"Response done: {status}", extra={
@@ -1269,6 +1290,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
         if etype == "error":
             error = event.get("error", {})
             error_code = error.get("code", "unknown")
+            error_type = error.get("type", "unknown")
             error_message = error.get("message", "Unknown error")
             
             # Erros não-críticos (esperados em alguns fluxos)
@@ -1283,16 +1305,76 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
                 })
                 return None  # Ignorar, não é erro crítico
             
-            # Log detalhado do erro para debug
-            logger.error(f"OpenAI error: {error_code} - {error_message}", extra={
+            # ===== ERROS CRÍTICOS DE BILLING/QUOTA =====
+            # Estes erros indicam problemas de conta/pagamento que precisam atenção imediata
+            billing_errors = ["insufficient_quota", "billing_hard_limit_reached", "quota_exceeded"]
+            if error_type in billing_errors or error_code in billing_errors:
+                logger.critical(
+                    f"🚨 [OPENAI BILLING ERROR] {error_type}/{error_code}: {error_message}",
+                    extra={
+                        "domain_uuid": self.config.domain_uuid,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "full_event": json.dumps(event)[:1000],
+                        "action_required": "Verificar créditos/limite de uso na conta OpenAI",
+                    }
+                )
+                return ProviderEvent(type=ProviderEventType.ERROR, data={
+                    "error": error,
+                    "is_billing_error": True,
+                    "user_message": "Sistema temporariamente indisponível. Por favor, tente novamente mais tarde."
+                })
+            
+            # ===== ERROS DE JSON/FORMATO =====
+            # Indicam problemas no nosso código que envia dados para a API
+            format_errors = ["invalid_json", "invalid_request_error", "invalid_value"]
+            if error_type in format_errors or error_code in format_errors:
+                logger.error(
+                    f"❌ [OPENAI FORMAT ERROR] {error_type}/{error_code}: {error_message}",
+                    extra={
+                        "domain_uuid": self.config.domain_uuid,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "error_param": error.get("param"),
+                        "full_event": json.dumps(event)[:1500],
+                        "debug_hint": "Verificar JSON enviado para a API - possível problema de serialização",
+                    }
+                )
+            
+            # ===== ERROS DE RATE LIMIT =====
+            if error_code == "rate_limit_exceeded" or error_type == "rate_limit_error":
+                logger.warning(
+                    f"⚠️ [OPENAI RATE LIMIT] {error_message}",
+                    extra={
+                        "domain_uuid": self.config.domain_uuid,
+                        "error_type": error_type,
+                        "retry_after": error.get("retry_after"),
+                    }
+                )
+                return ProviderEvent(type=ProviderEventType.RATE_LIMITED, data={"error": error})
+            
+            # ===== ERROS DE AUTENTICAÇÃO =====
+            auth_errors = ["invalid_api_key", "authentication_error", "permission_denied"]
+            if error_type in auth_errors or error_code in auth_errors:
+                logger.critical(
+                    f"🔐 [OPENAI AUTH ERROR] {error_type}/{error_code}: {error_message}",
+                    extra={
+                        "domain_uuid": self.config.domain_uuid,
+                        "error_type": error_type,
+                        "action_required": "Verificar API key configurada",
+                    }
+                )
+            
+            # ===== OUTROS ERROS (genérico) =====
+            logger.error(f"❌ [OPENAI ERROR] {error_type}/{error_code}: {error_message}", extra={
                 "domain_uuid": self.config.domain_uuid,
-                "error_type": error.get("type"),
+                "error_type": error_type,
+                "error_code": error_code,
                 "error_param": error.get("param"),
                 "full_error": json.dumps(error)[:500],
             })
-            
-            if error_code == "rate_limit_exceeded":
-                return ProviderEvent(type=ProviderEventType.RATE_LIMITED, data={"error": error})
             
             return ProviderEvent(type=ProviderEventType.ERROR, data={"error": error})
         
