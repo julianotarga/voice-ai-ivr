@@ -2622,14 +2622,36 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             # Não precisamos de resposta adicional (evita sobreposição de áudio)
             # O mesmo para end_call que agenda _delayed_stop
             skip_response_functions = {"request_handoff", "end_call"}
-            request_response = function_name not in skip_response_functions
+            
+            # Verificar se o tool retornou instrução
+            has_instruction = isinstance(result, dict) and "_instruction" in result
+            should_respond = result.get("_should_respond", True) if has_instruction else True
+            
+            # Se tem instrução, NÃO solicitar resposta agora - vamos enviar a instrução depois
+            if has_instruction:
+                request_response = False
+            else:
+                request_response = function_name not in skip_response_functions
+            
+            # Enviar resultado da função (sem campos internos)
+            clean_result = {k: v for k, v in result.items() if not k.startswith("_")} if isinstance(result, dict) else result
             
             await self._provider.send_function_result(
                 function_name, 
-                result, 
+                clean_result, 
                 call_id,
                 request_response=request_response
             )
+            
+            # DEPOIS de enviar o function result, enviar a instrução e solicitar resposta
+            # Isso garante que o OpenAI processe a instrução corretamente
+            if has_instruction and should_respond:
+                instruction = result["_instruction"]
+                logger.info(f"📞 [TOOL] Enviando instrução pós-function: {instruction[:50]}...")
+                await self._send_text_to_provider(
+                    f"[INSTRUÇÃO] {instruction}",
+                    request_response=True
+                )
     
     async def _execute_function(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Executa função internamente."""
@@ -3119,15 +3141,15 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             if isinstance(result, ToolResult):
                 response_data = result.data or {}
                 
-                # Se o tool retornou instrução para a IA, enviar como texto
-                # Isso guia a IA sobre o que falar ao cliente
+                # IMPORTANTE: Incluir instrução no output da função para que
+                # OpenAI processe junto com o function_call_output.
+                # Não enviar como texto separado - causa race condition!
                 if result.instruction:
                     logger.info(f"📞 [TOOL] {name} retornou instrução: {result.instruction[:80]}...")
-                    # Enviar instrução para a IA falar
-                    await self._send_text_to_provider(
-                        f"[INSTRUÇÃO] {result.instruction}",
-                        request_response=result.should_respond
-                    )
+                    # Incluir instrução no resultado para OpenAI processar
+                    response_data["_instruction"] = result.instruction
+                    # Flag para _handle_function_call saber que precisa de resposta
+                    response_data["_should_respond"] = result.should_respond
                 
                 # Se o tool tem side effects, processar
                 if result.side_effects:
