@@ -509,7 +509,8 @@ class TransferDestinationLoader:
         if php_day not in days:
             day_names = {0: "Dom", 1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sáb"}
             available_days = ", ".join([day_names.get(d, str(d)) for d in sorted(days)])
-            return (False, f"{dest.name} não está disponível hoje. Atende: {available_days}.")
+            callback_offer = " Prefere que liguemos de volta quando estiver disponível, ou quer deixar um recado?"
+            return (False, f"{dest.name} não está disponível hoje. Atende: {available_days}.{callback_offer}")
         
         # Verificar horário
         current_time = now.time()
@@ -524,10 +525,12 @@ class TransferDestinationLoader:
             return (True, "")
         
         # Fora do horário mas no dia certo
+        # IMPORTANTE: Oferecer CALLBACK como primeira opção (mais útil para o cliente)
+        callback_offer = " Prefere que liguemos de volta quando estiver disponível, ou quer deixar um recado?"
         if current_time < start_time:
-            return (False, f"{dest.name} abre às {start_str}.")
+            return (False, f"{dest.name} abre às {start_str}.{callback_offer}")
         else:
-            return (False, f"{dest.name} fechou às {end_str}.")
+            return (False, f"{dest.name} fechou às {end_str}.{callback_offer}")
     
     def _check_schedule_format(
         self,
@@ -564,7 +567,8 @@ class TransferDestinationLoader:
         
         if not day_schedule:
             # Não trabalha neste dia
-            return (False, f"{dest.name} não está disponível hoje.")
+            callback_offer = " Prefere que liguemos de volta quando estiver disponível, ou quer deixar um recado?"
+            return (False, f"{dest.name} não está disponível hoje.{callback_offer}")
         
         current_time = now.time()
         
@@ -583,9 +587,10 @@ class TransferDestinationLoader:
         
         # Fora do horário
         next_slot = day_schedule[0]
+        callback_offer = " Prefere que liguemos de volta quando estiver disponível, ou quer deixar um recado?"
         return (
             False,
-            f"{dest.name} está disponível a partir das {next_slot.get('start', '08:00')}."
+            f"{dest.name} está disponível a partir das {next_slot.get('start', '08:00')}.{callback_offer}"
         )
     
     def invalidate_cache(self, domain_uuid: Optional[str] = None):
