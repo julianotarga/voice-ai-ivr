@@ -3115,9 +3115,15 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             if isinstance(result, ToolResult):
                 response_data = result.data or {}
                 
-                # Se o tool retornou instrução para a IA, incluir
+                # Se o tool retornou instrução para a IA, enviar como texto
+                # Isso guia a IA sobre o que falar ao cliente
                 if result.instruction:
-                    response_data["_instruction"] = result.instruction
+                    logger.info(f"📞 [TOOL] {name} retornou instrução: {result.instruction[:80]}...")
+                    # Enviar instrução para a IA falar
+                    await self._send_text_to_provider(
+                        f"[INSTRUÇÃO] {result.instruction}",
+                        request_response=result.should_respond
+                    )
                 
                 # Se o tool tem side effects, processar
                 if result.side_effects:
