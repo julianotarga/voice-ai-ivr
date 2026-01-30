@@ -1726,6 +1726,44 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         if self._echo_canceller and audio_bytes:
             audio_bytes = self._echo_canceller.process(audio_bytes)
         
+        # ========================================
+        # FILTRO DE ÁUDIO DURANTE FALA DA IA
+        # Descarta áudio do cliente enquanto a IA está falando
+        # Isso evita que ruídos ambientes e conversas paralelas
+        # sejam interpretados como fala do cliente
+        # 
+        # Ref: REALTIME_MUTE_DURING_AI_SPEECH=true (default)
+        # ========================================
+        mute_during_ai_speech = os.getenv("REALTIME_MUTE_DURING_AI_SPEECH", "true").lower() == "true"
+        
+        if mute_during_ai_speech and (self._assistant_speaking or self._response_active):
+            # Contadores para log agregado
+            if not hasattr(self, '_ai_speech_mute_frames'):
+                self._ai_speech_mute_frames = 0
+                self._ai_speech_mute_bytes = 0
+            
+            self._ai_speech_mute_frames += 1
+            self._ai_speech_mute_bytes += len(audio_bytes)
+            
+            # Log a cada 100 frames (~2 segundos) para não poluir
+            if self._ai_speech_mute_frames % 100 == 1:
+                logger.debug(
+                    f"🔇 [MUTE_DURING_AI] Descartando áudio do cliente - "
+                    f"frames={self._ai_speech_mute_frames}, bytes={self._ai_speech_mute_bytes}",
+                    extra={"call_uuid": self.call_uuid}
+                )
+            return
+        else:
+            # Resetar contadores quando IA não está falando
+            if hasattr(self, '_ai_speech_mute_frames') and self._ai_speech_mute_frames > 0:
+                logger.debug(
+                    f"🔊 [MUTE_DURING_AI] Áudio do cliente liberado - "
+                    f"total descartado: {self._ai_speech_mute_frames} frames, {self._ai_speech_mute_bytes}B",
+                    extra={"call_uuid": self.call_uuid}
+                )
+                self._ai_speech_mute_frames = 0
+                self._ai_speech_mute_bytes = 0
+        
         # IMPORTANTE: NÃO atualizar _last_activity aqui!
         # O FreeSWITCH envia frames continuamente (incluindo silêncio).
         # Se atualizarmos aqui, o idle_timeout NUNCA dispara.
