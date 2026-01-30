@@ -1572,17 +1572,24 @@ class ConferenceAnnouncementSession:
             text_lower = human_text.lower().strip()
             
             # Patterns de ACEITE - ordenados por especificidade (mais específico primeiro)
-            # Evitar patterns muito curtos que podem dar falso positivo
+            # IMPORTANTE: Evitar patterns curtos que podem dar falso positivo
+            # "claro" removido daqui - precisa de mais contexto
             accept_patterns = [
                 "pode passar", "pode transferir", "pode conectar",
+                "claro que sim", "claro que pode", "claro, pode",  # "claro" com contexto
                 "tá bom", "tá bem", "tudo bem", "ta bom", "ta bem",
-                "beleza", "aceito", "claro", "certo", "posso sim",
+                "beleza", "aceito", "certo", "posso sim",
                 "manda", "passa aí", "passa ai", "conecta",
                 "vou atender", "pode colocar", "coloca na linha",
             ]
             
             # Patterns genéricos que precisam ser palavra isolada ou início de frase
-            accept_generic = ["sim", "ok", "pode", "posso", "beleza", "certo", "claro"]
+            # REMOVIDO: "claro" - muito ambíguo quando isolado (pode ser "claro que não")
+            accept_generic = ["sim", "ok", "pode", "posso", "beleza", "certo"]
+            
+            # Palavras que INVALIDAM aceite se aparecerem junto
+            # Ex: "claro que não", "sim, mas não posso"
+            rejection_modifiers = ["não", "nao", "mas", "porém", "porem", "ocupado", "depois"]
             
             # Patterns de RECUSA - ordenados por especificidade
             # IMPORTANTE: "não" isolado AGORA é considerado recusa
@@ -1599,8 +1606,19 @@ class ConferenceAnnouncementSession:
             reject_generic = ["não", "nao"]
             
             # Verificar patterns específicos de aceite
+            # ANTES: Verificar se há rejection_modifiers que invalidam o aceite
+            has_rejection_modifier = any(mod in text_lower for mod in rejection_modifiers)
+            
             for pattern in accept_patterns:
                 if pattern in text_lower:
+                    if has_rejection_modifier:
+                        # Ex: "claro que sim, mas não posso agora" - NÃO aceitar
+                        logger.warning(
+                            f"Accept pattern '{pattern}' found but has rejection modifier. "
+                            f"NOT accepting. Text: '{human_text}'"
+                        )
+                        continue  # Não aceitar, verificar próximo pattern
+                    
                     self._accepted = True
                     self._skip_audio_flush = True  # 🚀 Não fazer flush - bridge imediato
                     logger.info(f"Human ACCEPTED: matched '{pattern}' - skipping audio flush")
@@ -1608,32 +1626,44 @@ class ConferenceAnnouncementSession:
                     return
             
             # Verificar patterns genéricos de aceite (palavra isolada ou início)
-            # NOTA: Aceite genérico é mais seguro que rejeição genérica
-            # Se aceitarmos incorretamente, o atendente pode recusar depois
-            # Mas se rejeitarmos incorretamente, perdemos a oportunidade
+            # MODIFICADO: Ser mais rigoroso - verificar rejection_modifiers e contexto
             words = text_lower.split()
             if words:
                 first_word = words[0].rstrip(".,!?")
-                # Aceitar apenas se for palavra isolada OU se for claramente afirmativo
-                # "sim" sozinho pode ser saudação, mas "sim posso" é aceite
-                if len(words) == 1 and first_word in accept_generic:
-                    # Palavra isolada - pode ser saudação, log warning mas aceitar
-                    logger.warning(
-                        f"Generic accept '{first_word}' (single word) - may be greeting. "
-                        f"Consider letting OpenAI decide via function calls."
+                
+                # Se há rejection_modifier, NÃO aceitar com palavras genéricas
+                if has_rejection_modifier:
+                    logger.debug(
+                        f"Generic accept skipped due to rejection modifier. "
+                        f"Text: '{human_text}'"
                     )
-                    self._accepted = True
-                    self._skip_audio_flush = True
-                    logger.info(f"Human ACCEPTED: generic match '{first_word}' - skipping audio flush")
-                    self._decision_event.set()
-                    return
+                    # Não aceitar - deixar OpenAI decidir via function calls
+                elif len(words) == 1 and first_word in accept_generic:
+                    # Palavra isolada - NÃO aceitar imediatamente
+                    # Aguardar mais contexto (o OpenAI vai chamar function call se for aceite)
+                    logger.info(
+                        f"Generic accept '{first_word}' (single word) - waiting for more context. "
+                        f"Letting OpenAI decide via function calls."
+                    )
+                    # NÃO aceitar - deixar OpenAI processar com mais contexto
                 elif first_word in accept_generic and len(words) > 1:
-                    # Primeira palavra é afirmativa e há mais palavras - mais confiável
-                    self._accepted = True
-                    self._skip_audio_flush = True
-                    logger.info(f"Human ACCEPTED: generic match '{first_word}' with context - skipping audio flush")
-                    self._decision_event.set()
-                    return
+                    # Primeira palavra é afirmativa e há mais palavras
+                    # Verificar se as outras palavras são positivas também
+                    remaining_text = ' '.join(words[1:])
+                    if any(mod in remaining_text for mod in rejection_modifiers):
+                        # Ex: "sim, mas não posso" - NÃO aceitar
+                        logger.warning(
+                            f"Generic accept '{first_word}' but remaining text has rejection: '{remaining_text}'. "
+                            f"NOT accepting."
+                        )
+                        # Não aceitar - deixar OpenAI decidir
+                    else:
+                        # Ex: "sim, pode passar" - aceitar
+                        self._accepted = True
+                        self._skip_audio_flush = True
+                        logger.info(f"Human ACCEPTED: generic match '{first_word}' with positive context - skipping audio flush")
+                        self._decision_event.set()
+                        return
             
             # Verificar patterns de recusa
             for pattern in reject_patterns:

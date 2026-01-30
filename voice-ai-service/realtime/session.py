@@ -4884,7 +4884,9 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             # =========================================================
             
             wait_start = time.time()
-            max_wait_for_audio = 3.0  # Máximo de 3s para detectar áudio
+            # OTIMIZADO: Reduzido de 3s para 1.5s para transferir mais rápido
+            # quando OpenAI não responde (timeout, rate limit, etc.)
+            max_wait_for_audio = 1.5
             audio_detected = False
             
             while (time.time() - wait_start) < max_wait_for_audio:
@@ -4908,13 +4910,16 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 await asyncio.sleep(0.05)
             
             if not audio_detected:
-                # Nenhum áudio detectado - a IA pode ter terminado muito rápido
-                # ou houve algum problema. Continuar com margem mínima.
+                # OpenAI não respondeu - transferir imediatamente sem esperar mais
+                # Isso pode acontecer por: rate limit, timeout, problema de conexão
                 logger.warning(
-                    f"⏳ [DELAYED_HANDOFF] Nenhum áudio detectado em {max_wait_for_audio}s. "
-                    "A IA pode já ter terminado de falar.",
+                    f"⏳ [DELAYED_HANDOFF] OpenAI não respondeu em {max_wait_for_audio}s. "
+                    "Transferindo imediatamente sem aviso sonoro.",
                     extra={"call_uuid": self.call_uuid}
                 )
+                # Pular direto para a transferência - não esperar mais
+                await self._execute_intelligent_handoff(destination, reason, caller_name)
+                return
             
             # =========================================================
             # FASE 2: Esperar OpenAI TERMINAR de gerar o áudio
@@ -4928,8 +4933,9 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             max_generation_wait = 8.0  # Máximo de 8s para gerar a resposta
             
             # Primeiro, esperar os bytes chegarem (se ainda não)
+            # OTIMIZADO: Reduzido de 3s para 1.0s
             bytes_wait = 0.0
-            while self._pending_audio_bytes == 0 and bytes_wait < 3.0:
+            while self._pending_audio_bytes == 0 and bytes_wait < 1.0:
                 if self._ended or self._ending_call:
                     logger.warning("⏳ [DELAYED_HANDOFF] Chamada encerrada durante espera por bytes")
                     self._handoff_pending = False
@@ -4992,12 +4998,13 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 
                 await asyncio.sleep(wait_playback)
             else:
-                # Fallback: se não há bytes, esperar um mínimo
+                # Fallback: se não há bytes, esperar um mínimo reduzido
+                # OTIMIZADO: Reduzido de 1.5s para 0.3s - transferir rápido
                 logger.warning(
-                    "⏳ [DELAYED_HANDOFF] Sem bytes pendentes após geração, usando fallback 1.5s",
+                    "⏳ [DELAYED_HANDOFF] Sem bytes pendentes após geração, usando fallback 0.3s",
                     extra={"call_uuid": self.call_uuid}
                 )
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(0.3)
             
             total_wait = time.time() - wait_start
             
