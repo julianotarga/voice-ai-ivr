@@ -2644,10 +2644,21 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
             )
             
             # DEPOIS de enviar o function result, enviar a instrução e solicitar resposta
-            # Isso garante que o OpenAI processe a instrução corretamente
+            # IMPORTANTE: Fazer interrupt primeiro para garantir que não há resposta ativa
+            # Isso força o OpenAI a criar uma NOVA resposta para a instrução
             if has_instruction and should_respond:
                 instruction = result["_instruction"]
                 logger.info(f"📞 [TOOL] Enviando instrução pós-function: {instruction[:50]}...")
+                
+                # Interrupt para cancelar qualquer resposta ativa
+                if self._provider and hasattr(self._provider, 'interrupt'):
+                    try:
+                        await self._provider.interrupt()
+                        await asyncio.sleep(0.15)  # Aguardar interrupt ser processado
+                        logger.debug("📞 [TOOL] Interrupt enviado antes da instrução")
+                    except Exception as e:
+                        logger.debug(f"📞 [TOOL] Interrupt falhou: {e}")
+                
                 await self._send_text_to_provider(
                     f"[INSTRUÇÃO] {instruction}",
                     request_response=True
