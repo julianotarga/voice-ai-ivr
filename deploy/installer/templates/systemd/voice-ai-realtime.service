@@ -1,0 +1,49 @@
+[Unit]
+Description=Voice AI Realtime Bridge (WebSocket/ESL)
+Documentation=https://github.com/julianotarga/voice-ai-ivr
+After=network.target freeswitch.service postgresql.service
+Wants=freeswitch.service
+
+[Service]
+Type=simple
+User=voiceai
+Group=voiceai
+WorkingDirectory=/opt/voice-ai
+
+# Verificar se FreeSWITCH ESL está disponível antes de iniciar
+ExecStartPre=/bin/bash -c 'until nc -z 127.0.0.1 8021; do echo "Waiting for FreeSWITCH ESL..."; sleep 2; done'
+
+# Comando principal
+ExecStart=/opt/voice-ai/venv/bin/python -m realtime
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Ambiente
+EnvironmentFile=/opt/voice-ai/.env
+
+# Restart
+Restart=always
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=5
+
+# Timeouts
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Segurança
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/voice-ai /var/log/voice-ai /tmp/voice-ai-announcements
+
+# Limites
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voice-ai-realtime
+
+[Install]
+WantedBy=multi-user.target
