@@ -224,10 +224,10 @@ FUNCTION_FILLERS = {
         "Consultando o ramal...",
     ],
     
-    # Criar ticket/protocolo
+    # Criar ticket/registro
     "create_ticket": [
-        "Vou criar um protocolo pra você...",
         "Registrando sua solicitação...",
+        "Anotando os detalhes...",
     ],
     
     # Anotar recado - SEM FILLER

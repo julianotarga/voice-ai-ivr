@@ -67,17 +67,17 @@ TRANSFER_ANNOUNCEMENTS = [
 # Funciona para pessoas ("João não está disponível") e departamentos ("Vendas não está disponível")
 OFFLINE_MESSAGES = [
     "Infelizmente {destination} não está disponível no momento. "
-    "Vou criar um protocolo pra você e nossa equipe entrará em contato assim que possível.",
+    "Posso anotar um recado para retornarem assim que possível?",
     "{destination} não está online agora. "
-    "Vou registrar sua solicitação como prioridade e você receberá retorno em breve.",
+    "Quer deixar uma mensagem para nossa equipe entrar em contato?",
 ]
 
 # Mensagens quando destino não atende
 NO_ANSWER_MESSAGES = [
     "{destination} não conseguiu atender agora. "
-    "Quer que eu crie um protocolo para te retornarem?",
+    "Quer deixar um recado para te retornarem?",
     "Liguei para {destination} mas não houve resposta. "
-    "Posso anotar um recado ou criar um protocolo?",
+    "Posso anotar uma mensagem?",
 ]
 
 # Mensagens quando destino está ocupado
@@ -85,7 +85,7 @@ BUSY_MESSAGES = [
     "{destination} está em outra ligação no momento. "
     "Quer aguardar ou prefere que eu anote um recado?",
     "{destination} está ocupado agora. "
-    "Posso tentar novamente ou criar um protocolo?",
+    "Posso tentar novamente ou deixar uma mensagem?",
 ]
 
 # Mensagens quando destino rejeitou a chamada ativamente
