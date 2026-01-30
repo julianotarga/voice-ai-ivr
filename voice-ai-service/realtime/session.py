@@ -67,6 +67,11 @@ from .handlers.transfer_destination_loader import TransferDestination
 # Ref: openspec/changes/add-voice-ai-enhancements
 from .logging import CallLogger, EventType
 
+# FASE 4: Tools Registry - Ferramentas modulares para IA
+# Permite registrar e executar tools de forma extensível
+from .tools.registry import ToolRegistry
+from .tools.base import ToolContext, ToolResult
+
 # FASE 2: Transferência via Conferência (mod_conference) - LEGADO
 # Ref: voice-ai-ivr/docs/announced-transfer-conference.md
 from .handlers.transfer_manager_conference import (
@@ -3065,70 +3070,68 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
                 # Ainda retornamos sucesso para o LLM continuar o fluxo
                 return {"status": "noted", "action": "saved_locally"}
         
-        elif name == "accept_callback":
-            # Cliente aceitou callback - usar CallbackHandler se disponível
-            use_current_number = args.get("use_current_number", True)
-            reason = args.get("reason", "")
-            
-            if self._callback_handler:
-                if use_current_number:
-                    success = self._callback_handler.use_caller_id_as_callback()
-                    if success:
-                        self._callback_handler.set_reason(reason)
-                        return {"status": "number_confirmed", "number": self.caller_id}
-                    else:
-                        return {"status": "need_number", "reason": "current_invalid"}
-                else:
-                    return {"status": "need_number"}
-            
-            return {"status": "noted", "reason": reason}
-        
-        elif name == "provide_callback_number":
-            # Cliente forneceu número para callback
-            phone_number = args.get("phone_number", "")
-            
-            if self._callback_handler:
-                from .handlers.callback_handler import PhoneNumberUtils
-                
-                extracted = PhoneNumberUtils.extract_phone_from_text(phone_number)
-                if extracted:
-                    normalized, is_valid = PhoneNumberUtils.validate_brazilian_number(extracted)
-                    if is_valid:
-                        self._callback_handler.set_callback_number(normalized)
-                        formatted = PhoneNumberUtils.format_for_speech(normalized)
-                        return {"status": "captured", "number": normalized, "formatted": formatted}
-                
-                return {"status": "invalid", "reason": "invalid_phone_format"}
-            
-            return {"status": "noted", "number": phone_number}
-        
-        elif name == "confirm_callback_number":
-            # Cliente confirmou o número
-            confirmed = args.get("confirmed", True)
-            
-            if confirmed and self._callback_handler and self._callback_handler.callback_data.callback_number:
-                # Criar o callback ticket
-                result = await self._create_callback_ticket()
-                if result.get("success"):
-                    return {"status": "callback_created", "ticket_id": result.get("ticket_id")}
-                else:
-                    return {"status": "noted", "action": "callback_noted"}
-            elif not confirmed:
-                return {"status": "need_correction"}
-            
-            return {"status": "confirmed" if confirmed else "need_correction"}
-        
-        elif name == "schedule_callback":
-            # Cliente quer agendar horário
-            preferred_time = args.get("preferred_time", "asap")
-            
-            if self._callback_handler:
-                # TODO: Implementar parsing de horário
-                pass
-            
-            return {"status": "scheduled", "time": preferred_time}
+        elif name in ("accept_callback", "provide_callback_number", "confirm_callback_number", "schedule_callback"):
+            # Delegar para o ToolRegistry (tools modulares de callback)
+            # Ref: voice-ai-ivr/voice-ai-service/realtime/tools/callback.py
+            return await self._execute_registry_tool(name, args)
         
         return {"error": f"Unknown function: {name}"}
+
+    async def _execute_registry_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Executa um tool registrado no ToolRegistry.
+        
+        Os tools modulares (em realtime/tools/) são executados aqui.
+        Isso permite estender a IA com novos tools sem modificar session.py.
+        
+        Args:
+            name: Nome do tool (ex: "accept_callback", "schedule_callback")
+            args: Argumentos passados pela IA
+            
+        Returns:
+            Dict com resultado do tool (compatível com OpenAI function results)
+        """
+        tool = ToolRegistry.get(name)
+        if not tool:
+            logger.warning(f"Tool não encontrado no registry: {name}")
+            return {"error": f"Tool not found: {name}"}
+        
+        # Criar contexto para o tool
+        context = ToolContext(
+            call_uuid=self.call_uuid,
+            domain_uuid=self.config.domain_uuid,
+            caller_id=self.caller_id,
+            caller_name=getattr(self, '_caller_name', None),
+            secretary_uuid=self.config.secretary_uuid,
+            company_id=self.config.omniplay_company_id,
+            webhook_url=self.config.omniplay_webhook_url,
+            _session=self,  # Referência para o tool acessar estado da sessão
+        )
+        
+        try:
+            result = await tool.execute(context, **args)
+            
+            # Converter ToolResult para dict
+            if isinstance(result, ToolResult):
+                response_data = result.data or {}
+                
+                # Se o tool retornou instrução para a IA, incluir
+                if result.instruction:
+                    response_data["_instruction"] = result.instruction
+                
+                # Se o tool tem side effects, processar
+                if result.side_effects:
+                    for effect in result.side_effects:
+                        if effect == "call_ending_scheduled":
+                            logger.info(f"📞 [TOOL] Side effect: {effect}")
+                
+                return response_data
+            
+            return result if isinstance(result, dict) else {"status": "ok"}
+            
+        except Exception as e:
+            logger.error(f"Erro ao executar tool {name}: {e}", exc_info=True)
+            return {"error": str(e)}
 
     async def _execute_webhook_function(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Executa function call via webhook OmniPlay (se configurado)."""
