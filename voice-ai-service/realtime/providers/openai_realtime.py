@@ -1210,10 +1210,29 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             self._response_active = False
             response = event.get("response", {})
             status = response.get("status", "completed")
-            logger.debug(f"Response done: {status}", extra={
-                "domain_uuid": self.config.domain_uuid,
-                "status": status,
-            })
+            error_code = None
+            
+            # Log detalhado quando a resposta falha
+            if status == "failed":
+                status_details = response.get("status_details", {})
+                error = status_details.get("error", {})
+                error_type = error.get("type", "unknown")
+                error_code = error.get("code", "unknown")
+                error_message = error.get("message", "No error message provided")
+                
+                logger.error(f"❌ [OPENAI] Response FAILED: {error_code} - {error_message}", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "response_id": response.get("id"),
+                    "status_details": status_details,
+                })
+            else:
+                logger.debug(f"Response done: {status}", extra={
+                    "domain_uuid": self.config.domain_uuid,
+                    "status": status,
+                })
             
             # NOTA: Removida lógica de _pending_function_result que causava respostas duplicadas.
             # Quando uma função é chamada durante uma resposta ativa, a OpenAI Realtime API
@@ -1221,7 +1240,7 @@ class OpenAIRealtimeProvider(BaseRealtimeProvider):
             
             return ProviderEvent(
                 type=ProviderEventType.RESPONSE_DONE,
-                data={"status": status}
+                data={"status": status, "error_code": error_code}
             )
         
         # ===== FUNCTION CALLS =====
