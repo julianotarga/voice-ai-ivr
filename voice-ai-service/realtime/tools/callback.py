@@ -1,12 +1,26 @@
 """
 Tools de Callback (Retorno de Ligação).
 
-Implementa o fluxo completo de callback:
+Implementa o fluxo simplificado de callback:
 1. accept_callback - Cliente aceita receber ligação de retorno
-2. provide_callback_number - Cliente fornece número diferente
-3. use_current_extension - Cliente escolhe usar ramal/número atual
+   - Se ramal: pergunta se quer usar o ramal ou outro número
+   - Se número válido: pede confirmação
+   - Se inválido: pede outro número
+
+2. use_current_extension - Cliente escolhe usar ramal/número atual
+   → Cria callback imediatamente e encerra
+
+3. provide_callback_number - Cliente fornece número diferente
+   → Pede confirmação do número
+
 4. confirm_callback_number - Cliente confirma o número
-5. schedule_callback - Cliente agenda horário preferido
+   → Cria callback imediatamente e encerra
+
+5. schedule_callback - (backup) Para casos onde a IA pergunte horário
+   → Cria callback e encerra
+
+IMPORTANTE: O fluxo foi simplificado para NÃO perguntar horário.
+O callback é sempre criado como "assim que possível".
 
 Multi-tenant: domain_uuid obrigatório em todas as operações.
 
@@ -22,6 +36,75 @@ import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+
+async def _create_callback_webhook(
+    context: ToolContext,
+    callback_number: str,
+    callback_reason: Optional[str] = None
+) -> tuple[bool, Optional[str]]:
+    """
+    Envia webhook para OmniPlay criando o callback.
+    
+    Returns:
+        Tuple (success, ticket_id)
+    """
+    if not context.webhook_url:
+        logger.warning("📞 [CALLBACK] Nenhum webhook_url configurado")
+        return (False, None)
+    
+    try:
+        import aiohttp
+        
+        # Formatar número para exibição
+        formatted_number = PhoneNumberValidator.format_for_speech_smart(callback_number)
+        
+        payload = {
+            "event": "voice_ai_callback",
+            "domain_uuid": context.domain_uuid,
+            "call_uuid": context.call_uuid,
+            "caller_id": context.caller_id,
+            "secretary_uuid": context.secretary_uuid,
+            "company_id": context.company_id,
+            "ticket": {
+                "type": "callback",
+                "callback_number": callback_number,
+                "callback_number_formatted": formatted_number,
+                "preferred_time": "asap",
+                "is_asap": True,
+                "scheduled_at": None,
+                "message": callback_reason or "",
+                "caller_name": context.caller_name,
+                "caller_phone": context.caller_id,
+                "priority": "normal"
+            }
+        }
+        
+        logger.info(f"📞 [CALLBACK] Enviando para {context.webhook_url}")
+        
+        async with aiohttp.ClientSession() as http_session:
+            async with http_session.post(
+                context.webhook_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                resp_text = await resp.text()
+                if resp.status in (200, 201):
+                    logger.info(f"📞 [CALLBACK] Callback criado: {resp_text}")
+                    try:
+                        import json
+                        resp_data = json.loads(resp_text)
+                        ticket_id = resp_data.get("ticket_id") or resp_data.get("id")
+                        return (True, ticket_id)
+                    except:
+                        return (True, None)
+                else:
+                    logger.warning(f"📞 [CALLBACK] Webhook retornou {resp.status}: {resp_text}")
+                    return (False, None)
+                    
+    except Exception as e:
+        logger.warning(f"📞 [CALLBACK] Erro ao enviar webhook: {e}")
+        return (False, None)
 
 
 class PhoneNumberValidator:
@@ -396,6 +479,8 @@ class UseCurrentExtensionTool(VoiceAITool):
     Tool para quando cliente escolhe usar o ramal/número atual.
     
     Uso: Cliente diz "pode ser no ramal", "no ramal mesmo", "nesse número" ou similar.
+    
+    Este tool cria o callback imediatamente (sem perguntar horário) e encerra.
     """
     
     name = "use_current_extension"
@@ -416,7 +501,9 @@ class UseCurrentExtensionTool(VoiceAITool):
     filler_phrases = []
     
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
-        """Processa escolha de usar ramal/número atual."""
+        """Processa escolha de usar ramal/número atual e cria callback."""
+        import asyncio
+        
         caller_id = context.caller_id
         
         logger.info(
@@ -431,29 +518,46 @@ class UseCurrentExtensionTool(VoiceAITool):
         is_extension = PhoneNumberValidator.is_internal_extension(caller_id)
         
         # Salvar o ramal/número na sessão
+        callback_reason = None
         if context._session:
             context._session._callback_number = caller_id
             context._session._callback_is_extension = is_extension
+            callback_reason = getattr(context._session, '_callback_reason', None)
+        
+        # Criar callback imediatamente via webhook
+        webhook_success, ticket_id = await _create_callback_webhook(
+            context, caller_id, callback_reason
+        )
+        
+        # Agendar encerramento da chamada
+        if context._session:
+            logger.info("📞 [CALLBACK] Agendando encerramento em 10s")
+            asyncio.create_task(context._session._delayed_stop(10.0, "callback_scheduled"))
         
         # Formatar para fala
         if is_extension:
             formatted = f"ramal {caller_id}"
+            numero_phrase = f"no {formatted}"
         else:
             normalized, _ = PhoneNumberValidator.validate(caller_id)
             formatted = PhoneNumberValidator.format_for_speech(normalized or caller_id)
+            numero_phrase = f"para o número {formatted}"
         
         return ToolResult.ok(
             data={
-                "status": "number_confirmed",
-                "action": "ask_schedule",
+                "status": "callback_scheduled",
+                "action": "callback_created",
                 "number": caller_id,
-                "is_extension": is_extension
+                "is_extension": is_extension,
+                "ticket_id": ticket_id,
+                "webhook_success": webhook_success
             },
             instruction=(
-                f"Perfeito! Vamos retornar no {formatted}. "
-                f"Agora pergunte: 'Prefere que liguemos assim que possível, ou em um horário específico?'"
+                f"Diga: 'Perfeito! Vamos retornar a ligação {numero_phrase} o mais rápido possível. "
+                f"Obrigada pela ligação e tenha um ótimo dia!'"
             ),
-            should_respond=True
+            should_respond=True,
+            side_effects=["callback_scheduled", "call_ending_scheduled"]
         )
 
 
@@ -462,6 +566,8 @@ class ConfirmCallbackNumberTool(VoiceAITool):
     Tool para quando cliente confirma o número de callback.
     
     Uso: Cliente diz "sim", "correto", "isso" ou similar.
+    
+    Quando confirmado, cria o callback imediatamente (sem perguntar horário) e encerra.
     """
     
     name = "confirm_callback_number"
@@ -487,7 +593,9 @@ class ConfirmCallbackNumberTool(VoiceAITool):
     filler_phrases = []
     
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
-        """Processa confirmação do número."""
+        """Processa confirmação do número e cria callback se confirmado."""
+        import asyncio
+        
         confirmed = kwargs.get("confirmed", True)
         
         logger.info(
@@ -499,17 +607,53 @@ class ConfirmCallbackNumberTool(VoiceAITool):
         )
         
         if confirmed:
-            # Número confirmado - perguntar horário
+            # Obter número salvo na sessão
+            callback_number = None
+            callback_reason = None
+            is_extension = False
+            
+            if context._session:
+                callback_number = getattr(context._session, '_callback_number', None)
+                callback_reason = getattr(context._session, '_callback_reason', None)
+                is_extension = getattr(context._session, '_callback_is_extension', False)
+            
+            if not callback_number:
+                return ToolResult.fail(
+                    error="Número de callback não encontrado",
+                    instruction="Houve um problema. Pergunte o número novamente."
+                )
+            
+            # Criar callback imediatamente via webhook
+            webhook_success, ticket_id = await _create_callback_webhook(
+                context, callback_number, callback_reason
+            )
+            
+            # Agendar encerramento da chamada
+            if context._session:
+                logger.info("📞 [CALLBACK] Agendando encerramento em 10s")
+                asyncio.create_task(context._session._delayed_stop(10.0, "callback_scheduled"))
+            
+            # Formatar para fala
+            formatted = PhoneNumberValidator.format_for_speech_smart(callback_number)
+            if is_extension or PhoneNumberValidator.is_internal_extension(callback_number):
+                numero_phrase = f"no {formatted}"
+            else:
+                numero_phrase = f"para o número {formatted}"
+            
             return ToolResult.ok(
                 data={
-                    "status": "number_confirmed",
-                    "action": "ask_schedule"
+                    "status": "callback_scheduled",
+                    "action": "callback_created",
+                    "number": callback_number,
+                    "ticket_id": ticket_id,
+                    "webhook_success": webhook_success
                 },
                 instruction=(
-                    "Número confirmado! Agora pergunte sobre o horário: "
-                    "'Prefere que liguemos assim que possível, ou em um horário específico?'"
+                    f"Diga: 'Perfeito! Vamos retornar a ligação {numero_phrase} o mais rápido possível. "
+                    f"Obrigada pela ligação e tenha um ótimo dia!'"
                 ),
-                should_respond=True
+                should_respond=True,
+                side_effects=["callback_scheduled", "call_ending_scheduled"]
             )
         else:
             # Cliente quer corrigir
