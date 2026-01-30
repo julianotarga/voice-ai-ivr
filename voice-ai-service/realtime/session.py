@@ -3100,7 +3100,7 @@ IA: "Recado anotado! Maria, obrigada por ligar! Tenha um ótimo dia!"
         context = ToolContext(
             call_uuid=self.call_uuid,
             domain_uuid=self.config.domain_uuid,
-            caller_id=self.caller_id,
+            caller_id=self.config.caller_id,
             caller_name=getattr(self, '_caller_name', None),
             secretary_uuid=self.config.secretary_uuid,
             company_id=self.config.omniplay_company_id,
