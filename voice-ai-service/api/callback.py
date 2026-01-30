@@ -14,15 +14,19 @@ Endpoints:
 - GET /api/callback/status/{call_uuid} - Status de uma chamada
 """
 
+import asyncio
 import os
 import logging
 import time
+from collections import OrderedDict
+from threading import Lock
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
+import aiohttp
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
@@ -130,10 +134,76 @@ class CallStatusResponse(BaseModel):
 # Domain Settings Loader
 # =============================================================================
 
-# Cache de configurações por domínio com TTL
-# Formato: {domain_uuid: (settings_dict, timestamp)}
-_domain_settings_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
-_CACHE_TTL_SECONDS = 300  # 5 minutos - mesmo valor de transfer_cache_ttl_seconds
+# =============================================================================
+# Cache de configurações por domínio com TTL e LRU
+# =============================================================================
+
+# Cache thread-safe com limite de tamanho (LRU) e TTL
+_CACHE_TTL_SECONDS = 300  # 5 minutos
+_CACHE_MAX_SIZE = 100  # Máximo de domínios em cache
+
+class LRUCache:
+    """Cache LRU thread-safe com TTL."""
+    
+    def __init__(self, max_size: int = 100, ttl_seconds: int = 300):
+        self._cache: OrderedDict[str, Tuple[Any, float]] = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._lock = Lock()
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Obtém valor do cache se existir e não expirou."""
+        with self._lock:
+            if key not in self._cache:
+                return None
+            
+            value, cached_at = self._cache[key]
+            if time.time() - cached_at >= self._ttl:
+                # Expirado
+                del self._cache[key]
+                return None
+            
+            # Move para o final (mais recente)
+            self._cache.move_to_end(key)
+            return value
+    
+    def set(self, key: str, value: Any) -> None:
+        """Adiciona ou atualiza valor no cache."""
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+            elif len(self._cache) >= self._max_size:
+                # Remove o mais antigo (primeiro item)
+                self._cache.popitem(last=False)
+            
+            self._cache[key] = (value, time.time())
+    
+    def delete(self, key: str) -> None:
+        """Remove item do cache."""
+        with self._lock:
+            self._cache.pop(key, None)
+    
+    def clear(self) -> None:
+        """Limpa todo o cache."""
+        with self._lock:
+            self._cache.clear()
+
+
+# Instância global do cache
+_domain_settings_cache = LRUCache(max_size=_CACHE_MAX_SIZE, ttl_seconds=_CACHE_TTL_SECONDS)
+
+# Defaults para quando falhar carregar do banco
+# NOTA: esl_password deve vir de variável de ambiente, não hardcoded
+_DEFAULT_SETTINGS = {
+    'esl_host': os.getenv('ESL_HOST', '127.0.0.1'),
+    'esl_port': int(os.getenv('ESL_PORT', '8021')),
+    'esl_password': os.getenv('ESL_PASSWORD', ''),  # NUNCA hardcode senha
+    'transfer_default_timeout': 30,
+    'callback_enabled': True,
+    'omniplay_api_url': os.getenv('OMNIPLAY_API_URL', 'http://127.0.0.1:8080'),
+    'omniplay_api_timeout_ms': 10000,
+}
+
 
 async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
     """
@@ -141,7 +211,8 @@ async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
     
     Lê da tabela v_voice_secretary_settings configurada via settings.php.
     
-    Cache com TTL de 5 minutos para evitar consultas excessivas ao banco.
+    Cache LRU com TTL de 5 minutos para evitar consultas excessivas ao banco.
+    Thread-safe com limite de tamanho para evitar memory leak.
     
     Args:
         domain_uuid: UUID do domínio
@@ -149,45 +220,42 @@ async def get_domain_settings(domain_uuid: str) -> Dict[str, Any]:
     Returns:
         Dict com todas as configurações (com defaults aplicados)
     """
-    current_time = time.time()
+    # Validar UUID antes de usar
+    try:
+        uuid_obj = UUID(domain_uuid)
+    except ValueError:
+        logger.warning(f"Invalid domain_uuid format: {domain_uuid[:20]}...")
+        return _DEFAULT_SETTINGS.copy()
     
-    # Verificar cache com TTL
-    if domain_uuid in _domain_settings_cache:
-        cached_settings, cached_at = _domain_settings_cache[domain_uuid]
-        if current_time - cached_at < _CACHE_TTL_SECONDS:
-            return cached_settings
-        else:
-            # Cache expirado
-            logger.debug(f"Cache expired for domain {domain_uuid[:8]}...")
+    # Verificar cache
+    cached = _domain_settings_cache.get(domain_uuid)
+    if cached is not None:
+        return cached
     
     try:
-        settings = await db.get_domain_settings(UUID(domain_uuid))
-        _domain_settings_cache[domain_uuid] = (settings, current_time)
+        settings = await db.get_domain_settings(uuid_obj)
+        _domain_settings_cache.set(domain_uuid, settings)
         logger.info(f"Loaded domain settings for {domain_uuid[:8]}...", extra={
             "domain_uuid": domain_uuid,
             "esl_host": settings.get('esl_host'),
             "omniplay_api_url": settings.get('omniplay_api_url'),
-            "cache_ttl": _CACHE_TTL_SECONDS,
         })
         return settings
     except Exception as e:
         logger.warning(f"Failed to load domain settings, using defaults: {e}")
         # Retornar defaults se falhar (sem cachear erro)
-        return {
-            'esl_host': '127.0.0.1',
-            'esl_port': 8021,
-            'esl_password': 'ClueCon',
-            'transfer_default_timeout': 30,
-            'callback_enabled': True,
-            'omniplay_api_url': 'http://127.0.0.1:8080',
-            'omniplay_api_timeout_ms': 10000,
-        }
+        return _DEFAULT_SETTINGS.copy()
 
 
-def clear_domain_settings_cache(domain_uuid: Optional[str] = None):
-    """Limpa cache de configurações."""
+def clear_domain_settings_cache(domain_uuid: Optional[str] = None) -> None:
+    """
+    Limpa cache de configurações.
+    
+    Args:
+        domain_uuid: Se fornecido, limpa apenas este domínio. Se None, limpa tudo.
+    """
     if domain_uuid:
-        _domain_settings_cache.pop(domain_uuid, None)
+        _domain_settings_cache.delete(domain_uuid)
         logger.info(f"Cache cleared for domain {domain_uuid[:8]}...")
     else:
         _domain_settings_cache.clear()
@@ -300,8 +368,14 @@ async def check_extension_dnd(
     Returns:
         True se o ramal está em DND, False caso contrário
     """
+    # Validar UUID antes de usar no SQL
     try:
-        from services.database import db
+        UUID(domain_uuid)
+    except ValueError:
+        logger.warning(f"Invalid domain_uuid in check_extension_dnd: {domain_uuid[:20]}...")
+        return False
+    
+    try:
         pool = await db.get_pool()
         
         # Consultar tabela v_extensions do FusionPBX
@@ -579,7 +653,6 @@ async def originate_callback(request: OriginateRequest):
             
             # Iniciar monitoramento em background (se tiver ticket_id)
             if call_uuid and request.ticket_id:
-                import asyncio
                 asyncio.create_task(
                     monitor_callback_result(
                         call_uuid=call_uuid,
@@ -834,30 +907,57 @@ async def notify_omniplay_callback_result(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{omniplay_url}/api/callbacks/{ticket_id}/complete",
-                json={"success": status == "completed", "duration": duration_seconds},
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout_ms / 1000.0)
-            ) as response:
-                if response.status in (200, 201):
-                    logger.info(
-                        "OmniPlay notified of callback result",
-                        extra={
-                            "ticket_id": ticket_id,
-                            "status": status,
-                            "duration": duration_seconds
-                        }
-                    )
-                    return True
-                else:
-                    logger.error(
-                        f"Failed to notify OmniPlay: {response.status}",
-                        extra={"ticket_id": ticket_id}
-                    )
-                    return False
+        # Retry com backoff exponencial (3 tentativas)
+        max_retries = 3
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{omniplay_url}/api/callbacks/{ticket_id}/complete",
+                        json={"success": status == "completed", "duration": duration_seconds},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout_ms / 1000.0)
+                    ) as response:
+                        if response.status in (200, 201):
+                            logger.info(
+                                "OmniPlay notified of callback result",
+                                extra={
+                                    "ticket_id": ticket_id,
+                                    "status": status,
+                                    "duration": duration_seconds
+                                }
+                            )
+                            return True
+                        elif response.status >= 500:
+                            # Erro de servidor - tentar novamente
+                            logger.warning(
+                                f"OmniPlay server error: {response.status}, attempt {attempt + 1}/{max_retries}",
+                                extra={"ticket_id": ticket_id}
+                            )
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(base_delay * (2 ** attempt))
+                                continue
+                        else:
+                            # Erro de cliente - não tentar novamente
+                            logger.error(
+                                f"Failed to notify OmniPlay: {response.status}",
+                                extra={"ticket_id": ticket_id}
+                            )
+                            return False
+            except aiohttp.ClientError as e:
+                logger.warning(
+                    f"HTTP error notifying OmniPlay: {e}, attempt {attempt + 1}/{max_retries}",
+                    extra={"ticket_id": ticket_id}
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(base_delay * (2 ** attempt))
+                    continue
+        
+        # Esgotou tentativas
+        logger.error(f"Failed to notify OmniPlay after {max_retries} attempts", extra={"ticket_id": ticket_id})
+        return False
                     
     except Exception as e:
         logger.exception(f"Error notifying OmniPlay: {e}")
@@ -868,7 +968,7 @@ async def monitor_callback_result(
     call_uuid: str,
     ticket_id: int,
     domain_uuid: str,
-    timeout_seconds: int = 3600
+    timeout_seconds: int = 600  # 10 minutos máximo (reduzido de 1 hora)
 ) -> None:
     """
     Monitora o resultado de um callback em background.
@@ -878,17 +978,20 @@ async def monitor_callback_result(
     
     Esta função deve ser chamada em asyncio.create_task() após originate.
     
+    IMPORTANTE: Usa ESL do domínio específico para multi-tenancy.
+    
     Args:
         call_uuid: UUID da chamada
         ticket_id: ID do ticket no OmniPlay
         domain_uuid: UUID do domínio
-        timeout_seconds: Timeout máximo de monitoramento
+        timeout_seconds: Timeout máximo de monitoramento (default 10 min)
     """
     logger.info(
         "Starting callback monitoring",
         extra={
             "call_uuid": call_uuid,
             "ticket_id": ticket_id,
+            "domain_uuid": domain_uuid,
             "timeout": timeout_seconds
         }
     )
@@ -901,7 +1004,10 @@ async def monitor_callback_result(
     }
     
     try:
-        esl = await get_esl()
+        # IMPORTANTE: Usar ESL do domínio específico, não global
+        esl = await get_esl_for_domain(domain_uuid)
+        if not esl.is_connected:
+            await esl.connect()
         
         # Aguardar eventos
         connected = False
@@ -909,9 +1015,18 @@ async def monitor_callback_result(
         hangup_cause: Optional[str] = None
         
         start_time = time.time()
-        check_interval = 5  # Verificar a cada 5 segundos
+        check_count = 0
+        
+        # Polling com backoff exponencial: 2s, 4s, 8s, max 15s
+        MIN_INTERVAL = 2
+        MAX_INTERVAL = 15
         
         while time.time() - start_time < timeout_seconds:
+            check_count += 1
+            
+            # Calcular intervalo com backoff exponencial
+            check_interval = min(MIN_INTERVAL * (2 ** min(check_count // 5, 3)), MAX_INTERVAL)
+            
             # Verificar se a chamada ainda existe
             exists_result = await esl.execute_api(f"uuid_exists {call_uuid}")
             
@@ -932,8 +1047,7 @@ async def monitor_callback_result(
                             }
                         )
                 
-                # Aguardar um pouco antes de verificar novamente
-                import asyncio
+                # Aguardar antes de verificar novamente
                 await asyncio.sleep(check_interval)
                 
             else:
@@ -1041,7 +1155,6 @@ async def start_monitoring(
         }
     
     # Iniciar monitoramento em background
-    import asyncio
     asyncio.create_task(
         monitor_callback_result(
             call_uuid=call_uuid,
