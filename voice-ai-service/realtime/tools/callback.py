@@ -121,6 +121,26 @@ class PhoneNumberValidator:
             return False  # String vazia não é ramal
         clean = re.sub(r'\D', '', number)
         return 2 <= len(clean) <= 5
+    
+    @staticmethod
+    def format_for_speech_smart(number: str) -> str:
+        """
+        Formata número para TTS, detectando automaticamente se é ramal.
+        
+        Exemplos:
+        - "1001" → "ramal 1001"
+        - "5518997751073" → "18, 9, 9, 7, 7, 5, 1, 0, 7, 3"
+        """
+        if not number:
+            return ""
+        
+        if PhoneNumberValidator.is_internal_extension(number):
+            # Ramal - falar diretamente sem pausas
+            clean = re.sub(r'\D', '', number)
+            return f"ramal {clean}"
+        
+        # Número externo - usar formatação padrão
+        return PhoneNumberValidator.format_for_speech(number)
 
 
 class AcceptCallbackTool(VoiceAITool):
@@ -378,13 +398,16 @@ class UseCurrentExtensionTool(VoiceAITool):
             }
         )
         
+        # Verificar se é ramal ou número externo
+        is_extension = PhoneNumberValidator.is_internal_extension(caller_id)
+        
         # Salvar o ramal/número na sessão
         if context._session:
             context._session._callback_number = caller_id
-            context._session._callback_is_extension = True
+            context._session._callback_is_extension = is_extension
         
         # Formatar para fala
-        if PhoneNumberValidator.is_internal_extension(caller_id):
+        if is_extension:
             formatted = f"ramal {caller_id}"
         else:
             normalized, _ = PhoneNumberValidator.validate(caller_id)
@@ -395,7 +418,7 @@ class UseCurrentExtensionTool(VoiceAITool):
                 "status": "number_confirmed",
                 "action": "ask_schedule",
                 "number": caller_id,
-                "is_extension": True
+                "is_extension": is_extension
             },
             instruction=(
                 f"Perfeito! Vamos retornar no {formatted}. "
@@ -553,8 +576,8 @@ class ScheduleCallbackTool(VoiceAITool):
             try:
                 import aiohttp
                 
-                # Formatar número para exibição
-                formatted_number = PhoneNumberValidator.format_for_speech(callback_number)
+                # Formatar número para exibição (detecta ramal automaticamente)
+                formatted_number = PhoneNumberValidator.format_for_speech_smart(callback_number)
                 
                 # IMPORTANTE: OmniPlay espera "ticket" não "callback"
                 # O formato deve ser compatível com VoiceMessageTicketPayload
@@ -612,8 +635,14 @@ class ScheduleCallbackTool(VoiceAITool):
             logger.info("📞 [CALLBACK] Agendando encerramento em 10s")
             asyncio.create_task(context._session._delayed_stop(10.0, "callback_scheduled"))
         
-        # Formatar número para fala
-        formatted = PhoneNumberValidator.format_for_speech(callback_number)
+        # Formatar número para fala (detecta ramal automaticamente)
+        formatted = PhoneNumberValidator.format_for_speech_smart(callback_number)
+        
+        # Determinar preposição correta: "no ramal X" vs "para o número X"
+        if PhoneNumberValidator.is_internal_extension(callback_number):
+            numero_phrase = f"no {formatted}"
+        else:
+            numero_phrase = f"para o número {formatted}"
         
         return ToolResult.ok(
             data={
@@ -625,7 +654,7 @@ class ScheduleCallbackTool(VoiceAITool):
             },
             instruction=(
                 f"Confirme o callback. Diga: "
-                f"'Perfeito! Vamos retornar para o número {formatted} {time_message}. "
+                f"'Perfeito! Vamos retornar {numero_phrase} {time_message}. "
                 f"Obrigada pela ligação e tenha um ótimo dia!'"
             ),
             should_respond=True,
