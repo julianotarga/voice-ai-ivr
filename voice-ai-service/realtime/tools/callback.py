@@ -110,11 +110,11 @@ class PhoneNumberValidator:
     
     @staticmethod
     def is_internal_extension(number: str) -> bool:
-        """Verifica se é ramal interno (2-4 dígitos)."""
+        """Verifica se é ramal interno (2-5 dígitos)."""
         if not number:
             return True
         clean = re.sub(r'\D', '', number)
-        return len(clean) <= 4
+        return 2 <= len(clean) <= 5
 
 
 class AcceptCallbackTool(VoiceAITool):
