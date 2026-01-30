@@ -4,10 +4,16 @@ Tools de Callback (Retorno de Ligação).
 Implementa o fluxo completo de callback:
 1. accept_callback - Cliente aceita receber ligação de retorno
 2. provide_callback_number - Cliente fornece número diferente
-3. confirm_callback_number - Cliente confirma o número
-4. schedule_callback - Cliente agenda horário preferido
+3. use_current_extension - Cliente escolhe usar ramal/número atual
+4. confirm_callback_number - Cliente confirma o número
+5. schedule_callback - Cliente agenda horário preferido
 
 Multi-tenant: domain_uuid obrigatório em todas as operações.
+
+Regras de validação:
+- Ramal interno: 2-5 dígitos (ex: 1001, 10001)
+- Fixo com DDD: 10 dígitos (ex: 1831720011)
+- Celular com DDD: 11 dígitos (ex: 11997751073)
 """
 
 from typing import Any, Dict, Optional
@@ -112,7 +118,7 @@ class PhoneNumberValidator:
     def is_internal_extension(number: str) -> bool:
         """Verifica se é ramal interno (2-5 dígitos)."""
         if not number:
-            return True
+            return False  # String vazia não é ramal
         clean = re.sub(r'\D', '', number)
         return 2 <= len(clean) <= 5
 

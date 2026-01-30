@@ -204,8 +204,8 @@ class ConferenceAnnouncementSession:
         # Descarta áudio do atendente ENQUANTO a IA estiver falando.
         # Isso evita que ruídos/conversas do ambiente sejam interpretados.
         # A proteção é DINÂMICA: ativa quando IA fala, desativa quando para.
+        # Usa _response_active e _response_audio_generating como gatilhos.
         # =========================================================================
-        self._audio_protection_active = False  # True quando IA está falando
         self._audio_discarded_bytes = 0  # Contador de bytes descartados (sessão)
         self._audio_discarded_frames = 0  # Contador de frames descartados (sessão)
         self._current_response_discarded = 0  # Bytes descartados na resposta atual
@@ -1982,8 +1982,8 @@ class ConferenceAnnouncementSession:
             self._audio_discarded_frames += 1
             self._current_response_discarded += len(audio_bytes)
             
-            # Log a cada 50 frames (~1 segundo @ 20ms/frame)
-            if self._audio_discarded_frames % 50 == 1:
+            # Log a cada 100 frames (~2 segundos @ 20ms/frame) para não poluir logs
+            if self._audio_discarded_frames % 100 == 1:
                 logger.debug(
                     f"🔇 [AUDIO_PROTECTION] Descartando áudio do atendente "
                     f"(resposta atual: {self._current_response_discarded}B, "
