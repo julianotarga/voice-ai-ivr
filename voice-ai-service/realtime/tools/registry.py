@@ -246,6 +246,7 @@ class ToolRegistry:
             from .callback import (
                 AcceptCallbackTool,
                 ProvideCallbackNumberTool,
+                UseCurrentExtensionTool,
                 ConfirmCallbackNumberTool,
                 ScheduleCallbackTool,
             )
@@ -260,6 +261,7 @@ class ToolRegistry:
             # Tools de Callback (retorno de ligação)
             cls.register(AcceptCallbackTool())
             cls.register(ProvideCallbackNumberTool())
+            cls.register(UseCurrentExtensionTool())
             cls.register(ConfirmCallbackNumberTool())
             cls.register(ScheduleCallbackTool())
             

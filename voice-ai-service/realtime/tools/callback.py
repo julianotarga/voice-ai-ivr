@@ -183,17 +183,19 @@ class AcceptCallbackTool(VoiceAITool):
         if use_current_number:
             # Verificar se caller_id é válido
             if PhoneNumberValidator.is_internal_extension(caller_id):
-                # Ramal interno - precisa pedir número externo
+                # Ramal interno - OFERECER OPÇÃO ao cliente
+                # O cliente pode querer receber no próprio ramal ou em outro número
                 return ToolResult.ok(
                     data={
-                        "status": "need_number",
-                        "action": "ask_phone_number",
-                        "reason": "internal_extension"
+                        "status": "ask_preference",
+                        "action": "ask_callback_preference",
+                        "current_number": caller_id,
+                        "is_internal": True
                     },
                     instruction=(
-                        "O número atual é um ramal interno. "
-                        "Pergunte: 'Para qual número posso retornar a ligação? "
-                        "Por favor, informe com o DDD.'"
+                        f"O número atual é o ramal {caller_id}. "
+                        f"Pergunte ao cliente: 'Devo retornar a ligação no ramal {caller_id} "
+                        f"ou você prefere informar outro número?'"
                     ),
                     should_respond=True
                 )
@@ -332,6 +334,69 @@ class ProvideCallbackNumberTool(VoiceAITool):
                 ),
                 should_respond=True
             )
+
+
+class UseCurrentExtensionTool(VoiceAITool):
+    """
+    Tool para quando cliente escolhe usar o ramal/número atual.
+    
+    Uso: Cliente diz "pode ser no ramal", "no ramal mesmo", "nesse número" ou similar.
+    """
+    
+    name = "use_current_extension"
+    description = (
+        "Cliente escolheu receber callback no ramal/número atual. "
+        "Use quando o cliente disser algo como 'pode ser no ramal', "
+        "'no ramal mesmo', 'nesse número', 'pode ser aí', 'no mesmo'."
+    )
+    
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+    
+    category = ToolCategory.MESSAGE
+    requires_response = True
+    filler_phrases = []
+    
+    async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
+        """Processa escolha de usar ramal/número atual."""
+        caller_id = context.caller_id
+        
+        logger.info(
+            "📞 [CALLBACK] Cliente escolheu usar número/ramal atual",
+            extra={
+                "call_uuid": context.call_uuid,
+                "caller_id": caller_id
+            }
+        )
+        
+        # Salvar o ramal/número na sessão
+        if context._session:
+            context._session._callback_number = caller_id
+            context._session._callback_is_extension = True
+        
+        # Formatar para fala
+        if PhoneNumberValidator.is_internal_extension(caller_id):
+            formatted = f"ramal {caller_id}"
+        else:
+            normalized, _ = PhoneNumberValidator.validate(caller_id)
+            formatted = PhoneNumberValidator.format_for_speech(normalized or caller_id)
+        
+        return ToolResult.ok(
+            data={
+                "status": "number_confirmed",
+                "action": "ask_schedule",
+                "number": caller_id,
+                "is_extension": True
+            },
+            instruction=(
+                f"Perfeito! Vamos retornar no {formatted}. "
+                f"Agora pergunte: 'Prefere que liguemos assim que possível, ou em um horário específico?'"
+            ),
+            should_respond=True
+        )
 
 
 class ConfirmCallbackNumberTool(VoiceAITool):
