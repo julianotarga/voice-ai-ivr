@@ -703,7 +703,15 @@ class ScheduleCallbackTool(VoiceAITool):
     filler_phrases = ["Anotando..."]
     
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
-        """Processa agendamento e cria o callback."""
+        """
+        Processa agendamento e cria o callback.
+        
+        NOTA: Este tool é mantido como backup. O fluxo principal agora
+        cria callbacks diretamente via UseCurrentExtensionTool ou
+        ConfirmCallbackNumberTool, sem perguntar horário.
+        """
+        import asyncio
+        
         preferred_time = kwargs.get("preferred_time", "asap")
         
         # Obter dados salvos na sessão
@@ -721,7 +729,7 @@ class ScheduleCallbackTool(VoiceAITool):
             )
         
         logger.info(
-            "📞 [CALLBACK] Criando callback",
+            "📞 [CALLBACK] Criando callback via schedule_callback",
             extra={
                 "call_uuid": context.call_uuid,
                 "callback_number": callback_number,
@@ -732,79 +740,15 @@ class ScheduleCallbackTool(VoiceAITool):
         
         # Determinar mensagem de confirmação baseada no horário
         is_asap = preferred_time.lower() in ('asap', 'agora', 'possível', 'já', 'imediato')
+        time_message = "o mais rápido possível" if is_asap else preferred_time
         
-        if is_asap:
-            time_message = "assim que possível"
-            scheduled_at = None
-        else:
-            time_message = preferred_time
-            # TODO: Parsear horário para datetime
-            scheduled_at = preferred_time
-        
-        # Enviar webhook para OmniPlay
-        webhook_success = False
-        ticket_id = None
-        
-        if context.webhook_url:
-            try:
-                import aiohttp
-                
-                # Formatar número para exibição (detecta ramal automaticamente)
-                formatted_number = PhoneNumberValidator.format_for_speech_smart(callback_number)
-                
-                # IMPORTANTE: OmniPlay espera "ticket" não "callback"
-                # O formato deve ser compatível com VoiceMessageTicketPayload
-                payload = {
-                    "event": "voice_ai_callback",
-                    "domain_uuid": context.domain_uuid,
-                    "call_uuid": context.call_uuid,
-                    "caller_id": context.caller_id,
-                    "secretary_uuid": context.secretary_uuid,
-                    "company_id": context.company_id,
-                    # OmniPlay espera o campo "ticket", não "callback"
-                    "ticket": {
-                        "type": "callback",
-                        "callback_number": callback_number,
-                        "callback_number_formatted": formatted_number,
-                        "preferred_time": preferred_time,
-                        "is_asap": is_asap,
-                        "scheduled_at": scheduled_at,
-                        "message": callback_reason or "",  # Motivo do callback
-                        "caller_name": context.caller_name,
-                        "caller_phone": context.caller_id,
-                        "priority": "normal"
-                    }
-                }
-                
-                logger.info(f"📞 [CALLBACK] Enviando para {context.webhook_url}")
-                
-                async with aiohttp.ClientSession() as http_session:
-                    async with http_session.post(
-                        context.webhook_url,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=5)
-                    ) as resp:
-                        resp_text = await resp.text()
-                        if resp.status in (200, 201):
-                            logger.info(f"📞 [CALLBACK] Callback criado: {resp_text}")
-                            webhook_success = True
-                            try:
-                                import json
-                                resp_data = json.loads(resp_text)
-                                ticket_id = resp_data.get("ticket_id") or resp_data.get("id")
-                            except:
-                                pass
-                        else:
-                            logger.warning(f"📞 [CALLBACK] Webhook retornou {resp.status}: {resp_text}")
-                            
-            except Exception as e:
-                logger.warning(f"📞 [CALLBACK] Erro ao enviar webhook: {e}")
-        else:
-            logger.warning("📞 [CALLBACK] Nenhum webhook_url configurado")
+        # Usar função auxiliar para criar webhook (evita duplicação de código)
+        webhook_success, ticket_id = await _create_callback_webhook(
+            context, callback_number, callback_reason
+        )
         
         # Agendar encerramento da chamada
         if context._session:
-            import asyncio
             logger.info("📞 [CALLBACK] Agendando encerramento em 10s")
             asyncio.create_task(context._session._delayed_stop(10.0, "callback_scheduled"))
         
@@ -819,15 +763,14 @@ class ScheduleCallbackTool(VoiceAITool):
         
         return ToolResult.ok(
             data={
-                "status": "success" if webhook_success else "saved_locally",
-                "action": "callback_scheduled",
+                "status": "callback_scheduled",
+                "action": "callback_created",
                 "ticket_id": ticket_id,
                 "callback_number": callback_number,
-                "preferred_time": time_message
+                "webhook_success": webhook_success
             },
             instruction=(
-                f"Confirme o callback. Diga: "
-                f"'Perfeito! Vamos retornar {numero_phrase} {time_message}. "
+                f"Diga: 'Perfeito! Vamos retornar a ligação {numero_phrase} {time_message}. "
                 f"Obrigada pela ligação e tenha um ótimo dia!'"
             ),
             should_respond=True,
