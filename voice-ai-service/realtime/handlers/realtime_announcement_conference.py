@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 # Configurações OpenAI Realtime (GA)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+
+# =========================================================================
+# PROTEÇÃO DINÂMICA DE ÁUDIO
+# Descarta áudio do atendente ENQUANTO a IA está falando (qualquer resposta).
+# Isso evita que ruídos/conversas do ambiente sejam interpretados erroneamente.
+# A proteção é automática: ativa quando IA fala, desativa quando para.
+# =========================================================================
 OPENAI_REALTIME_VOICE = os.getenv("OPENAI_REALTIME_VOICE", "marin")
 
 
@@ -191,6 +198,17 @@ class ConferenceAnnouncementSession:
         self._audio_playback_done.set()  # Inicialmente sem áudio pendente
         self._response_audio_generating = False  # Indica se OpenAI está gerando áudio
         self._response_active = False
+        
+        # =========================================================================
+        # PROTEÇÃO DINÂMICA DE ÁUDIO
+        # Descarta áudio do atendente ENQUANTO a IA estiver falando.
+        # Isso evita que ruídos/conversas do ambiente sejam interpretados.
+        # A proteção é DINÂMICA: ativa quando IA fala, desativa quando para.
+        # =========================================================================
+        self._audio_protection_active = False  # True quando IA está falando
+        self._audio_discarded_bytes = 0  # Contador de bytes descartados (sessão)
+        self._audio_discarded_frames = 0  # Contador de frames descartados (sessão)
+        self._current_response_discarded = 0  # Bytes descartados na resposta atual
     
     async def _wait_for_audio_complete(
         self,
@@ -1239,6 +1257,18 @@ class ConferenceAnnouncementSession:
         # Resposta completa (texto + áudio + function calls)
         elif etype == "response.done":
             self._response_active = False
+            
+            # =========================================================================
+            # LOG DA PROTEÇÃO DINÂMICA - Áudio descartado durante esta resposta
+            # =========================================================================
+            if self._current_response_discarded > 0:
+                logger.info(
+                    f"✅ [AUDIO_PROTECTION] IA terminou de falar - liberando áudio do atendente. "
+                    f"Descartados nesta resposta: {self._current_response_discarded}B "
+                    f"(total sessão: {self._audio_discarded_bytes}B)"
+                )
+                self._current_response_discarded = 0  # Reset para próxima resposta
+            
             await self._flush_audio_buffer(force=True)
             await self._check_assistant_decision()
         
@@ -1928,9 +1958,40 @@ class ConferenceAnnouncementSession:
                 self._fs_sender_task = None
     
     async def _handle_fs_audio(self, audio_bytes: bytes) -> None:
-        """Resample 16kHz -> 24kHz e envia ao OpenAI."""
+        """
+        Resample 16kHz -> 24kHz e envia ao OpenAI.
+        
+        PROTEÇÃO DINÂMICA DE ÁUDIO:
+        Enquanto a IA está falando (_response_active = True ou gerando áudio),
+        todo áudio do atendente é DESCARTADO. Isso evita que ruídos e conversas
+        do ambiente sejam interpretados erroneamente pela IA.
+        
+        A proteção é DINÂMICA:
+        - IA começa a falar → proteção ATIVA → áudio descartado
+        - IA termina de falar → proteção DESATIVA → áudio enviado ao OpenAI
+        """
         if not audio_bytes or not self._ws:
             return
+        
+        # =========================================================================
+        # PROTEÇÃO DINÂMICA: Descartar áudio enquanto IA está falando
+        # =========================================================================
+        if self._response_active or self._response_audio_generating:
+            # Contar bytes/frames descartados para diagnóstico
+            self._audio_discarded_bytes += len(audio_bytes)
+            self._audio_discarded_frames += 1
+            self._current_response_discarded += len(audio_bytes)
+            
+            # Log a cada 50 frames (~1 segundo @ 20ms/frame)
+            if self._audio_discarded_frames % 50 == 1:
+                logger.debug(
+                    f"🔇 [AUDIO_PROTECTION] Descartando áudio do atendente "
+                    f"(resposta atual: {self._current_response_discarded}B, "
+                    f"total sessão: {self._audio_discarded_bytes}B) - IA está falando"
+                )
+            return
+        
+        # IA não está falando: processar áudio normalmente
         try:
             audio_24k = self._resampler_in.process(audio_bytes)
         except Exception:
