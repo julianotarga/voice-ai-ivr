@@ -324,7 +324,34 @@ class ProvideCallbackNumberTool(VoiceAITool):
             }
         )
         
-        # Validar número
+        # Limpar número (remover "ramal", espaços, etc.)
+        clean_number = re.sub(r'[^\d]', '', phone_number)
+        
+        # Verificar se é um ramal (2-5 dígitos)
+        if PhoneNumberValidator.is_internal_extension(clean_number):
+            # Aceitar ramal como número de callback válido
+            if context._session:
+                context._session._callback_number = clean_number
+                context._session._callback_is_extension = True
+            
+            formatted = f"ramal {clean_number}"
+            
+            return ToolResult.ok(
+                data={
+                    "status": "confirm_number",
+                    "action": "confirm_phone_number",
+                    "number": clean_number,
+                    "is_extension": True,
+                    "formatted": formatted
+                },
+                instruction=(
+                    f"Confirme o ramal. Diga: "
+                    f"'Anotei o {formatted}. Está correto?'"
+                ),
+                should_respond=True
+            )
+        
+        # Validar número externo (10-11 dígitos)
         normalized, is_valid = PhoneNumberValidator.validate(phone_number)
         
         if is_valid:
@@ -333,12 +360,14 @@ class ProvideCallbackNumberTool(VoiceAITool):
             # Salvar na sessão
             if context._session:
                 context._session._callback_number = normalized
+                context._session._callback_is_extension = False
             
             return ToolResult.ok(
                 data={
                     "status": "confirm_number",
                     "action": "confirm_phone_number",
                     "number": normalized,
+                    "is_extension": False,
                     "formatted": formatted
                 },
                 instruction=(
@@ -666,6 +695,7 @@ class ScheduleCallbackTool(VoiceAITool):
 __all__ = [
     "AcceptCallbackTool",
     "ProvideCallbackNumberTool",
+    "UseCurrentExtensionTool",
     "ConfirmCallbackNumberTool",
     "ScheduleCallbackTool",
     "PhoneNumberValidator",
